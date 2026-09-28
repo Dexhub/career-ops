@@ -860,7 +860,7 @@ async function main() {
     const golden = new Map(readdirSync(GOLDEN_DIR).filter((f) => f.endsWith('.json'))
       .map((f) => JSON.parse(readFileSync(join(GOLDEN_DIR, f), 'utf8'))).map((c) => [c.id, c]));
     const runs = readFileSync(RUNS_FILE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    let updated = 0;
+    const reparsed = [];
     const unkept = [];
     for (const r of runs) {
       const report = join(keepDir, `${r.case}__${fixtureModel(runLabel(r), r.rep)}`, 'report.md');
@@ -873,11 +873,13 @@ async function main() {
         expect_checked: Boolean(golden.get(r.case)?.expect),
         expect_failures: checkExpect(parsed, golden.get(r.case)?.expect),
       });
-      syncFixture(r);
-      updated++;
+      reparsed.push(r);
     }
+    // Records first, fixtures after: an interruption leaves fixtures behind
+    // their records (re-run --reparse), never ahead of them.
     writeFileSync(RUNS_FILE, runs.map((r) => JSON.stringify(r)).join('\n') + '\n');
-    console.log(`reparsed ${updated}/${runs.length} run(s) from ${keepDir}`);
+    for (const r of reparsed) syncFixture(r);
+    console.log(`reparsed ${reparsed.length}/${runs.length} run(s) from ${keepDir}`);
     if (unkept.length) {
       console.log(`⚠️  ${unkept.length} run(s) have no kept report and keep their earlier grading: ${unkept.join(', ')}`);
     }
@@ -980,6 +982,9 @@ async function main() {
       inFlight--;
       spent += runCharge(r, opts.maxRunUsd);
       if (!r.case) {
+        // A run that went ahead but left no record retires the case's old
+        // fixture, as a failed record would; replay then reports it unrecorded.
+        if (r.ran) rmSync(fixturePath({ case: tc.id, model: opts.model, variant: opts.variant, rep: opts.rep }), { force: true });
         console.log(`  ❌ ${tc.id}: ${r.error}`);
         continue;
       }
