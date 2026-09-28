@@ -433,6 +433,21 @@ export function canStartRun(spent, inFlight, maxRunUsd, budget) {
   return spent + (inFlight + 1) * maxRunUsd <= budget + 1e-9;
 }
 
+/**
+ * What a finished run costs against the invocation budget: its reported cost,
+ * or its cap when it reported none (crash, timeout, unparsable output, a
+ * record that could not be built after the child ran). A run whose child
+ * never started (the sandbox could not be built) costs nothing.
+ *
+ * @param {{case?: string, ran?: boolean, cost_usd?: number|null}} r - runCase result.
+ * @param {number} maxRunUsd - Per-run cap.
+ * @returns {number}
+ */
+export function runCharge(r, maxRunUsd) {
+  if (!r.case && !r.ran) return 0;
+  return Number.isFinite(r.cost_usd) ? r.cost_usd : maxRunUsd;
+}
+
 /** A run's display/grouping label: the model id, plus `+variant` for experiments. */
 export function runLabel(r) {
   return r.variant ? `${r.model}+${r.variant}` : r.model;
@@ -700,7 +715,10 @@ function runCase(tc, opts) {
         }
         resolve(record);
       } catch (err) {
-        resolve({ error: `post-run: ${err.message}` });
+        // The child already ran: keep what it cost so the budget still sees it.
+        let cost = null;
+        try { cost = JSON.parse(out)?.total_cost_usd ?? null; } catch { /* unknown: charged at the cap */ }
+        resolve({ error: `post-run: ${err.message}`, ran: !spawnError, cost_usd: cost });
       } finally {
         rmSync(sandbox, { recursive: true, force: true });
       }
@@ -960,13 +978,11 @@ async function main() {
       inFlight++;
       const r = await runCase(tc, opts);
       inFlight--;
+      spent += runCharge(r, opts.maxRunUsd);
       if (!r.case) {
         console.log(`  ❌ ${tc.id}: ${r.error}`);
         continue;
       }
-      // A run that reported no cost (crash, timeout, unparsable output) may
-      // still have spent up to its cap; budget it as if it had.
-      spent += Number.isFinite(r.cost_usd) ? r.cost_usd : opts.maxRunUsd;
       // Old fixture out, record in, new fixture written: an interruption can
       // leave a fixture missing, never one the latest record contradicts.
       rmSync(fixturePath(r), { force: true });

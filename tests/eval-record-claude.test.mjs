@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { pass, fail } from './helpers.mjs';
 import {
   canonicalArchetype, parseReport, checkExpect, fixtureModel, summarize, validateMachineSummary, flagsInjection,
-  usdFlag, canStartRun, childEnv, ALLOWED_BASH, permissionArgs, judgeProbeStep, publishesFixture, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
+  usdFlag, canStartRun, runCharge, childEnv, ALLOWED_BASH, permissionArgs, judgeProbeStep, publishesFixture, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
 } from '../evals/record-claude.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -151,6 +151,10 @@ try {
   'NaN, missing, flag-like and non-positive operands are rejected');
   check(canStartRun(0, 0, 4, 4) && !canStartRun(0, 1, 4, 4) && canStartRun(1.5, 1, 2, 6) && !canStartRun(3, 1, 2, 6),
     'a run starts only if its cap fits on top of spent and in-flight reservations');
+  check(runCharge({ case: 'a', cost_usd: 0.3 }, 4) === 0.3 && runCharge({ case: 'a', cost_usd: null }, 4) === 4
+    && runCharge({ error: 'post-run: x', ran: true, cost_usd: 0.2 }, 4) === 0.2 && runCharge({ error: 'post-run: x', ran: true }, 4) === 4
+    && runCharge({ error: 'sandbox: x' }, 4) === 0,
+  'every run whose child ran is charged (its cost, or its cap if unknown), even one with no record');
 
   // 3. checkExpect
   check(checkExpect(p, undefined).length === 0, 'no expect block → no failures');
