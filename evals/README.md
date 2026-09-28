@@ -1,9 +1,13 @@
 # Golden-set eval for cheap-model routing (#1354)
 
-> **Status: v1.** The *mechanism* (`eval-golden.mjs`) is design-invariant and runs
-> today. Reference labels are now frozen (10 synthetic cases — see **Labeling
-> methodology** below); the gate threshold and per-model cost remain tunable
-> constants, and wiring into CI is still deferred (see **Open design questions**).
+> **Status: v2.** The *mechanism* (`eval-golden.mjs`) is design-invariant and runs
+> today. Reference labels are frozen (10 synthetic v1 cases — see **Labeling
+> methodology** below) and five v2 cases add objective `expect` checks against a
+> pinned profile. Real Claude Code fixtures are recorded with
+> `evals/record-claude.mjs`; the first bake-off (Haiku 4.5, Sonnet 5, Opus 5,
+> Opus 5.5) is written up in [`results/README.md`](results/README.md). The gate
+> threshold and per-model cost remain tunable constants, and wiring into CI is
+> still deferred (see **Open design questions**).
 
 ## What this is
 
@@ -46,9 +50,12 @@ harness.
 
 ```
 evals/
-  golden/      labeled cases — one JSON per case (synthetic JDs, no user data)
-  fixtures/    recorded candidate outputs for $0 deterministic replay in CI
-  README.md    this file
+  golden/            labeled cases — one JSON per case (synthetic JDs, no user data)
+  fixtures/          recorded candidate outputs for $0 deterministic replay in CI
+  profiles/          pinned synthetic user layers (cv.md + profile.yml) for v2 cases
+  results/           claude-runs.jsonl (raw per-run metrics) + bake-off write-ups
+  record-claude.mjs  records real Claude Code runs into fixtures/ and results/
+  README.md          this file
 eval-golden.mjs  the harness (root level, sibling to openai-eval.mjs)
 ```
 
