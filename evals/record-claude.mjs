@@ -131,9 +131,11 @@ if (flag('--help') || flag('-h')) {
   --keep <dir>          Copy each run's report + raw CLI JSON into <dir>
   --variant <name>      Tag an experiment (e.g. a prompt change): runs group as <model>+<name>
   --dry-run             Print the plan; spend nothing
-  --probe-sandbox       Live check (≈$0.10) that the sandbox permissions hold on the
-                        installed CLI: exits 1 if any escape step is not refused.
-                        Uses --model, default claude-haiku-4-5
+  --probe-sandbox       Only run the live check (≈$0.10) that the sandbox permissions
+                        hold on the installed CLI: exits 1 if any escape step is not
+                        refused. Uses --model, default claude-haiku-4-5. Every live
+                        recording runs it first and records nothing if it fails
+  --skip-probe          Record without that check
   --reparse <dir>       Re-grade recorded runs from reports kept with --keep <dir> ($0)
   --summarize           Aggregate ${basename(RUNS_FILE)} into a per-model table ($0)
   --write               With --summarize, also write ${basename(BAKEOFF_FILE)}
@@ -559,31 +561,36 @@ export function summarize(runs, reference = 'claude-opus-5') {
  */
 function buildSandbox(profileDir) {
   const dir = mkdtempSync(join(tmpdir(), 'career-ops-eval-'));
-  const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
-    .split('\0').filter(Boolean)
-    .filter((f) => !SANDBOX_EXCLUDE.some((p) => f.startsWith(p)))
-    .filter((f) => !SANDBOX_EXCLUDE_EXT.has(extname(f).toLowerCase()));
-  for (const f of tracked) {
-    const src = join(ROOT, f);
-    if (!existsSync(src)) continue; // deleted in the working tree
-    mkdirSync(dirname(join(dir, f)), { recursive: true });
-    cpSync(src, join(dir, f));
-  }
-  // A copy, not a link: nothing the run executes can reach the host's dependencies.
-  if (existsSync(join(ROOT, 'node_modules'))) {
-    cpSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), { recursive: true, verbatimSymlinks: true });
-  }
+  try {
+    const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
+      .split('\0').filter(Boolean)
+      .filter((f) => !SANDBOX_EXCLUDE.some((p) => f.startsWith(p)))
+      .filter((f) => !SANDBOX_EXCLUDE_EXT.has(extname(f).toLowerCase()));
+    for (const f of tracked) {
+      const src = join(ROOT, f);
+      if (!existsSync(src)) continue; // deleted in the working tree
+      mkdirSync(dirname(join(dir, f)), { recursive: true });
+      cpSync(src, join(dir, f));
+    }
+    // A copy, not a link: nothing the run executes can reach the host's dependencies.
+    if (existsSync(join(ROOT, 'node_modules'))) {
+      cpSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), { recursive: true, verbatimSymlinks: true });
+    }
 
-  cpSync(join(profileDir, 'cv.fixture.md'), join(dir, 'cv.md'));
-  mkdirSync(join(dir, 'config'), { recursive: true });
-  cpSync(join(profileDir, 'profile.yml'), join(dir, 'config', 'profile.yml'));
-  const customProfile = join(profileDir, '_profile.md');
-  cpSync(existsSync(customProfile) ? customProfile : join(ROOT, 'modes', '_profile.template.md'), join(dir, 'modes', '_profile.md'));
-  cpSync(join(ROOT, 'templates', 'portals.example.yml'), join(dir, 'portals.yml'));
-  mkdirSync(join(dir, 'data'), { recursive: true });
-  writeFileSync(join(dir, 'data', 'applications.md'),
-    '# Applications Tracker\n\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|------|---------|------|-------|--------|-----|--------|-------|\n');
-  execFileSync('git', ['init', '-q'], { cwd: dir });
+    cpSync(join(profileDir, 'cv.fixture.md'), join(dir, 'cv.md'));
+    mkdirSync(join(dir, 'config'), { recursive: true });
+    cpSync(join(profileDir, 'profile.yml'), join(dir, 'config', 'profile.yml'));
+    const customProfile = join(profileDir, '_profile.md');
+    cpSync(existsSync(customProfile) ? customProfile : join(ROOT, 'modes', '_profile.template.md'), join(dir, 'modes', '_profile.md'));
+    cpSync(join(ROOT, 'templates', 'portals.example.yml'), join(dir, 'portals.yml'));
+    mkdirSync(join(dir, 'data'), { recursive: true });
+    writeFileSync(join(dir, 'data', 'applications.md'),
+      '# Applications Tracker\n\n| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n|---|------|---------|------|-------|--------|-----|--------|-------|\n');
+    execFileSync('git', ['init', '-q'], { cwd: dir });
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
   return dir;
 }
 
@@ -648,52 +655,62 @@ function runCase(tc, opts) {
       settled = true;
       clearTimeout(timer);
       if (spawnError) errOut = `could not start claude: ${spawnError.message}`;
-      let cli = null;
-      try { cli = JSON.parse(out); } catch { /* reported below */ }
-      const reportPath = newestReport(join(sandbox, 'reports'));
-      const md = reportPath ? readFileSync(reportPath, 'utf8') : '';
-      const parsed = md ? parseReport(md, tc.expect?.injection_marker) : null;
-      const record = {
-        case: tc.id,
-        model: opts.model,
-        variant: opts.variant || null,
-        rep: opts.rep,
-        profile: basename(opts.profileDir),
-        effort: opts.effort || null,
-        recorded_at: new Date().toISOString(),
-        label_archetype: tc.label.archetype,
-        label_score: tc.label.score,
-        ...(parsed || { score: null, archetype: 'unknown', legitimacy: null, has_machine_summary: false, has_jd_archive: false, summary_issues: ['no report'] }),
-        tracker_written: trackerWritten(sandbox),
-        report_file: reportPath ? basename(reportPath) : null,
-        cost_usd: cli?.total_cost_usd ?? null,
-        turns: cli?.num_turns ?? null,
-        duration_s: Math.round((Date.now() - started) / 1000),
-        usage: cli?.usage ? {
-          input: cli.usage.input_tokens,
-          cache_write: cli.usage.cache_creation_input_tokens,
-          cache_read: cli.usage.cache_read_input_tokens,
-          output: cli.usage.output_tokens,
-        } : null,
-        stop: cli?.subtype || cli?.terminal_reason || null,
-        // Tool calls the sandbox refused, legitimate or not.
-        permission_denials: cli ? (cli.permission_denials || []).map((d) => d.tool_name) : null,
-        error: !cli ? `claude exited ${code}: ${(errOut || out).slice(0, 300)}`
-          : (cli.is_error ? `cli error: ${String(cli.result || cli.subtype).slice(0, 300)}` : (reportPath ? null : 'no report written')),
-      };
-      record.expect_checked = Boolean(tc.expect && parsed);
-      record.expect_failures = parsed ? checkExpect(parsed, tc.expect) : [];
-      if (opts.keepDir) {
-        const dest = join(opts.keepDir, `${tc.id}__${fixtureModel(runLabel(opts), opts.rep)}`);
-        mkdirSync(dest, { recursive: true });
-        if (reportPath) cpSync(reportPath, join(dest, 'report.md'));
-        writeFileSync(join(dest, 'cli.json'), out);
+      // Whatever post-run parsing throws, the sandbox goes and the worker gets a record.
+      try {
+        let cli = null;
+        try { cli = JSON.parse(out); } catch { /* reported below */ }
+        const reportPath = newestReport(join(sandbox, 'reports'));
+        const md = reportPath ? readFileSync(reportPath, 'utf8') : '';
+        const parsed = md ? parseReport(md, tc.expect?.injection_marker) : null;
+        const record = {
+          case: tc.id,
+          model: opts.model,
+          variant: opts.variant || null,
+          rep: opts.rep,
+          profile: basename(opts.profileDir),
+          effort: opts.effort || null,
+          recorded_at: new Date().toISOString(),
+          label_archetype: tc.label.archetype,
+          label_score: tc.label.score,
+          ...(parsed || { score: null, archetype: 'unknown', legitimacy: null, has_machine_summary: false, has_jd_archive: false, summary_issues: ['no report'] }),
+          tracker_written: trackerWritten(sandbox),
+          report_file: reportPath ? basename(reportPath) : null,
+          cost_usd: cli?.total_cost_usd ?? null,
+          turns: cli?.num_turns ?? null,
+          duration_s: Math.round((Date.now() - started) / 1000),
+          usage: cli?.usage ? {
+            input: cli.usage.input_tokens,
+            cache_write: cli.usage.cache_creation_input_tokens,
+            cache_read: cli.usage.cache_read_input_tokens,
+            output: cli.usage.output_tokens,
+          } : null,
+          stop: cli?.subtype || cli?.terminal_reason || null,
+          // Tool calls the sandbox refused, legitimate or not.
+          permission_denials: cli ? (cli.permission_denials || []).map((d) => d.tool_name) : null,
+          error: !cli ? `claude exited ${code}: ${(errOut || out).slice(0, 300)}`
+            : (cli.is_error ? `cli error: ${String(cli.result || cli.subtype).slice(0, 300)}` : (reportPath ? null : 'no report written')),
+        };
+        record.expect_checked = Boolean(tc.expect && parsed);
+        record.expect_failures = parsed ? checkExpect(parsed, tc.expect) : [];
+        if (opts.keepDir) {
+          const dest = join(opts.keepDir, `${tc.id}__${fixtureModel(runLabel(opts), opts.rep)}`);
+          mkdirSync(dest, { recursive: true });
+          if (reportPath) cpSync(reportPath, join(dest, 'report.md'));
+          writeFileSync(join(dest, 'cli.json'), out);
+        }
+        resolve(record);
+      } catch (err) {
+        resolve({ error: `post-run: ${err.message}` });
+      } finally {
+        rmSync(sandbox, { recursive: true, force: true });
       }
-      rmSync(sandbox, { recursive: true, force: true });
-      resolve(record);
     }
   });
 }
+
+/** Model and cap for the sandbox probe: permissions are enforced by the CLI, so the cheapest model will do. */
+const PROBE_MODEL = 'claude-haiku-4-5';
+const PROBE_MAX_USD = 0.5;
 
 /**
  * --probe-sandbox: prove on the installed CLI that permissionArgs() holds. A
@@ -702,7 +719,7 @@ function runCase(tc, opts) {
  *
  * @param {string} profileDir - evals/profiles/<name>, as for a recorded run.
  * @param {string} model - Model that attempts the steps.
- * @returns {boolean} Every escape held and the needed write worked.
+ * @returns {{ok: boolean, cost: number|null}} ok: every escape held and the needed write worked.
  */
 function probeSandbox(profileDir, model) {
   const sandbox = buildSandbox(profileDir);
@@ -739,7 +756,7 @@ function runProbe(sandbox, outside, model) {
     + 'per action: "<n> OK" or "<n> DENIED".\n\n'
     + [...steps.map((s) => s.ask), control].map((a, i) => `${i + 1}. ${a}`).join('\n');
   const res = spawnSync('claude', ['-p', prompt, '--model', model, '--output-format', 'stream-json', '--verbose',
-    '--max-budget-usd', '0.5', '--no-session-persistence', '--strict-mcp-config', '--setting-sources', 'project',
+    '--max-budget-usd', String(PROBE_MAX_USD), '--no-session-persistence', '--strict-mcp-config', '--setting-sources', 'project',
     ...permissionArgs()], { cwd: sandbox, env: childEnv(process.env), encoding: 'utf8', timeout: 5 * 60 * 1000 });
 
   const uses = [];
@@ -768,7 +785,7 @@ function runProbe(sandbox, outside, model) {
   if (!worked) ok = false;
   console.log(`  ${worked ? '✅' : '❌'} ${(worked ? 'works' : 'blocked').padEnd(13)} ${control}`);
   console.log(`\n${ok ? '✅ sandbox holds' : '❌ sandbox check failed'} on ${model} ($${fmt(cost)})`);
-  return ok;
+  return { ok, cost };
 }
 
 /**
@@ -850,7 +867,7 @@ async function main() {
   }
 
   if (flag('--probe-sandbox')) {
-    const ok = probeSandbox(join(EVALS, 'profiles', value('--profile', 'ai-engineer')), value('--model', 'claude-haiku-4-5'));
+    const { ok } = probeSandbox(join(EVALS, 'profiles', value('--profile', 'ai-engineer')), value('--model', PROBE_MODEL));
     process.exit(ok ? 0 : 1);
   }
 
@@ -919,6 +936,18 @@ async function main() {
 
   mkdirSync(RESULTS_DIR, { recursive: true });
   let spent = 0;
+  // Case text is untrusted and the child holds the operator's credentials:
+  // prove the sandbox on this CLI before recording anything (counted in the budget).
+  if (!flag('--skip-probe')) {
+    console.log('probing the sandbox first (--skip-probe to skip):');
+    const probe = probeSandbox(profileDir, PROBE_MODEL);
+    spent += Number.isFinite(probe.cost) ? probe.cost : PROBE_MAX_USD;
+    if (!probe.ok) {
+      console.error('❌  sandbox probe failed — nothing recorded. Fix the permissions; re-run, or pass --skip-probe, only if a step was merely not attempted.');
+      process.exit(1);
+    }
+    console.log('');
+  }
   let inFlight = 0;
   let next = 0;
   const worker = async () => {

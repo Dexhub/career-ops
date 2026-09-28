@@ -138,9 +138,10 @@ to try each escape once (write or read outside the sandbox, overwrite a script
 it may run, plant a module, `.env` or `.career-ops-data`, aim `doctor.mjs` at
 another directory) next to one write the flow needs, and every step is judged
 from the transcript and the disk, not the model's account. It exits 1 unless
-every escape was attempted and refused and the needed write worked. Run it
-after a CLI upgrade. It is still not an OS sandbox; run cases you did not write
-in a disposable environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
+every escape was attempted and refused and the needed write worked. Every live
+recording runs it first (counted in `--budget-usd`) and records nothing if it
+fails; `--skip-probe` skips it. It is still not an OS sandbox; run cases you
+did not write in a disposable environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
 `--budget-usd` caps the invocation.
 
 Per run it writes a replay fixture (the usual `---SCORE_SUMMARY---` block plus
