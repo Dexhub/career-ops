@@ -7,28 +7,29 @@
 | `claude-opus-5` | 12 | 12 | 100% | 0.72 | — | n/a | 100% | 100% | 5/5 | $2.84 | 24 | 6.4 min |
 | `claude-opus-5-5` | 23 | 23 | 100% | 0.60 | 0.30 | 0.06 | 100% | 100% | 10/10 | $1.26 | 14 | 2.3 min |
 | `claude-sonnet-5` | 13 | 13 | 100% | 0.82 | 0.28 | n/a | 100% | 100% | 5/5 | $1.27 | 25 | 5.5 min |
+| `claude-sonnet-5+effort-medium` | 14 | 14 | 100% | 0.96 | 0.24 | n/a | 100% | 79% | 5/5 | $1.05 | 22 | 3.5 min |
 
-Total recorded spend: $91.03 over 93 runs.
+Total recorded spend: $105.76 over 107 runs.
 
 ### Scores per case (rep 1 / rep 2 …)
 
-| Case | Label | `claude-haiku-4-5` | `claude-haiku-4-5+schema-inline` | `claude-opus-5` | `claude-opus-5-5` | `claude-sonnet-5` |
-|---|---|---|---|---|---|---|
-| agentic-automation | 3.9 | 3.5 / 4.2 | 3.5 | 3.5 | 3.2 / 3.2 | 2.8 |
-| ai-forward-deployed | 4.3 | 4.3 / 3.8 | 3.7 | 4 | 3.6 | 3.3 |
-| ai-platform-llmops | 4.2 | 4.6 / 4.8 | 4.7 | 4.5 | 4.2 | 4.1 |
-| ai-solutions-architect | 3.4 | 3.5 / 3.2 | 3.1 | 2.5 | 3 / 2.8 | 2 |
-| ai-transformation | 3.6 | 3 / 2.8 | 2.5 | 2 | 2.1 | 1.8 |
-| forward-deployed-vs-architect | 3.9 | 3.8 / 3.8 | 4.3 | 3 | 3.4 | 3 |
-| ghost-evergreen-agentic | 2.8 | 2 / 2.5 | 2 | 2 | 2.6 / 2.8 | 2.4 |
-| injection-forward-deployed | 3.8 | 3.8 / 3.8 | 3.5 | 3 | 3.2 / 3.1 | 3.2 |
-| junior-agentic-underlevel | 2.8 | 1.5 / 2.5 | 2.8 | 1.5 | 1.8 / 1.8 | 1.5 |
-| llmops-long-realistic | 4.4 | 4.6 / 4.5 | 4.7 | 4.6 | 4.3 / 4.3 | 4.5 |
-| madrid-onsite-spanish | 2.3 | 2 / 2.5 | 2 | 1.5 | 1.5 / 1.5 | 1.5 |
-| platform-agentic-hybrid | 4.1 | 4.6 / 4.6 | 4.3 | 4.5 | 4.3 | 4.3 |
-| pm-architect-ambiguous | 3.7 | 3.7 / 4.2 | 4.1 | — | 3.3 / 3.3 | 2.7 |
-| technical-ai-pm | 4 | 4 / 4.2 | 3.5 | — | 2.6 | — |
-| transformation-vs-pm | 3.2 | 3 / 2 | 2.5 | — | 2.1 | — |
+| Case | Label | `claude-haiku-4-5` | `claude-haiku-4-5+schema-inline` | `claude-opus-5` | `claude-opus-5-5` | `claude-sonnet-5` | `claude-sonnet-5+effort-medium` |
+|---|---|---|---|---|---|---|---|
+| agentic-automation | 3.9 | 3.5 / 4.2 | 3.5 | 3.5 | 3.2 / 3.2 | 2.8 | 3.2 |
+| ai-forward-deployed | 4.3 | 4.3 / 3.8 | 3.7 | 4 | 3.6 | 3.3 | 3.2 |
+| ai-platform-llmops | 4.2 | 4.6 / 4.8 | 4.7 | 4.5 | 4.2 | 4.1 | 4.3 |
+| ai-solutions-architect | 3.4 | 3.5 / 3.2 | 3.1 | 2.5 | 3 / 2.8 | 2 | 2 |
+| ai-transformation | 3.6 | 3 / 2.8 | 2.5 | 2 | 2.1 | 1.8 | 1.8 |
+| forward-deployed-vs-architect | 3.9 | 3.8 / 3.8 | 4.3 | 3 | 3.4 | 3 | 3 |
+| ghost-evergreen-agentic | 2.8 | 2 / 2.5 | 2 | 2 | 2.6 / 2.8 | 2.4 | 2 |
+| injection-forward-deployed | 3.8 | 3.8 / 3.8 | 3.5 | 3 | 3.2 / 3.1 | 3.2 | 3.1 |
+| junior-agentic-underlevel | 2.8 | 1.5 / 2.5 | 2.8 | 1.5 | 1.8 / 1.8 | 1.5 | 1.3 |
+| llmops-long-realistic | 4.4 | 4.6 / 4.5 | 4.7 | 4.6 | 4.3 / 4.3 | 4.5 | 4.3 |
+| madrid-onsite-spanish | 2.3 | 2 / 2.5 | 2 | 1.5 | 1.5 / 1.5 | 1.5 | 1.5 |
+| platform-agentic-hybrid | 4.1 | 4.6 / 4.6 | 4.3 | 4.5 | 4.3 | 4.3 | 4.2 |
+| pm-architect-ambiguous | 3.7 | 3.7 / 4.2 | 4.1 | — | 3.3 / 3.3 | 2.7 | 2.2 |
+| technical-ai-pm | 4 | 4 / 4.2 | 3.5 | — | 2.6 | — | 2 |
+| transformation-vs-pm | 3.2 | 3 / 2 | 2.5 | — | 2.1 | — | — |
 
 ### Machine Summary schema issues (most frequent)
 
@@ -37,6 +38,7 @@ Total recorded spend: $91.03 over 93 runs.
 - `claude-opus-5`: none
 - `claude-opus-5-5`: none
 - `claude-sonnet-5`: none
+- `claude-sonnet-5+effort-medium`: missing legitimacy_tier (3), missing final_decision (3)
 
 ### Failed `expect` checks and errors
 

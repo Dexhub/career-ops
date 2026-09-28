@@ -5,10 +5,11 @@ Raw numbers: [`claude-bakeoff.md`](claude-bakeoff.md), regenerated from
 `node evals/record-claude.mjs --summarize --write`. Method: `evals/README.md`
 → *Recording real Claude Code runs (v2)*.
 
-**Scope.** 94 headless `/career-ops oferta` runs, $91 of API spend: 15 golden
-cases × Haiku 4.5, Sonnet 5 (13, budget cap), Opus 5 (12, budget cap), Opus
-5.5, a second pass of Haiku (15) and Opus 5.5 (8), and a Haiku prompt variant
-(15). One pinned synthetic profile, no web tools, CLI default effort. There is
+**Scope.** 108 headless `/career-ops oferta` runs, $106 of API spend: 15
+golden cases × Haiku 4.5, Sonnet 5 (13, budget cap), Opus 5 (12, budget cap),
+Opus 5.5, a second pass of Haiku (15) and Opus 5.5 (8), a Haiku prompt variant
+(15) and Sonnet 5 at `--effort medium` (14, budget cap). One pinned synthetic
+profile, no web tools, CLI default effort unless stated. There is
 no human ground truth here: agreement is measured between models (Opus 5 as
 reference), plus the objective `expect` checks on the five v2 cases.
 
@@ -29,8 +30,10 @@ reference), plus the objective `expect` checks on the five v2 cases.
 
 1. **Sonnet 5 is not cheaper than Opus 5.5 in practice.** Half the list price,
    but ~25 turns instead of ~14, so the same $1.26–1.27 per evaluation at more
-   than twice the wall time. The `standard` tier buys nothing over Opus 5.5 on
-   this workload.
+   than twice the wall time. At `--effort medium` it drops to $1.05 and
+   3.5 min with the same agreement (0.24 vs Opus 5, 11/12 apply calls), but its
+   schema-valid rate fell to 79% (pre-fix prompt). The `standard` tier buys
+   little over Opus 5.5 on this workload.
 2. **Opus 5.5 costs 44% of Opus 5** (the current `premium` model), finishes in
    about a third of the time, lands within 0.30 of it on average with no
    systematic bias (+0.08), and is the most repeatable model measured: the
@@ -59,8 +62,10 @@ reference), plus the objective `expect` checks on the five v2 cases.
 - **`premium` → Opus 5.5** in the `modes/_shared.md` Spend Tier table and
   `batch/batch-runner.sh`'s `spend_tier_to_model`: same agreement, half the
   cost, a third of the time.
-- **Reconsider `standard` = Sonnet 5.** On this workload it costs the same as
-  Opus 5.5 and is slower. Worth one more pass at lower effort before deciding.
+- **Reconsider `standard` = Sonnet 5.** At default effort it costs the same as
+  Opus 5.5 and is slower; at `medium` it saves ~$0.20/evaluation but is still
+  slower and less schema-compliant. Opus 5.5 is the stronger default unless
+  Sonnet's price matters more than its extra turns.
 - **Keep Haiku behind a warning** until the Machine Summary gap closes and its
   score variance is addressed (e.g. show a ±0.4 band next to economy-tier
   scores near 4.0).
