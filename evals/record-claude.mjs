@@ -875,8 +875,10 @@ async function main() {
       });
       reparsed.push(r);
     }
-    // Records first, fixtures after: an interruption leaves fixtures behind
-    // their records (re-run --reparse), never ahead of them.
+    // Same order as a live run: old fixtures out, records in, new fixtures
+    // written. An interruption can leave a fixture missing (re-run --reparse),
+    // never one its record contradicts.
+    for (const r of reparsed) rmSync(fixturePath(r), { force: true });
     writeFileSync(RUNS_FILE, runs.map((r) => JSON.stringify(r)).join('\n') + '\n');
     for (const r of reparsed) syncFixture(r);
     console.log(`reparsed ${reparsed.length}/${runs.length} run(s) from ${keepDir}`);
