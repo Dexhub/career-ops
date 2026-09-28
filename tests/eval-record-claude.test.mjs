@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { pass, fail } from './helpers.mjs';
 import {
   canonicalArchetype, parseReport, checkExpect, fixtureModel, summarize, validateMachineSummary, flagsInjection,
-  usdFlag, canStartRun, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
+  usdFlag, canStartRun, childEnv, ALLOWED_BASH, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
 } from '../evals/record-claude.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -112,6 +112,19 @@ try {
     topLevel.map(([k]) => k).join(','));
   check(sameContract(section('risk_summary'), RISK_SUMMARY_SCHEMA), 'RISK_SUMMARY_SCHEMA matches the skeleton\'s risk_summary');
   check(sameContract(section('requirement_importance'), REQUIREMENT_ROW_SCHEMA), 'REQUIREMENT_ROW_SCHEMA matches the skeleton\'s requirement rows');
+
+  // 2d'. The child sees untrusted case text: minimal env, no general shell.
+  const env = childEnv({
+    PATH: '/bin', HOME: '/h', HTTPS_PROXY: 'http://p', ANTHROPIC_API_KEY: 'k', CLAUDE_CODE_OAUTH_TOKEN: 't',
+    CLAUDE_CODE_SESSION_ID: 's', GITHUB_TOKEN: 'g', AWS_SECRET_ACCESS_KEY: 'a', CAREER_OPS_ROOT: '/real/data', OPENAI_API_KEY: 'o',
+  });
+  check(env.PATH && env.HOME && env.HTTPS_PROXY && env.ANTHROPIC_API_KEY && env.CLAUDE_CODE_OAUTH_TOKEN,
+    'child env keeps what claude needs (path, home, proxy, auth)');
+  check(!('GITHUB_TOKEN' in env) && !('AWS_SECRET_ACCESS_KEY' in env) && !('OPENAI_API_KEY' in env)
+    && !('CAREER_OPS_ROOT' in env) && !('CLAUDE_CODE_SESSION_ID' in env),
+  'child env drops unrelated secrets, CAREER_OPS_* data-root overrides and the parent session id');
+  check(ALLOWED_BASH.length > 0 && ALLOWED_BASH.every((c) => /^node [\w.-]+\.mjs( check)?$/.test(c)),
+    'the child may only run named repo scripts, never a general shell', ALLOWED_BASH.join(', '));
 
   // 2e. Spend flags and parallel budget admission.
   const throws = (fn) => { try { fn(); return false; } catch { return true; } };

@@ -117,7 +117,12 @@ synthetic user layer from `evals/profiles/<profile>/` (`cv.md`, `profile.yml`;
 `modes/_profile.md` defaults to the shipped template, exactly what a new user
 gets), and no web tools — the companies are fictional and research would make
 runs irreproducible, so Block D/G research degrades the same way for every
-model. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
+model. Case text is untrusted (one case is a prompt injection on purpose), so
+the child gets no general shell — only the repo scripts the flow calls
+(`ALLOWED_BASH`) — and a minimal environment: what `claude` needs to start and
+reach the API, without unrelated tokens or `CAREER_OPS_*` data-root overrides.
+It is still not an OS sandbox; run cases you did not write in a disposable
+environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
 `--budget-usd` caps the invocation.
 
 Per run it writes a replay fixture (the usual `---SCORE_SUMMARY---` block plus

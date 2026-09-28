@@ -306,6 +306,39 @@ export function checkExpect(parsed, expect) {
 }
 
 /**
+ * The only shell commands a recorded run may execute: the repo scripts the
+ * oferta flow calls. Case text is untrusted (one golden case is a prompt
+ * injection on purpose), so the child gets no general shell; Claude Code's
+ * prefix rules do not extend to `cmd && other`.
+ */
+export const ALLOWED_BASH = [
+  'node reserve-report-num.mjs',
+  'node merge-tracker.mjs',
+  'node doctor.mjs',
+  'node update-system.mjs check',
+  'node verify-pipeline.mjs',
+  'node check-jd-archive.mjs',
+];
+
+/**
+ * The environment a recorded run inherits: what the claude CLI needs to start
+ * and reach the API (auth, proxy, CA bundle, locale), and nothing else — no
+ * unrelated tokens, and no CAREER_OPS_* overrides that would point the child's
+ * scripts at the operator's real data root instead of the sandbox.
+ *
+ * @param {Record<string, string>} env - Parent environment.
+ * @returns {Record<string, string>}
+ */
+export function childEnv(env) {
+  const keep = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|TMPDIR|TZ|LANG|LC_[A-Z_]+|XDG_[A-Z_]+|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SSL_CERT_DIR|HTTPS?_PROXY|NO_PROXY|https?_proxy|no_proxy|ANTHROPIC_[A-Z_]+|CLAUDE_[A-Z_]+)$/;
+  const out = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (keep.test(k) && k !== 'CLAUDE_CODE_SESSION_ID') out[k] = v;
+  }
+  return out;
+}
+
+/**
  * Read a positive dollar amount for a spend flag. An absent flag yields the
  * default; a present flag whose operand is missing, flag-like (`--x`) or not a
  * finite positive number throws — `--budget-usd NaN` must not disable the cap.
@@ -438,7 +471,7 @@ export function summarize(runs, reference = 'claude-opus-5') {
   return [
     lines.join('\n'),
     '',
-    `Total recorded spend: $${fmt(spent)} over ${all.length} runs.`,
+    `Total recorded spend: $${fmt(spent)} over ${all.length} runs${all.some((r) => !Number.isFinite(r.cost_usd)) ? ` (${all.filter((r) => !Number.isFinite(r.cost_usd)).length} reported no cost)` : ''}.`,
     '',
     '### Scores per case (rep 1 / rep 2 …)',
     '',
@@ -535,12 +568,11 @@ function runCase(tc, opts) {
       '--strict-mcp-config',
       '--setting-sources', 'project',
       '--permission-mode', 'acceptEdits',
-      '--allowedTools', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Skill',
+      '--allowedTools', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', ...ALLOWED_BASH.map((c) => `Bash(${c}:*)`),
       '--disallowedTools', 'WebSearch', 'WebFetch',
     ];
     if (opts.effort) cliArgs.push('--effort', opts.effort);
-    const env = { ...process.env };
-    delete env.CLAUDE_CODE_SESSION_ID;
+    const env = childEnv(process.env);
     const child = spawn('claude', cliArgs, { cwd: sandbox, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let errOut = '';
@@ -734,7 +766,9 @@ async function main() {
         console.log(`  ❌ ${tc.id}: ${r.error}`);
         continue;
       }
-      spent += r.cost_usd || 0;
+      // A run that reported no cost (crash, timeout, unparsable output) may
+      // still have spent up to its cap; budget it as if it had.
+      spent += Number.isFinite(r.cost_usd) ? r.cost_usd : opts.maxRunUsd;
       appendFileSync(RUNS_FILE, `${JSON.stringify(r)}\n`);
       if (r.score != null) writeFileSync(join(FIXTURE_DIR, `${tc.id}__${fixtureModel(runLabel(opts), rep)}.txt`), fixtureText(r));
       const status = r.error ? '❌' : (r.expect_failures.length ? '⚠️ ' : '✅');
