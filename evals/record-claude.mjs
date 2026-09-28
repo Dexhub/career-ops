@@ -94,6 +94,7 @@ if (flag('--help') || flag('-h')) {
   --max-run-usd <x>     Per-run cap passed to claude --max-budget-usd (default: 4)
   --budget-usd <x>      Stop scheduling once this much was spent (default: 20)
   --keep <dir>          Copy each run's report + raw CLI JSON into <dir>
+  --variant <name>      Tag an experiment (e.g. a prompt change): runs group as <model>+<name>
   --dry-run             Print the plan; spend nothing
   --summarize           Aggregate ${basename(RUNS_FILE)} into a per-model table ($0)
   --write               With --summarize, also write ${basename(BAKEOFF_FILE)}
@@ -211,6 +212,11 @@ export function checkExpect(parsed, expect) {
   return fails;
 }
 
+/** A run's display/grouping label: the model id, plus `+variant` for experiments. */
+export function runLabel(r) {
+  return r.variant ? `${r.model}+${r.variant}` : r.model;
+}
+
 /** Fixture model token for a repetition: rep 1 keeps the bare id. */
 export function fixtureModel(model, rep) {
   const base = model.replace(/[^A-Za-z0-9._-]+/g, '-');
@@ -243,10 +249,10 @@ const pct = (n, d) => (d ? `${Math.round((100 * n) / d)}%` : 'n/a');
  */
 export function summarize(runs, reference = 'claude-opus-5') {
   const latest = new Map();
-  for (const r of runs) latest.set(`${r.model}|${r.case}|${r.rep}`, r);
+  for (const r of runs) latest.set(`${runLabel(r)}|${r.case}|${r.rep}`, r);
   const all = [...latest.values()];
-  const models = [...new Set(all.map((r) => r.model))].sort();
-  const refScore = new Map(all.filter((r) => r.model === reference && r.rep === 1 && r.score != null)
+  const models = [...new Set(all.map(runLabel))].sort();
+  const refScore = new Map(all.filter((r) => runLabel(r) === reference && r.rep === 1 && r.score != null)
     .map((r) => [r.case, r.score]));
 
   const lines = [
@@ -254,7 +260,7 @@ export function summarize(runs, reference = 'claude-opus-5') {
     '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
   ];
   for (const m of models) {
-    const rs = all.filter((r) => r.model === m);
+    const rs = all.filter((r) => runLabel(r) === m);
     const scored = rs.filter((r) => r.score != null);
     const archHits = scored.filter((r) => r.archetype === r.label_archetype).length;
     const dLabel = scored.map((r) => Math.abs(r.score - r.label_score));
@@ -271,9 +277,9 @@ export function summarize(runs, reference = 'claude-opus-5') {
   }
 
   const failures = all.filter((r) => r.expect_failures?.length || r.error)
-    .map((r) => `- \`${r.model}\` r${r.rep} **${r.case}**: ${r.error ? `error — ${r.error}` : r.expect_failures.join('; ')}`);
+    .map((r) => `- \`${runLabel(r)}\` r${r.rep} **${r.case}**: ${r.error ? `error — ${r.error}` : r.expect_failures.join('; ')}`);
   const perCase = [...new Set(all.map((r) => r.case))].sort().map((c) => {
-    const cells = models.map((m) => all.filter((r) => r.model === m && r.case === c)
+    const cells = models.map((m) => all.filter((r) => runLabel(r) === m && r.case === c)
       .sort((a, b) => a.rep - b.rep).map((r) => (r.score ?? '✗')).join(' / ') || '—');
     const label = all.find((r) => r.case === c)?.label_score;
     return `| ${c} | ${label} | ${cells.join(' | ')} |`;
@@ -281,7 +287,7 @@ export function summarize(runs, reference = 'claude-opus-5') {
   const spent = all.reduce((a, r) => a + (Number.isFinite(r.cost_usd) ? r.cost_usd : 0), 0);
   const schemaLines = models.map((m) => {
     const counts = new Map();
-    for (const r of all.filter((x) => x.model === m)) {
+    for (const r of all.filter((x) => runLabel(x) === m)) {
       for (const issue of r.summary_issues || []) {
         const key = issue.replace(/ ".*" /, ' ').replace(/^\d+ /, 'N ');
         counts.set(key, (counts.get(key) || 0) + 1);
@@ -413,6 +419,7 @@ function runCase(tc, opts) {
       const record = {
         case: tc.id,
         model: opts.model,
+        variant: opts.variant || null,
         rep: opts.rep,
         profile: basename(opts.profileDir),
         effort: opts.effort || null,
@@ -438,7 +445,7 @@ function runCase(tc, opts) {
       record.expect_checked = Boolean(tc.expect && parsed);
       record.expect_failures = parsed ? checkExpect(parsed, tc.expect) : [];
       if (opts.keepDir) {
-        const dest = join(opts.keepDir, `${tc.id}__${fixtureModel(opts.model, opts.rep)}`);
+        const dest = join(opts.keepDir, `${tc.id}__${fixtureModel(runLabel(opts), opts.rep)}`);
         mkdirSync(dest, { recursive: true });
         if (reportPath) cpSync(reportPath, join(dest, 'report.md'));
         writeFileSync(join(dest, 'cli.json'), out);
@@ -452,7 +459,7 @@ function runCase(tc, opts) {
 /** Render a record as an eval-golden.mjs replay fixture. */
 export function fixtureText(r) {
   return [
-    `# Recorded by evals/record-claude.mjs on ${r.recorded_at.slice(0, 10)} — model ${r.model}, rep ${r.rep}, profile ${r.profile}.`,
+    `# Recorded by evals/record-claude.mjs on ${r.recorded_at.slice(0, 10)} — model ${runLabel(r)}, rep ${r.rep}, profile ${r.profile}.`,
     `# Report: ${r.report_file}. Only the block below is parsed by eval-golden.mjs.`,
     '---SCORE_SUMMARY---',
     `SCORE: ${r.score}`,
@@ -516,14 +523,15 @@ async function main() {
     maxRunUsd: parseFloat(value('--max-run-usd', '4')),
     timeoutMs: 20 * 60 * 1000,
     keepDir: value('--keep'),
+    variant: value('--variant'),
   };
   const budget = parseFloat(value('--budget-usd', '20'));
   const parallel = Math.max(1, parseInt(value('--parallel', '2'), 10) || 1);
 
-  console.log(`record-claude — ${model} rep ${rep}, ${cases.length} case(s), profile ${basename(profileDir)}, `
+  console.log(`record-claude — ${runLabel(opts)} rep ${rep}, ${cases.length} case(s), profile ${basename(profileDir)}, `
     + `parallel ${parallel}, ≤$${opts.maxRunUsd}/run, stop at $${budget}`);
   if (flag('--dry-run')) {
-    for (const c of cases) console.log(`  would run ${c.id} → evals/fixtures/${c.id}__${fixtureModel(model, rep)}.txt`);
+    for (const c of cases) console.log(`  would run ${c.id} → evals/fixtures/${c.id}__${fixtureModel(runLabel(opts), rep)}.txt`);
     return;
   }
 
@@ -541,7 +549,7 @@ async function main() {
       }
       spent += r.cost_usd || 0;
       appendFileSync(RUNS_FILE, `${JSON.stringify(r)}\n`);
-      if (r.score != null) writeFileSync(join(FIXTURE_DIR, `${tc.id}__${fixtureModel(model, rep)}.txt`), fixtureText(r));
+      if (r.score != null) writeFileSync(join(FIXTURE_DIR, `${tc.id}__${fixtureModel(runLabel(opts), rep)}.txt`), fixtureText(r));
       const status = r.error ? '❌' : (r.expect_failures.length ? '⚠️ ' : '✅');
       console.log(`  ${status} ${tc.id}: score ${r.score} (label ${tc.label.score}), ${r.archetype}, `
         + `legit ${r.legitimacy}, $${fmt(r.cost_usd)} ${r.turns} turns ${r.duration_s}s`
