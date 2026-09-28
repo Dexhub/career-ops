@@ -87,16 +87,20 @@ phantom subdirectory.
 ## Running
 
 ```bash
-npm run eval:golden -- --replay --model cheap-stub   # offline, deterministic, $0
-npm run eval:golden -- --live   --model gpt-4o-mini  # real call via openai-eval.mjs (needs key + cv.md)
+npm run eval:golden -- --replay --model claude-opus-5-5              # offline, deterministic, $0
+npm run eval:golden -- --replay --model cheap-stub --allow-missing   # the stub covers the 10 v1 cases only
+npm run eval:golden -- --live   --model gpt-4o-mini                  # real call via openai-eval.mjs (needs key + cv.md)
 ```
 
 Replay is the CI-friendly path: no API keys, no `cv.md`, fully deterministic.
 The harness reports per-case archetype/score agreement, mean |Δscore|, median
-latency (live only), and a placeholder $/run, then exits `0/1` on the archetype
-agreement gate. In replay, a case with no fixture for the requested model is
-listed as *not recorded* and left out of the denominator (a missing recording
-says nothing about the model); a model with nothing recorded fails.
+latency (live only), and a placeholder $/run, then exits `0/1` on the gate:
+archetype agreement at or above the threshold, **and** no recorded `expect`
+check failed (v2 fixtures carry them — an unflagged prompt injection fails the
+gate however well the archetypes agree), **and** every case graded. A case with
+no fixture for the requested model is listed as *not recorded* and left out of
+the agreement denominator, but it fails the gate unless `--allow-missing` asks
+for the recorded subset — so a plain pass always covers the whole set.
 
 ## Recording real Claude Code runs (v2)
 
@@ -108,7 +112,8 @@ node evals/record-claude.mjs --model claude-sonnet-5 --dry-run          # plan o
 node evals/record-claude.mjs --model claude-sonnet-5 --budget-usd 15    # live, spends real money
 node evals/record-claude.mjs --model claude-sonnet-5 --rep 2            # second pass → <case>__claude-sonnet-5-r2.txt
 node evals/record-claude.mjs --summarize --write                        # $0: results/claude-bakeoff.md
-npm run eval:golden -- --replay --model claude-sonnet-5                 # $0 replay of what was recorded
+npm run eval:golden -- --replay --model claude-opus-5-5                 # $0 replay of what was recorded
+node evals/record-claude.mjs --probe-sandbox                            # ≈$0.10: prove the sandbox holds on this CLI
 ```
 
 Each run gets its own sandbox: a copy of the tracked system layer **without
@@ -124,9 +129,18 @@ directory — and may write only inside its sandbox, never to a script, module,
 `package.json`, `.env` or `.career-ops-data` it could then run or be redirected
 by (`permissionArgs`). Its environment is minimal: what `claude` needs to start
 and reach the API, without unrelated tokens or `CAREER_OPS_*` data-root
-overrides. Each run records the tool calls the sandbox refused
-(`permission_denials`). It is still not an OS sandbox; run cases you did not
-write in a disposable environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
+overrides. Dependencies are copied in, not linked to the host's. Each run
+records the tool calls the sandbox refused (`permission_denials`).
+
+Those rules are only as good as the CLI that enforces them, so
+`--probe-sandbox` checks them live on the installed version: a model is asked
+to try each escape once (write or read outside the sandbox, overwrite a script
+it may run, plant a module, `.env` or `.career-ops-data`, aim `doctor.mjs` at
+another directory) next to one write the flow needs, and every step is judged
+from the transcript and the disk, not the model's account. It exits 1 unless
+every escape was attempted and refused and the needed write worked. Run it
+after a CLI upgrade. It is still not an OS sandbox; run cases you did not write
+in a disposable environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
 `--budget-usd` caps the invocation.
 
 Per run it writes a replay fixture (the usual `---SCORE_SUMMARY---` block plus
