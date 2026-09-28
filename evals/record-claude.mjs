@@ -450,7 +450,7 @@ function runCase(tc, opts) {
 }
 
 /** Render a record as an eval-golden.mjs replay fixture. */
-function fixtureText(r) {
+export function fixtureText(r) {
   return [
     `# Recorded by evals/record-claude.mjs on ${r.recorded_at.slice(0, 10)} — model ${r.model}, rep ${r.rep}, profile ${r.profile}.`,
     `# Report: ${r.report_file}. Only the block below is parsed by eval-golden.mjs.`,
