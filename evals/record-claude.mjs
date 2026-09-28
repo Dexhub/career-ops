@@ -321,6 +321,42 @@ export const ALLOWED_BASH = [
 ];
 
 /**
+ * Files a recorded run may not write even inside its sandbox: anything the
+ * allowed scripts execute or resolve modules from, and the files that would
+ * point them at another directory. Otherwise a case could have the child edit
+ * merge-tracker.mjs and then run it. Claude Code applies Edit rules to every
+ * file-writing tool.
+ */
+export const DENY_EDIT = [
+  '**/*.mjs', '**/*.js', '**/*.cjs', '**/package.json', '**/node_modules/**',
+  '**/.env*', '**/.career-ops-data', '.claude/**',
+];
+
+/** Script arguments that reach outside the sandbox (another checkout, tracker or reports dir). */
+export const DENY_BASH = [
+  'node doctor.mjs *--target*',
+  'node check-jd-archive.mjs *--tracker*',
+  'node check-jd-archive.mjs *--reports-dir*',
+  'node check-jd-archive.mjs *--jds-dir*',
+];
+
+/**
+ * Permission flags for a recorded run. acceptEdits lets the child write inside
+ * its sandbox and nowhere else; there is deliberately no bare Read/Write/Edit
+ * grant, which would also approve paths outside it.
+ *
+ * @returns {string[]}
+ */
+export function permissionArgs() {
+  return [
+    '--permission-mode', 'acceptEdits',
+    '--allowedTools', 'Skill', ...ALLOWED_BASH.map((c) => `Bash(${c}:*)`),
+    '--disallowedTools', 'WebSearch', 'WebFetch',
+    ...DENY_EDIT.map((p) => `Edit(${p})`), ...DENY_BASH.map((c) => `Bash(${c})`),
+  ];
+}
+
+/**
  * The environment a recorded run inherits: what the claude CLI needs to start
  * and reach the API (auth, proxy, CA bundle, locale), and nothing else — no
  * unrelated tokens, and no CAREER_OPS_* overrides that would point the child's
@@ -513,7 +549,7 @@ function buildSandbox(profileDir) {
   }
   if (existsSync(join(ROOT, 'node_modules'))) symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
 
-  cpSync(join(profileDir, 'cv.md'), join(dir, 'cv.md'));
+  cpSync(join(profileDir, 'cv.fixture.md'), join(dir, 'cv.md'));
   mkdirSync(join(dir, 'config'), { recursive: true });
   cpSync(join(profileDir, 'profile.yml'), join(dir, 'config', 'profile.yml'));
   const customProfile = join(profileDir, '_profile.md');
@@ -567,9 +603,7 @@ function runCase(tc, opts) {
       '--no-session-persistence',
       '--strict-mcp-config',
       '--setting-sources', 'project',
-      '--permission-mode', 'acceptEdits',
-      '--allowedTools', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Skill', ...ALLOWED_BASH.map((c) => `Bash(${c}:*)`),
-      '--disallowedTools', 'WebSearch', 'WebFetch',
+      ...permissionArgs(),
     ];
     if (opts.effort) cliArgs.push('--effort', opts.effort);
     const env = childEnv(process.env);
@@ -617,6 +651,8 @@ function runCase(tc, opts) {
           output: cli.usage.output_tokens,
         } : null,
         stop: cli?.subtype || cli?.terminal_reason || null,
+        // Tool calls the sandbox refused, legitimate or not.
+        permission_denials: cli ? (cli.permission_denials || []).map((d) => d.tool_name) : null,
         error: !cli ? `claude exited ${code}: ${(errOut || out).slice(0, 300)}`
           : (cli.is_error ? `cli error: ${String(cli.result || cli.subtype).slice(0, 300)}` : (reportPath ? null : 'no report written')),
       };
@@ -720,8 +756,8 @@ async function main() {
   }
   const rep = Math.max(1, parseInt(value('--rep', '1'), 10) || 1);
   const profileDir = join(EVALS, 'profiles', value('--profile', 'ai-engineer'));
-  if (!existsSync(join(profileDir, 'cv.md')) || !existsSync(join(profileDir, 'profile.yml'))) {
-    console.error(`❌  pinned profile needs cv.md + profile.yml: ${profileDir}`);
+  if (!existsSync(join(profileDir, 'cv.fixture.md')) || !existsSync(join(profileDir, 'profile.yml'))) {
+    console.error(`❌  pinned profile needs cv.fixture.md + profile.yml: ${profileDir}`);
     process.exit(1);
   }
   const only = value('--cases') ? new Set(value('--cases').split(',').map((s) => s.trim())) : null;

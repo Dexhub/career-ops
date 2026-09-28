@@ -52,7 +52,7 @@ harness.
 evals/
   golden/            labeled cases — one JSON per case (synthetic JDs, no user data)
   fixtures/          recorded candidate outputs for $0 deterministic replay in CI
-  profiles/          pinned synthetic user layers (cv.md + profile.yml) for v2 cases
+  profiles/          pinned synthetic user layers (cv.fixture.md + profile.yml) for v2 cases
   results/           claude-runs.jsonl (raw per-run metrics) + bake-off write-ups
   record-claude.mjs  records real Claude Code runs into fixtures/ and results/
   README.md          this file
@@ -113,16 +113,20 @@ npm run eval:golden -- --replay --model claude-sonnet-5                 # $0 rep
 
 Each run gets its own sandbox: a copy of the tracked system layer **without
 `evals/`** (the model under test can never read the labels), the pinned
-synthetic user layer from `evals/profiles/<profile>/` (`cv.md`, `profile.yml`;
-`modes/_profile.md` defaults to the shipped template, exactly what a new user
-gets), and no web tools — the companies are fictional and research would make
-runs irreproducible, so Block D/G research degrades the same way for every
-model. Case text is untrusted (one case is a prompt injection on purpose), so
-the child gets no general shell — only the repo scripts the flow calls
-(`ALLOWED_BASH`) — and a minimal environment: what `claude` needs to start and
-reach the API, without unrelated tokens or `CAREER_OPS_*` data-root overrides.
-It is still not an OS sandbox; run cases you did not write in a disposable
-environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
+synthetic user layer from `evals/profiles/<profile>/` (`cv.fixture.md`, copied
+in as `cv.md`, and `profile.yml`; `modes/_profile.md` defaults to the shipped
+template, exactly what a new user gets), and no web tools — the companies are
+fictional and research would make runs irreproducible, so Block D/G research
+degrades the same way for every model. Case text is untrusted (one case is a
+prompt injection on purpose), so the child gets no general shell — only the
+repo scripts the flow calls (`ALLOWED_BASH`), minus arguments that reach another
+directory — and may write only inside its sandbox, never to a script, module,
+`package.json`, `.env` or `.career-ops-data` it could then run or be redirected
+by (`permissionArgs`). Its environment is minimal: what `claude` needs to start
+and reach the API, without unrelated tokens or `CAREER_OPS_*` data-root
+overrides. Each run records the tool calls the sandbox refused
+(`permission_denials`). It is still not an OS sandbox; run cases you did not
+write in a disposable environment. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
 `--budget-usd` caps the invocation.
 
 Per run it writes a replay fixture (the usual `---SCORE_SUMMARY---` block plus

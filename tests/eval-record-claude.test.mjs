@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { pass, fail } from './helpers.mjs';
 import {
   canonicalArchetype, parseReport, checkExpect, fixtureModel, summarize, validateMachineSummary, flagsInjection,
-  usdFlag, canStartRun, childEnv, ALLOWED_BASH, publishesFixture, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
+  usdFlag, canStartRun, childEnv, ALLOWED_BASH, permissionArgs, publishesFixture, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
 } from '../evals/record-claude.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -125,6 +125,12 @@ try {
   'child env drops unrelated secrets, CAREER_OPS_* data-root overrides and the parent session id');
   check(ALLOWED_BASH.length > 0 && ALLOWED_BASH.every((c) => /^node [\w.-]+\.mjs( check)?$/.test(c)),
     'the child may only run named repo scripts, never a general shell', ALLOWED_BASH.join(', '));
+  const perm = permissionArgs();
+  check(!perm.some((a) => /^(Read|Write|Edit|Glob|Grep)$/.test(a)),
+    'no bare file-tool grant, so paths outside the sandbox stay unapproved', perm.join(' '));
+  check(perm.includes('Edit(**/*.mjs)') && perm.includes('Edit(**/node_modules/**)') && perm.includes('Edit(**/.career-ops-data)')
+    && perm.includes('Bash(node doctor.mjs *--target*)'),
+  'the child cannot edit a script it may run, its modules or data-root marker, nor aim doctor at another checkout');
 
   // 2e. Spend flags and parallel budget admission.
   const throws = (fn) => { try { fn(); return false; } catch { return true; } };
@@ -172,8 +178,8 @@ try {
   const badExpect = cases.filter((c) => c.expect && Object.keys(c.expect).some((k) => !allowedExpect.has(k))).map((c) => c.id);
   check(badExpect.length === 0, 'every golden `expect` key is one checkExpect understands', badExpect.join(', '));
   const profiles = [...new Set(cases.map((c) => c.profile).filter(Boolean))];
-  const missingProfiles = profiles.filter((p2) => !existsSync(join(ROOT, 'evals', 'profiles', p2, 'cv.md')) || !existsSync(join(ROOT, 'evals', 'profiles', p2, 'profile.yml')));
-  check(missingProfiles.length === 0, 'every golden `profile` has a pinned cv.md + profile.yml', missingProfiles.join(', '));
+  const missingProfiles = profiles.filter((p2) => !existsSync(join(ROOT, 'evals', 'profiles', p2, 'cv.fixture.md')) || !existsSync(join(ROOT, 'evals', 'profiles', p2, 'profile.yml')));
+  check(missingProfiles.length === 0, 'every golden `profile` has a pinned cv.fixture.md + profile.yml', missingProfiles.join(', '));
 } catch (e) {
   fail(`record-claude helper tests crashed: ${e.stack || e.message}`);
 }
