@@ -10,6 +10,6 @@ WORK_AUTH: not_needed
 COST_USD: 0.27586840000000007
 TURNS: 19
 CONTRACT: machine_summary=true jd_archive=true tracker=true
-SCHEMA_ISSUES: none
+SCHEMA_ISSUES: extra key soft_strengths
 EXPECT_FAILURES: none
 ---END_SUMMARY---

@@ -10,6 +10,6 @@ WORK_AUTH: not_needed
 COST_USD: 0.22984
 TURNS: 14
 CONTRACT: machine_summary=true jd_archive=true tracker=true
-SCHEMA_ISSUES: missing company; missing role; missing legitimacy_tier; missing archetype; missing final_decision; missing requirement_importance
+SCHEMA_ISSUES: extra key global_verdict; extra key requirements_match; missing company; missing role; missing legitimacy_tier; missing archetype; missing final_decision; missing hard_stops; missing soft_gaps; missing top_strengths; missing risk_level; missing confidence; missing next_action; missing discard_reasons; missing via; missing company_confidential; missing reports_to; missing requirement_importance; extra key risk_summary.posting_legitimacy; extra key risk_summary.employment_classification; extra key risk_summary.culture_screen; extra key risk_summary.interview_red_flags; extra key risk_summary.ai_claims_vs_infrastructure; missing risk_summary.legitimacy; missing risk_summary.classification; missing risk_summary.culture; missing risk_summary.interview_redflags; missing risk_summary.ai_infra; missing risk_summary.ai_screening_disclosure
 EXPECT_FAILURES: none
 ---END_SUMMARY---

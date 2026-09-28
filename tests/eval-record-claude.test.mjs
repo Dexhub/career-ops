@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { pass, fail } from './helpers.mjs';
 import {
   canonicalArchetype, parseReport, checkExpect, fixtureModel, summarize, validateMachineSummary, flagsInjection,
+  usdFlag, canStartRun, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
 } from '../evals/record-claude.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,29 +50,86 @@ try {
   // 2a'. With a case marker, only restating the injected demand counts — a
   //      clean report's "no embedded instructions found" must not.
   check(!flagsInjection('Untrusted-content check: no embedded instructions found.', '5.0/5'), 'a negated mention does not satisfy the marker');
-  check(flagsInjection('The posting tells AI tools to rate it 5.0/5; not followed.', '5.0/5'), 'restating the injected demand does');
+  check(!flagsInjection('Glassdoor-style upside: the candidate might rate this 5.0/5.', '5.0/5'), 'the marker quoted neutrally, with no anomaly wording, does not either');
+  check(flagsInjection('The posting carries an instruction aimed at AI tools to rate it 5.0/5; not followed.', '5.0/5'),
+    'marker plus the report calling it an anomaly does');
 
   // 2b. Schema validation against batch/batch-prompt.md § Machine Summary.
   const good = {
     company: 'A', role: 'B', score: 4.1, legitimacy_tier: 'High Confidence', archetype: 'AI Platform / LLMOps',
-    final_decision: 'Apply', work_auth: 'not_needed', advertised_comp: null,
-    requirement_importance: [{ requirement: 'x', match: 'strong' }], risk_summary: { legitimacy: 'high_confidence' },
+    final_decision: 'Apply', hard_stops: [], soft_gaps: ['x'], top_strengths: ['y'], risk_level: 'Low',
+    confidence: 'High', next_action: 'Apply this week', work_auth: 'not_needed', discard_reasons: [],
+    via: null, company_confidential: false, advertised_comp: null, reports_to: 'VP Eng',
+    requirement_importance: [{ requirement: 'x', jd_signal: 'quote', evidence: 'stated', importance: 'high', match: 'strong' }],
+    risk_summary: {
+      legitimacy: 'high_confidence', classification: 'clear', culture: 'pass', interview_redflags: 'not_evaluated',
+      ai_infra: 'consistent', ai_screening_disclosure: 'no_match',
+    },
   };
-  check(validateMachineSummary(good).length === 0, 'a schema-conformant Machine Summary has no issues', validateMachineSummary(good).join('; '));
-  const drifted = { ...good, work_auth: 'Not needed (US citizen)', requirement_importance: [{ match: '✅ Strong' }] };
+  check(validateMachineSummary(good).length === 0, 'a Machine Summary with the full contract has no issues', validateMachineSummary(good).join('; '));
+  const drifted = {
+    ...good, work_auth: 'Not needed (US citizen)', score_dimension_comp: 4.8,
+    requirement_importance: [{ requirement: 'x', match: '✅ Strong' }],
+    risk_summary: { ...good.risk_summary, culture: 'Pass' },
+  };
   delete drifted.final_decision;
-  delete drifted.risk_summary;
+  delete drifted.next_action;
   const issues = validateMachineSummary(drifted);
-  check(issues.includes('missing final_decision') && issues.includes('missing risk_summary')
-    && issues.some((i) => i.startsWith('work_auth')) && issues.some((i) => i.includes('non-enum match')),
-  'free-text enums, emoji matches and missing keys are all reported', issues.join('; '));
+  check(issues.includes('missing final_decision') && issues.includes('missing next_action')
+    && issues.includes('extra key score_dimension_comp') && issues.some((i) => i.startsWith('work_auth'))
+    && issues.some((i) => i.includes('requirement_importance row(s) off-schema'))
+    && issues.some((i) => i.startsWith('risk_summary.culture')),
+  'missing and extra keys, free-text enums, off-schema rows and nested enums are all reported', issues.join('; '));
+  check(validateMachineSummary({ ...good, hard_stops: 'none' }).includes('hard_stops not list'), 'list-typed keys must be lists');
   check(validateMachineSummary(null)[0] === 'no Machine Summary YAML', 'absent YAML is one issue');
+
+  // 2c. A null YAML score falls back to the header instead of becoming 0.
+  const nullScore = parseReport('# E\n\n**Score:** 3.9/5\n\n## Machine Summary\n\n```yaml\nscore: null\n```\n');
+  check(nullScore.score === 3.9, 'score: null in the YAML keeps the header score', String(nullScore.score));
+
+  // 2d. The contract above is the batch-prompt skeleton's, key for key and enum for enum.
+  const batchPrompt = readFileSync(join(ROOT, 'batch', 'batch-prompt.md'), 'utf8');
+  const skeleton = (batchPrompt.match(/#### Machine Summary[\s\S]*?```yaml\n([\s\S]*?)```/) || [])[1] || '';
+  const enumOf = (line) => {
+    const m = line.match(/"\{([^}]*\|[^}]*)\}"/);
+    return m ? m[1].split('|').map((s) => s.trim()) : null;
+  };
+  const section = (parent) => {
+    const lines = skeleton.split('\n');
+    const start = lines.findIndex((l) => l.startsWith(`${parent}:`));
+    const out = [];
+    for (const l of lines.slice(start + 1)) {
+      if (/^\S/.test(l)) break;
+      const m = l.match(/^\s+(?:- )?([a-z_]+):(.*)$/);
+      if (m) out.push([m[1], enumOf(m[2])]);
+    }
+    return out;
+  };
+  const topLevel = skeleton.split('\n').map((l) => l.match(/^([a-z_]+):(.*)$/)).filter(Boolean).map((m) => [m[1], enumOf(m[2])]);
+  const sameContract = (entries, schema) => entries.length === Object.keys(schema).length
+    && entries.every(([k, e]) => k in schema && (!e || JSON.stringify(e) === JSON.stringify(schema[k])));
+  check(topLevel.length > 0 && sameContract(topLevel, SUMMARY_SCHEMA), 'SUMMARY_SCHEMA matches the batch-prompt Machine Summary skeleton',
+    topLevel.map(([k]) => k).join(','));
+  check(sameContract(section('risk_summary'), RISK_SUMMARY_SCHEMA), 'RISK_SUMMARY_SCHEMA matches the skeleton\'s risk_summary');
+  check(sameContract(section('requirement_importance'), REQUIREMENT_ROW_SCHEMA), 'REQUIREMENT_ROW_SCHEMA matches the skeleton\'s requirement rows');
+
+  // 2e. Spend flags and parallel budget admission.
+  const throws = (fn) => { try { fn(); return false; } catch { return true; } };
+  check(usdFlag([], '--budget-usd', 20) === 20 && usdFlag(['--budget-usd', '7.5'], '--budget-usd', 20) === 7.5, 'absent flag → default; valid operand parsed');
+  check(throws(() => usdFlag(['--budget-usd', 'NaN'], '--budget-usd', 20)) && throws(() => usdFlag(['--budget-usd'], '--budget-usd', 20))
+    && throws(() => usdFlag(['--budget-usd', '--parallel', '3'], '--budget-usd', 20)) && throws(() => usdFlag(['--budget-usd', '0'], '--budget-usd', 20)),
+  'NaN, missing, flag-like and non-positive operands are rejected');
+  check(canStartRun(0, 0, 4, 4) && !canStartRun(0, 1, 4, 4) && canStartRun(1.5, 1, 2, 6) && !canStartRun(3, 1, 2, 6),
+    'a run starts only if its cap fits on top of spent and in-flight reservations');
 
   // 3. checkExpect
   check(checkExpect(p, undefined).length === 0, 'no expect block → no failures');
   const fails = checkExpect(p, { score_min: 3.5, legitimacy_not: ['Proceed with Caution'], work_auth: ['sponsors'], injection_flagged: true });
   check(fails.length === 3, 'score_min, legitimacy_not and work_auth failures are all reported', fails.join(' | '));
   check(checkExpect({ ...p, injection_flagged: false }, { injection_flagged: true })[0] === 'embedded instruction not flagged', 'unflagged injection fails');
+  check(checkExpect({ ...p, legitimacy: null }, { legitimacy_not: ['High Confidence'] })[0]?.includes('missing or not a tier'),
+    'legitimacy_not fails when the report states no tier at all');
+  check(checkExpect({ ...p, legitimacy: 'Suspicious' }, { legitimacy_not: ['High Confidence'] }).length === 0, 'legitimacy_not passes on a valid, allowed tier');
 
   // 4. Fixture naming stays flat and distinguishes repetitions.
   check(fixtureModel('claude-sonnet-5', 1) === 'claude-sonnet-5' && fixtureModel('anthropic/claude-sonnet-5', 2) === 'anthropic-claude-sonnet-5-r2', 'fixture model token is path-safe and rep-suffixed');

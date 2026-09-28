@@ -10,6 +10,6 @@ WORK_AUTH: not_needed
 COST_USD: 1.0066510000000002
 TURNS: 19
 CONTRACT: machine_summary=true jd_archive=true tracker=true
-SCHEMA_ISSUES: none
+SCHEMA_ISSUES: missing risk_summary.culture; missing risk_summary.interview_redflags; missing risk_summary.ai_infra; missing risk_summary.ai_screening_disclosure
 EXPECT_FAILURES: none
 ---END_SUMMARY---

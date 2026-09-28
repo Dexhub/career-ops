@@ -10,6 +10,6 @@ WORK_AUTH: ✅ Not needed (US citizen, role in US)
 COST_USD: 0.2288967
 TURNS: 13
 CONTRACT: machine_summary=true jd_archive=true tracker=true
-SCHEMA_ISSUES: missing company; missing role; missing legitimacy_tier; missing final_decision; missing requirement_importance; missing risk_summary; work_auth "✅ Not needed (US citizen, role in US)" not in enum
+SCHEMA_ISSUES: extra key seniority; extra key remote; extra key compensation_reliability; extra key cultural_fit; extra key flags; missing company; missing role; missing legitimacy_tier; missing final_decision; missing soft_gaps; missing top_strengths; missing risk_level; missing confidence; missing next_action; work_auth "✅ Not needed (US citizen, role in US)" not in enum; missing discard_reasons; missing via; missing company_confidential; missing reports_to; missing requirement_importance; missing risk_summary
 EXPECT_FAILURES: none
 ---END_SUMMARY---

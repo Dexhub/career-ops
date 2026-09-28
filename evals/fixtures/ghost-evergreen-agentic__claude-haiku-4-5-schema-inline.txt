@@ -10,6 +10,6 @@ WORK_AUTH: not_needed
 COST_USD: 0.1947004
 TURNS: 11
 CONTRACT: machine_summary=true jd_archive=true tracker=false
-SCHEMA_ISSUES: none
+SCHEMA_ISSUES: missing risk_level; missing confidence; missing next_action; missing discard_reasons; 2 requirement_importance row(s) off-schema (e.g. importance "meaningful (stated)" not in enum)
 EXPECT_FAILURES: none
 ---END_SUMMARY---

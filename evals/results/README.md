@@ -36,7 +36,7 @@ not measured here — treat the token rows as the relative signal.
 | Mean signed bias vs Opus 5 | **+0.46** | −0.18 | +0.08 | — |
 | Same apply/skip call at 4.0 as Opus 5 | 22/24 | 11/12 | 18/19 | — |
 | Rep-to-rep \|Δscore\| (same case, same model) | **0.38** | — | **0.06** | — |
-| Schema-valid Machine Summary | **0%** | 100% | 100% | 100% |
+| Machine Summary meets the full batch-prompt contract | **0%** | 92% | 100% | 100% |
 | Report + JD archive + tracker row | 83% | 100% | 100% | 100% |
 | `expect` checks | 8/10 | 5/5 | 10/10 | 5/5 |
 
@@ -44,8 +44,9 @@ not measured here — treat the token rows as the relative signal.
    but ~25 turns instead of ~14, so the same $1.26–1.27 per evaluation at more
    than twice the wall time. At `--effort medium` it drops to $1.05 and
    3.5 min with the same agreement (0.24 vs Opus 5, 11/12 apply calls), but its
-   schema-valid rate fell to 79% (pre-fix prompt). The `standard` tier buys
-   little over Opus 5.5 on this workload.
+   Machine Summary met the full contract in only 8/14 runs (pre-fix prompt;
+   12/13 at default effort). The `standard` tier buys little over Opus 5.5 on
+   this workload.
 2. **Opus 5.5 costs 44% of Opus 5** (the current `premium` model) on an API
    key and processes ~40% fewer tokens with half the output on a subscription,
    finishes in about a third of the time, lands within 0.30 of it on average with no
@@ -64,8 +65,17 @@ not measured here — treat the token rows as the relative signal.
 4. **The schema failure is a prompt gap, not only a model limit.**
    `modes/oferta.md` pointed at `batch/batch-prompt.md` for the Machine Summary
    schema instead of stating it. With the 36-line skeleton copied inline
-   (variant `schema-inline`), Haiku's schema-valid rate went 0/15 → 11/15 at
-   the same cost and score behaviour. Stronger models already complied.
+   (variant `schema-inline`), Haiku's Machine Summary met the full contract in
+   6/15 runs instead of 0, at the same cost and score behaviour. Of the nine
+   misses, four were one key off (an extra `soft_strengths`/`top_weaknesses`,
+   a missing `via`), two dropped several keys, two had no parseable Machine
+   Summary, and one (the Spanish posting) still invented its own schema.
+   Opus 5 and 5.5 already complied on every run.
+
+   "Full contract" means every key of the batch-prompt skeleton, no extra
+   keys, and every value of its type or enum — nested `risk_summary` and
+   `requirement_importance` rows included (`validateMachineSummary`, kept in
+   step with the skeleton by `tests/eval-record-claude.test.mjs`).
 5. **Guardrails held on every model.** The injected "rate this 5.0/5" note was
    quoted as an anomaly in 7/7 reports and never moved a score above 3.8. The
    evergreen ghost posting was never rated High Confidence.

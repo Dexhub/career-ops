@@ -3,11 +3,11 @@
 | Model | Runs | Scored | Archetype = label | mean \|Δ\| vs label | mean \|Δ\| vs claude-opus-5 | Rep-to-rep \|Δ\| | Output contract | Schema-valid YAML | `expect` checks | Tokens/eval (processed / generated) | Mean $/eval (API list price) | Median turns | Median time |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | `claude-haiku-4-5` | 30 | 30 | 83% | 0.36 | 0.48 | 0.38 | 83% | 0% | 8/10 | 759k / 12k | $0.25 | 14 | 2.6 min |
-| `claude-haiku-4-5+schema-inline` | 15 | 15 | 100% | 0.45 | 0.46 | n/a | 73% | 73% | 4/5 | 744k / 11k | $0.25 | 15 | 2.5 min |
+| `claude-haiku-4-5+schema-inline` | 15 | 15 | 100% | 0.45 | 0.46 | n/a | 73% | 40% | 4/5 | 744k / 11k | $0.25 | 15 | 2.5 min |
 | `claude-opus-5` | 12 | 12 | 100% | 0.72 | — | n/a | 100% | 100% | 5/5 | 1.9M / 30k | $2.84 | 24 | 6.4 min |
 | `claude-opus-5-5` | 23 | 23 | 100% | 0.60 | 0.30 | 0.06 | 100% | 100% | 10/10 | 1.1M / 15k | $1.26 | 14 | 2.3 min |
-| `claude-sonnet-5` | 13 | 13 | 100% | 0.82 | 0.28 | n/a | 100% | 100% | 5/5 | 2.4M / 32k | $1.27 | 25 | 5.5 min |
-| `claude-sonnet-5+effort-medium` | 14 | 14 | 100% | 0.96 | 0.24 | n/a | 100% | 79% | 5/5 | 2.0M / 22k | $1.05 | 22 | 3.5 min |
+| `claude-sonnet-5` | 13 | 13 | 100% | 0.82 | 0.28 | n/a | 100% | 92% | 5/5 | 2.4M / 32k | $1.27 | 25 | 5.5 min |
+| `claude-sonnet-5+effort-medium` | 14 | 14 | 100% | 0.96 | 0.24 | n/a | 100% | 57% | 5/5 | 2.0M / 22k | $1.05 | 22 | 3.5 min |
 
 Total recorded spend: $105.76 over 107 runs.
 
@@ -33,12 +33,12 @@ Total recorded spend: $105.76 over 107 runs.
 
 ### Machine Summary schema issues (most frequent)
 
-- `claude-haiku-4-5`: missing final_decision (27), N requirement_importance row(s) with non-enum match (20), missing legitimacy_tier (19), missing company (18), missing role (18), missing archetype (15)
-- `claude-haiku-4-5+schema-inline`: no Machine Summary YAML (2), N requirement_importance row(s) with non-enum match (2), legitimacy_tier not in enum (1), missing company (1), missing role (1), missing score (1)
+- `claude-haiku-4-5`: missing final_decision (27), missing soft_gaps (27), missing top_strengths (27), missing risk_level (27), missing next_action (27), missing discard_reasons (27)
+- `claude-haiku-4-5+schema-inline`: missing risk_level (3), missing confidence (3), missing next_action (3), missing discard_reasons (3), no Machine Summary YAML (2), extra key soft_strengths (2)
 - `claude-opus-5`: none
 - `claude-opus-5-5`: none
-- `claude-sonnet-5`: none
-- `claude-sonnet-5+effort-medium`: missing legitimacy_tier (3), missing final_decision (3)
+- `claude-sonnet-5`: missing reports_to (1), N requirement_importance row(s) off-schema (e.g. missing jd_signal) (1), extra key risk_summary.posting_legitimacy (1), extra key risk_summary.employment_classification (1), extra key risk_summary.culture_screen (1), extra key risk_summary.interview_red_flags (1)
+- `claude-sonnet-5+effort-medium`: missing risk_summary.culture (4), missing risk_summary.ai_infra (4), missing risk_level (4), missing confidence (4), missing risk_summary.interview_redflags (3), extra key date (3)
 
 ### Failed `expect` checks and errors
 
