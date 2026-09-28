@@ -1,0 +1,15 @@
+# Recorded by evals/record-claude.mjs on 2026-09-28 — model claude-haiku-4-5, rep 2, profile ai-engineer.
+# Report: 001-calderon-industries-2026-09-28.md. Only the block below is parsed by eval-golden.mjs.
+---SCORE_SUMMARY---
+SCORE: 2
+ARCHETYPE: AI Transformation
+ARCHETYPE_RAW: AI Transformation Lead
+LEGITIMACY: Proceed with Caution
+DECISION: null
+WORK_AUTH: null
+COST_USD: 0.23551335
+TURNS: 11
+CONTRACT: machine_summary=true jd_archive=true tracker=true
+SCHEMA_ISSUES: missing company; missing role; missing archetype; missing final_decision; missing work_auth
+EXPECT_FAILURES: none
+---END_SUMMARY---

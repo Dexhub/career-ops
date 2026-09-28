@@ -1,0 +1,15 @@
+# Recorded by evals/record-claude.mjs on 2026-09-28 — model claude-haiku-4-5+schema-inline, rep 1, profile ai-engineer.
+# Report: 001-solstice-systems-2026-09-28.md. Only the block below is parsed by eval-golden.mjs.
+---SCORE_SUMMARY---
+SCORE: 4.3
+ARCHETYPE: AI Forward Deployed
+ARCHETYPE_RAW: AI Forward Deployed Engineer
+LEGITIMACY: Not evaluated (direct conversation)
+DECISION: Apply
+WORK_AUTH: not_needed
+COST_USD: 0.25376699999999996
+TURNS: 13
+CONTRACT: machine_summary=true jd_archive=true tracker=true
+SCHEMA_ISSUES: legitimacy_tier "Not evaluated (direct conversation)" not in enum; 1 requirement_importance row(s) with non-enum match
+EXPECT_FAILURES: none
+---END_SUMMARY---
