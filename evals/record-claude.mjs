@@ -257,6 +257,10 @@ const median = (xs) => {
 };
 const fmt = (x, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : 'n/a');
 const pct = (n, d) => (d ? `${Math.round((100 * n) / d)}%` : 'n/a');
+const fmtTokens = (x) => {
+  if (!Number.isFinite(x)) return 'n/a';
+  return x >= 1e6 ? `${(x / 1e6).toFixed(1)}M` : `${Math.round(x / 1e3)}k`;
+};
 
 /**
  * Aggregate recorded runs into a per-model markdown table.
@@ -277,8 +281,8 @@ export function summarize(runs, reference = 'claude-opus-5') {
     .map((r) => [r.case, r.score]));
 
   const lines = [
-    `| Model | Runs | Scored | Archetype = label | mean \\|Δ\\| vs label | mean \\|Δ\\| vs ${reference} | Rep-to-rep \\|Δ\\| | Output contract | Schema-valid YAML | \`expect\` checks | Mean $/eval | Median turns | Median time |`,
-    '|---|---|---|---|---|---|---|---|---|---|---|---|---|',
+    `| Model | Runs | Scored | Archetype = label | mean \\|Δ\\| vs label | mean \\|Δ\\| vs ${reference} | Rep-to-rep \\|Δ\\| | Output contract | Schema-valid YAML | \`expect\` checks | Tokens/eval (processed / generated) | Mean $/eval (API list price) | Median turns | Median time |`,
+    '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|',
   ];
   for (const m of models) {
     const rs = all.filter((r) => runLabel(r) === m);
@@ -294,7 +298,13 @@ export function summarize(runs, reference = 'claude-opus-5') {
     const withExpect = rs.filter((r) => r.expect_checked);
     const expectOk = withExpect.filter((r) => r.expect_failures.length === 0).length;
     const costs = rs.map((r) => r.cost_usd).filter(Number.isFinite);
-    lines.push(`| \`${m}\` | ${rs.length} | ${scored.length} | ${pct(archHits, scored.length)} | ${fmt(mean(dLabel))} | ${m === reference ? '—' : fmt(mean(dRef))} | ${repDeltas.length ? fmt(mean(repDeltas)) : 'n/a'} | ${pct(contractOk, rs.length)} | ${pct(schemaOk, rs.length)} | ${withExpect.length ? `${expectOk}/${withExpect.length}` : 'n/a'} | $${fmt(mean(costs))} | ${fmt(median(rs.map((r) => r.turns).filter(Number.isFinite)), 0)} | ${fmt(median(rs.map((r) => r.duration_s).filter(Number.isFinite)) / 60, 1)} min |`);
+    // Tokens are the plan-agnostic view: a subscription pays in usage windows,
+    // an API key in dollars, and both scale with what the run processed.
+    const withUsage = rs.filter((r) => r.usage);
+    const processed = withUsage.map((r) => (r.usage.input || 0) + (r.usage.cache_write || 0) + (r.usage.cache_read || 0) + (r.usage.output || 0));
+    const tokens = withUsage.length
+      ? `${fmtTokens(mean(processed))} / ${fmtTokens(mean(withUsage.map((r) => r.usage.output || 0)))}` : 'n/a';
+    lines.push(`| \`${m}\` | ${rs.length} | ${scored.length} | ${pct(archHits, scored.length)} | ${fmt(mean(dLabel))} | ${m === reference ? '—' : fmt(mean(dRef))} | ${repDeltas.length ? fmt(mean(repDeltas)) : 'n/a'} | ${pct(contractOk, rs.length)} | ${pct(schemaOk, rs.length)} | ${withExpect.length ? `${expectOk}/${withExpect.length}` : 'n/a'} | ${tokens} | $${fmt(mean(costs))} | ${fmt(median(rs.map((r) => r.turns).filter(Number.isFinite)), 0)} | ${fmt(median(rs.map((r) => r.duration_s).filter(Number.isFinite)) / 60, 1)} min |`);
   }
 
   const failures = all.filter((r) => r.expect_failures?.length || r.error)

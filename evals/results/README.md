@@ -15,11 +15,23 @@ reference), plus the objective `expect` checks on the five v2 cases.
 
 ## Findings
 
+Each evaluation is reported two ways, because users pay two ways: on a
+Claude subscription (Pro/Max) a run spends usage-window allowance, which
+tracks the tokens and turns it processes; on an API key it spends the
+dollars below (list price, as reported by `claude -p`). How a subscription
+weighs each token type (cache reads especially) is Anthropic's accounting,
+not measured here — treat the token rows as the relative signal.
+
 | | Haiku 4.5 | Sonnet 5 | Opus 5.5 | Opus 5 |
 |---|---|---|---|---|
-| Mean cost / evaluation | **$0.25** | $1.27 | $1.26 | $2.84 |
-| Median wall time | 2.6 min | 5.5 min | **2.3 min** | 6.4 min |
+| **Subscription view** | | | | |
+| Tokens processed / evaluation (mostly cache reads) | 0.76M | 2.4M | **1.1M** | 1.9M |
+| Tokens generated / evaluation | 12k | 32k | **15k** | 30k |
 | Median turns | 14 | 25 | 14 | 24 |
+| Median wall time | 2.6 min | 5.5 min | **2.3 min** | 6.4 min |
+| **API-key view** | | | | |
+| Mean cost / evaluation | **$0.25** | $1.27 | $1.26 | $2.84 |
+| **Quality** | | | | |
 | Mean \|Δscore\| vs Opus 5 | 0.48 | 0.28 | 0.30 | — |
 | Mean signed bias vs Opus 5 | **+0.46** | −0.18 | +0.08 | — |
 | Same apply/skip call at 4.0 as Opus 5 | 22/24 | 11/12 | 18/19 | — |
@@ -34,8 +46,9 @@ reference), plus the objective `expect` checks on the five v2 cases.
    3.5 min with the same agreement (0.24 vs Opus 5, 11/12 apply calls), but its
    schema-valid rate fell to 79% (pre-fix prompt). The `standard` tier buys
    little over Opus 5.5 on this workload.
-2. **Opus 5.5 costs 44% of Opus 5** (the current `premium` model), finishes in
-   about a third of the time, lands within 0.30 of it on average with no
+2. **Opus 5.5 costs 44% of Opus 5** (the current `premium` model) on an API
+   key and processes ~40% fewer tokens with half the output on a subscription,
+   finishes in about a third of the time, lands within 0.30 of it on average with no
    systematic bias (+0.08), and is the most repeatable model measured: the
    same case scored twice moved by 0.06 on average.
 3. **Haiku 4.5 is 5× cheaper but not a drop-in `economy` tier today:**
@@ -61,7 +74,9 @@ reference), plus the objective `expect` checks on the five v2 cases.
 
 - **`premium` → Opus 5.5** in the `modes/_shared.md` Spend Tier table and
   `batch/batch-runner.sh`'s `spend_tier_to_model`: same agreement, half the
-  cost, a third of the time.
+  dollars on a key, fewer tokens against a plan's window, a third of the time.
+  Batch workers run on the tier's model whether they bill a key or a
+  subscription token (`CLAUDE_CODE_OAUTH_TOKEN`).
 - **Reconsider `standard` = Sonnet 5.** At default effort it costs the same as
   Opus 5.5 and is slower; at `medium` it saves ~$0.20/evaluation but is still
   slower and less schema-compliant. Opus 5.5 is the stronger default unless
