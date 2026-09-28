@@ -1,0 +1,15 @@
+# Recorded by evals/record-claude.mjs on 2026-09-28 — model claude-haiku-4-5, rep 1, profile ai-engineer.
+# Report: 001-ridgeline-2026-09-28.md. Only the block below is parsed by eval-golden.mjs.
+---SCORE_SUMMARY---
+SCORE: 4.3
+ARCHETYPE: AI Forward Deployed
+ARCHETYPE_RAW: AI Forward Deployed (primary) + AI Solutions Architect (secondary)
+LEGITIMACY: Proceed with Caution
+DECISION: null
+WORK_AUTH: not_needed
+COST_USD: 0.24319609999999997
+TURNS: 14
+CONTRACT: machine_summary=true jd_archive=true tracker=true
+SCHEMA_ISSUES: missing company; missing role; missing legitimacy_tier; missing archetype; missing final_decision; 1 requirement_importance row(s) with non-enum match
+EXPECT_FAILURES: none
+---END_SUMMARY---
