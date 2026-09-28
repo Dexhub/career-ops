@@ -36,6 +36,7 @@ import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { spawn, execFileSync } from 'child_process';
 import * as yaml from 'js-yaml';
+import { isMainModule } from '../lib/is-main-module.mjs';
 
 const EVALS = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(EVALS);
@@ -604,8 +605,7 @@ async function main() {
   console.log(`\nspent $${fmt(spent)}${spent >= budget ? ' — budget reached, remaining cases skipped' : ''}`);
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(`❌  ${err.stack || err}`);
     process.exit(1);
