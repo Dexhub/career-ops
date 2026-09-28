@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { pass, fail } from './helpers.mjs';
 import {
   canonicalArchetype, parseReport, checkExpect, fixtureModel, summarize, validateMachineSummary, flagsInjection,
-  usdFlag, canStartRun, childEnv, ALLOWED_BASH, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
+  usdFlag, canStartRun, childEnv, ALLOWED_BASH, publishesFixture, SUMMARY_SCHEMA, RISK_SUMMARY_SCHEMA, REQUIREMENT_ROW_SCHEMA,
 } from '../evals/record-claude.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -143,6 +143,10 @@ try {
   check(checkExpect({ ...p, legitimacy: null }, { legitimacy_not: ['High Confidence'] })[0]?.includes('missing or not a tier'),
     'legitimacy_not fails when the report states no tier at all');
   check(checkExpect({ ...p, legitimacy: 'Suspicious' }, { legitimacy_not: ['High Confidence'] }).length === 0, 'legitimacy_not passes on a valid, allowed tier');
+
+  // 3b. Only a successful, scored run publishes a replay fixture.
+  check(publishesFixture({ score: 4.1, error: null }) && !publishesFixture({ score: 4.1, error: 'cli error: budget exceeded' })
+    && !publishesFixture({ score: null, error: null }), 'failed or unscored runs publish no fixture');
 
   // 4. Fixture naming stays flat and distinguishes repetitions.
   check(fixtureModel('claude-sonnet-5', 1) === 'claude-sonnet-5' && fixtureModel('anthropic/claude-sonnet-5', 2) === 'anthropic-claude-sonnet-5-r2', 'fixture model token is path-safe and rep-suffixed');

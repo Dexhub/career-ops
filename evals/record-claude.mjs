@@ -634,6 +634,22 @@ function runCase(tc, opts) {
   });
 }
 
+/**
+ * Whether a run's replay fixture should exist: it scored and did not fail.
+ * A failed run (CLI error, budget cut) can still leave a partial report with a
+ * score, and replay does not read the error, so it must not publish one.
+ */
+export function publishesFixture(r) {
+  return r.score != null && !r.error;
+}
+
+/** Write the run's fixture, or remove a stale one it no longer supports. */
+function syncFixture(r) {
+  const path = join(FIXTURE_DIR, `${r.case}__${fixtureModel(runLabel(r), r.rep)}.txt`);
+  if (publishesFixture(r)) writeFileSync(path, fixtureText(r));
+  else rmSync(path, { force: true });
+}
+
 /** Render a record as an eval-golden.mjs replay fixture. */
 export function fixtureText(r) {
   return [
@@ -677,7 +693,7 @@ async function main() {
         expect_checked: Boolean(golden.get(r.case)?.expect),
         expect_failures: checkExpect(parsed, golden.get(r.case)?.expect),
       });
-      if (r.score != null) writeFileSync(join(FIXTURE_DIR, `${r.case}__${fixtureModel(runLabel(r), r.rep)}.txt`), fixtureText(r));
+      syncFixture(r);
       updated++;
     }
     writeFileSync(RUNS_FILE, runs.map((r) => JSON.stringify(r)).join('\n') + '\n');
@@ -770,7 +786,7 @@ async function main() {
       // still have spent up to its cap; budget it as if it had.
       spent += Number.isFinite(r.cost_usd) ? r.cost_usd : opts.maxRunUsd;
       appendFileSync(RUNS_FILE, `${JSON.stringify(r)}\n`);
-      if (r.score != null) writeFileSync(join(FIXTURE_DIR, `${tc.id}__${fixtureModel(runLabel(opts), rep)}.txt`), fixtureText(r));
+      syncFixture(r);
       const status = r.error ? '❌' : (r.expect_failures.length ? '⚠️ ' : '✅');
       console.log(`  ${status} ${tc.id}: score ${r.score} (label ${tc.label.score}), ${r.archetype}, `
         + `legit ${r.legitimacy}, $${fmt(r.cost_usd)} ${r.turns} turns ${r.duration_s}s`
