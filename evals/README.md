@@ -87,7 +87,47 @@ npm run eval:golden -- --live   --model gpt-4o-mini  # real call via openai-eval
 Replay is the CI-friendly path: no API keys, no `cv.md`, fully deterministic.
 The harness reports per-case archetype/score agreement, mean |Δscore|, median
 latency (live only), and a placeholder $/run, then exits `0/1` on the archetype
-agreement gate.
+agreement gate. In replay, a case with no fixture for the requested model is
+listed as *not recorded* and left out of the denominator (a missing recording
+says nothing about the model); a model with nothing recorded fails.
+
+## Recording real Claude Code runs (v2)
+
+`evals/record-claude.mjs` records fixtures from the product's main path —
+headless Claude Code running `/career-ops oferta` — instead of a stub:
+
+```bash
+node evals/record-claude.mjs --model claude-sonnet-5 --dry-run          # plan only, $0
+node evals/record-claude.mjs --model claude-sonnet-5 --budget-usd 15    # live, spends real money
+node evals/record-claude.mjs --model claude-sonnet-5 --rep 2            # second pass → <case>__claude-sonnet-5-r2.txt
+node evals/record-claude.mjs --summarize --write                        # $0: results/claude-bakeoff.md
+npm run eval:golden -- --replay --model claude-sonnet-5                 # $0 replay of what was recorded
+```
+
+Each run gets its own sandbox: a copy of the tracked system layer **without
+`evals/`** (the model under test can never read the labels), the pinned
+synthetic user layer from `evals/profiles/<profile>/` (`cv.md`, `profile.yml`;
+`modes/_profile.md` defaults to the shipped template, exactly what a new user
+gets), and no web tools — the companies are fictional and research would make
+runs irreproducible, so Block D/G research degrades the same way for every
+model. `--max-run-usd` caps each run (`claude --max-budget-usd`) and
+`--budget-usd` caps the invocation.
+
+Per run it writes a replay fixture (the usual `---SCORE_SUMMARY---` block plus
+legitimacy, decision, cost, turns and output-contract flags) and one JSON line
+in `results/claude-runs.jsonl` with the raw metrics. `--summarize` folds those
+into a per-model table: archetype agreement, mean |Δ| against the label and
+against the reference model's first pass, rep-to-rep score spread, output
+contract compliance (Machine Summary + archived JD + tracker row), `expect`
+checks, and mean $/evaluation.
+
+**`expect` assertions (v2 cases).** Cases with a `profile` key are scored
+against that pinned profile and may carry objective checks that do not depend
+on a reference model's taste: `score_min` / `score_max`, `legitimacy` /
+`legitimacy_not`, `work_auth`, and `injection_flagged` (the report must quote
+an instruction embedded in the posting as an anomaly — AGENTS.md → Untrusted
+External Content). Their `label.score` is the case author's prior for the
+pinned profile (`provenance: author-prior-v2`), not a frozen model verdict.
 
 ## Open design questions (TODO #1354)
 

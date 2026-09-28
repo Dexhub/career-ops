@@ -215,10 +215,18 @@ console.log(`(row ✅ needs both archetype + score; the gate counts archetype ag
 let archetypeHits = 0;
 const deltas = [];
 const latencies = [];
+// Replay only: cases never recorded for this model. A missing recording says
+// nothing about the model, so these leave the denominator instead of counting
+// as misses — but they are listed, and a run with nothing recorded fails.
+const unrecorded = [];
 
 for (const tc of cases) {
   const t0 = Date.now();
   let parsed;
+  if (mode === 'replay' && !existsSync(join(fixtureDir, `${tc.id}__${fixtureModelId(model)}.txt`))) {
+    unrecorded.push(tc.id);
+    continue;
+  }
   try {
     parsed = parseSummary(getCompletion(tc));
   } catch (err) {
@@ -245,20 +253,26 @@ for (const tc of cases) {
   );
 }
 
-const agreement = archetypeHits / cases.length;
+const graded = cases.length - unrecorded.length;
+const agreement = graded ? archetypeHits / graded : 0;
 const finiteDeltas = deltas.filter(Number.isFinite);
 const meanDelta = finiteDeltas.length ? finiteDeltas.reduce((a, b) => a + b, 0) / finiteDeltas.length : NaN;
 // Cases whose SCORE was missing/malformed produce a NaN delta and drop out of
 // the mean — surface that count so a model can't hide failures behind a low mean.
-const unscored = cases.length - finiteDeltas.length;
+const unscored = graded - finiteDeltas.length;
 const cost = COST_PER_RUN_USD[model];
 
 console.log('\n  ── summary ──');
-console.log(`  archetype agreement : ${(agreement * 100).toFixed(0)}%  (gate ≥ ${(MIN_ARCHETYPE_AGREEMENT * 100).toFixed(0)}%)`);
-console.log(`  mean |Δscore|       : ${Number.isFinite(meanDelta) ? meanDelta.toFixed(2) : 'n/a'}  over ${finiteDeltas.length}/${cases.length} scored${unscored ? ` (${unscored} unscored)` : ''}  (tolerance ±${SCORE_TOLERANCE})`);
+if (unrecorded.length) {
+  console.log(`  not recorded        : ${unrecorded.length} case(s) have no fixture for "${model}" — skipped: ${unrecorded.join(', ')}`);
+}
+console.log(`  archetype agreement : ${(agreement * 100).toFixed(0)}%  over ${graded} graded  (gate ≥ ${(MIN_ARCHETYPE_AGREEMENT * 100).toFixed(0)}%)`);
+console.log(`  mean |Δscore|       : ${Number.isFinite(meanDelta) ? meanDelta.toFixed(2) : 'n/a'}  over ${finiteDeltas.length}/${graded} scored${unscored ? ` (${unscored} unscored)` : ''}  (tolerance ±${SCORE_TOLERANCE})`);
 if (mode === 'live') console.log(`  median latency      : ${median(latencies)}ms`);
 console.log(`  est. $/run          : ${cost != null ? `$${cost}` : 'n/a — TODO(#1354)'}`);
 
-const passed = agreement >= MIN_ARCHETYPE_AGREEMENT;
-console.log(`\n  ${passed ? '✅ PASS' : '❌ FAIL'} — archetype agreement ${passed ? 'meets' : 'below'} gate\n`);
+const passed = graded > 0 && agreement >= MIN_ARCHETYPE_AGREEMENT;
+const verdict = graded === 0 ? `nothing recorded for "${model}" — record fixtures first`
+  : `archetype agreement ${passed ? 'meets' : 'below'} gate`;
+console.log(`\n  ${passed ? '✅ PASS' : '❌ FAIL'} — ${verdict}\n`);
 process.exit(passed ? 0 : 1);
