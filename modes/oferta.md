@@ -583,11 +583,13 @@ The only safe fix is to never let the raw location text touch a shell command li
 
 1. **You (the agent) compute the base64 encoding of the complete JD location text yourself, as a pure text transformation on the string you already have in context** — the same way you already judge which text is "the JD's stated location, verbatim" a few lines above. This is NOT a shell operation: do not pipe the raw text through `base64`, `printf`, a heredoc, or any other shell command to produce this value — that would just relocate the exact same injection risk into the encoding step instead of removing it. Encode the complete UTF-8 byte sequence of the location text (accented characters, CJK, emoji, etc. all encode correctly as UTF-8 — never transliterate or drop them first) as one unbroken base64 string with **no line wrapping**.
 2. Embed **only** that resulting base64 string — which by construction contains nothing but the characters `A-Z a-z 0-9 + / =`, none of them shell-special — as the string literal inside the `node -e` command below. The raw location text itself must never appear in any command you run, in any form, at any point in this process.
-3. Decode and write the file in the same step, using Node (already this project's runtime) rather than a platform-specific `base64` binary, so this works identically everywhere:
+3. Decode and write the file in the same step, using Node (already this project's runtime) rather than a platform-specific `base64` binary, so this works identically everywhere. Use a fresh, unique temp path via `mktemp` rather than a fixed filename — a shared fixed path risks collision with a concurrent `batch` worker's own run — and clean it up when done:
 
 ```bash
-node -e 'process.stdout.write(Buffer.from("<base64-encoded JD location, no line wrapping>", "base64"))' > /tmp/career-ops-posting-location.txt
-node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location-file /tmp/career-ops-posting-location.txt --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
+posting_location_file="$(mktemp /tmp/career-ops-posting-location.XXXXXX)"
+trap 'rm -f -- "$posting_location_file"' EXIT
+node -e 'process.stdout.write(Buffer.from("<base64-encoded JD location, no line wrapping>", "base64"))' > "$posting_location_file"
+node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location-file "$posting_location_file" --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
 ```
 
 **Self-check before running the first command (mandatory):** re-read the base64 string you are about to substitute in. If it contains anything outside `A-Z a-z 0-9 + / =`, or any whitespace/newline, you have not actually encoded the text — go back and encode it properly rather than patching around it (e.g. by quoting it differently). Decoding is exact (`Buffer.from(..., 'base64')` yields the identical original UTF-8 bytes, and `process.stdout.write` plus `>` write them to the file unmodified), so an incorrect result here means the encoding step was done wrong, not that the decode needs adjusting.

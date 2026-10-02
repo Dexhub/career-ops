@@ -324,11 +324,13 @@ Batch mode limitation: Playwright is not available, so exact apply-button state 
 
     1. **You (the worker) compute the base64 encoding of the complete JD location text yourself, as a pure text transformation on the string you already have** — the same way you already judge which text is "the JD's stated location, verbatim." This is NOT a shell operation: do not pipe the raw text through `base64`, `printf`, a heredoc, or any other shell command to produce this value — that would just relocate the same injection risk into the encoding step instead of removing it. Encode the complete UTF-8 byte sequence of the location text (accented characters, CJK, etc. all encode correctly as UTF-8 — never transliterate or drop them) as one unbroken base64 string with **no line wrapping**.
     2. Embed **only** that resulting base64 string — which by construction contains nothing but `A-Z a-z 0-9 + / =`, none of it shell-special — as the string literal inside the `node -e` command below. The raw location text must never appear in any command you run, in any form, at any point.
-    3. Decode and write the file in the same step, using Node rather than a platform-specific `base64` binary, so this works identically in every worker:
+    3. Decode and write the file in the same step, using Node rather than a platform-specific `base64` binary, so this works identically in every worker. Use a fresh, unique temp path per evaluation (via `mktemp`) rather than a fixed filename — `--parallel > 1` runs multiple workers concurrently, and a shared fixed path lets one worker's location overwrite another's before it's read. Clean the file up when done:
 
     ```bash
-    node -e 'process.stdout.write(Buffer.from("<base64-encoded JD location, no line wrapping>", "base64"))' > /tmp/career-ops-posting-location.txt
-    node salary-gap.mjs --relocation --gross <midpoint> --posting-location-file /tmp/career-ops-posting-location.txt --home-location "<profile location>" --currency <advertised_comp's own currency>
+    posting_location_file="$(mktemp /tmp/career-ops-posting-location.XXXXXX)"
+    trap 'rm -f -- "$posting_location_file"' EXIT
+    node -e 'process.stdout.write(Buffer.from("<base64-encoded JD location, no line wrapping>", "base64"))' > "$posting_location_file"
+    node salary-gap.mjs --relocation --gross <midpoint> --posting-location-file "$posting_location_file" --home-location "<profile location>" --currency <advertised_comp's own currency>
     ```
 
     **Self-check before running the first command (mandatory):** re-read the base64 string you are about to substitute in. If it contains anything outside `A-Z a-z 0-9 + / =`, or any whitespace/newline, the text was not actually encoded — fix the encoding, don't work around it by re-quoting.
