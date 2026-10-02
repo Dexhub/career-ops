@@ -572,6 +572,28 @@ Then append one optional negotiation talking point:
 
 This signal is corroborating information only. It never changes the 1–5 Global Score, the High Confidence / Proceed with Caution / Suspicious tier, or the application recommendation; it never blocks or discourages an application. If no explicit fixed-term language is present, report the check as clear and do not generate the negotiation talking point.
 
+**17. Relocation Purchasing Power** (from the JD's own stated work location + `config/profile.yml` → `location`/`candidate.location`, computed by `salary-gap.mjs` against `templates/jurisdiction-relocation-tax.yml`; jurisdiction-compliance-lens umbrella #2026, member #4694):
+
+A posting that requires relocation to a different province/state can carry compensation that looks "close enough" to the candidate's target on paper while representing meaningfully different real purchasing power once marginal tax brackets differ enough between the two jurisdictions. This signal surfaces that gap as a plain computation, never a verdict on the posting.
+
+**Gate (mandatory):** only runs when (a) the JD states a specific work location requiring relocation (not fully remote with no base jurisdiction), (b) that location differs from the candidate's own `config/profile.yml` location, and (c) `advertised_comp` resolves to a usable gross figure (the midpoint of a range is fine — this is a directional comparison, not an exact one). Missing any of the three → this signal is **not evaluated**; say nothing rather than guess.
+
+**Computation (mandatory — run the script, never hand-compute):**
+
+```bash
+node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location "<JD's stated location>" --home-location "<config/profile.yml location>"
+```
+
+Read the JSON result. `ok: false` with a `reason` (`no-jurisdiction-match`, `same-jurisdiction`, `cross-country-not-supported`, …) means this signal is not evaluated for this posting — the candidate's or posting's jurisdiction simply has no row in the table yet (evidence-strength honesty: absence of a table row is "no signal," never an assumed penalty). `ok: true` gives both sides' modeled take-home, fully computed from brackets the table carries — never re-derive the arithmetic yourself, and never substitute a number the script did not return.
+
+**Phrasing discipline (mandatory, same discipline as every other umbrella member):** state the inputs and the computed figures side by side — never a verdict like "this is a bad offer because of relocation." The script's own `limitations` string (marginal brackets only; no basic personal amount, credits, CPP/EI, surtaxes, or cost-of-living adjustment modeled) is part of the output, not optional framing — always carry it or an equivalent plain-language restatement into the report. This is **not financial or tax advice**, exactly like the sub-statutory-terms and restrictive-covenant signals' own not-legal-advice framing.
+
+When `ok: true`, append a short, neutral note:
+
+> 📍 **Relocation purchasing-power note:** [Render in {language.output}, filling in the script's own numbers: "At {gross}, modeled take-home in {home.jurisdiction} is ~{home.takeHome} vs. ~{dest.takeHome} in {dest.jurisdiction} ({a signed takeHomeDeltaPct}% difference at the same gross) — federal + provincial/state tax brackets only; no basic personal amount, credits, CPP/EI, surtaxes, or cost-of-living adjustment modeled. Not financial or tax advice — a data point for your own judgment, not a verdict on this offer."]
+
+**Warn-only (mandatory):** this signal never changes the 1-5 score or the High Confidence / Proceed with Caution / Suspicious tier — it is a corroborating data point, reported separately, exactly like every other umbrella member's human-in-the-loop posture. **Out of scope for v1 (deliberately deferred, #4694):** a cost-of-living adjustment between the two cities — no official, citable, cross-city cost-of-living index was available at seed time (see `templates/jurisdiction-relocation-tax.yml`'s own header); and Quebec, which collects its own provincial tax separately and needs its own computation path, not just a new table row.
+
 ### Output format:
 
 **Assessment:** One of three tiers:
@@ -621,6 +643,7 @@ Three states per row: `✅ {clear verdict}` / `⚠️ {finding}` / `— not eval
 | AI claims vs. infrastructure | AI/infrastructure mismatch check in Block G, when present | If this report contains that check, mirror its verdict (`✅ consistent` / `⚠️ {finding}`); otherwise `— not evaluated`. The row activates automatically once the check exists — no ordering dependency |
 | AI-screening disclosure | AI-screening disclosure signal in Block G (Signal 15), when present | If this report contains that check: `✅ discloses AI use` when (a) fired, `ℹ️ {jurisdiction_name} requires disclosure; posting is silent` when only (b) fired (corroborating-only, never a compliance verdict), `— no jurisdiction match` when neither fired because the candidate's jurisdiction has no table row; otherwise `— not evaluated`. The row activates automatically once the check exists — no ordering dependency |
 | Fixed-term contract | Fixed-term disclosure signal in Block G (Signal 16) | `ℹ️ fixed term — "{quoted phrase}"` when explicit fixed-term language is present; otherwise `✅ no fixed term disclosed`; `— not evaluated` only when no JD text was available |
+| Relocation purchasing power | Relocation purchasing-power signal in Block G (Signal 17), when present | If this report contains that check: `ℹ️ {home.jurisdiction} ~{home.takeHome} vs {dest.jurisdiction} ~{dest.takeHome}` when `ok: true` (informational, never a verdict on the offer), `— no jurisdiction match` when the gate ran but `ok: false`, `— not evaluated` when the gate's own conditions (relocation location stated, differs from home, usable comp figure) were not met. The row activates automatically once the check exists — no ordering dependency |
 
 Block format:
 

@@ -318,8 +318,9 @@ Batch mode limitation: Playwright is not available, so exact apply-button state 
 14. **Minimum-Wage Lawyer Question** — only for a guaranteed fixed cash amount (never a range, never bonus, commission or benefits), and only when the JD's own stated work location names a jurisdiction — never the candidate's `location`. Convert to an hourly figure using the JD's stated hours, or disclose the 2080-hour fallback; missing hours or currency → skip. Report it as an `[ask your lawyer]` question. Never state, look up or compare a statutory minimum.
 15. **AI-Screening Disclosure** — two independent checks. (a) The JD discloses AI or automated screening: quote it, informational only, never a warning. (b) Corroborating-only, never standalone: the candidate's jurisdiction has a row in `templates/jurisdiction-ai-screening-disclosure.yml` whose condition their `location` string actually satisfies — a borough-level NYC string, not a state-level "New York" — its `effective` date is on or before the posting's own date (or today's date, only when the JD carries no clear date), and the JD shows no disclosure at all. State the statutory fact and the posting's silence side by side; silence is never evidence that disclosure did not happen.
 16. **Fixed-Term Contract Disclosure** — presence-based from JD text only. Flag explicit duration/disclosure wording (`18 month contract`, `6-month contract`, `fixed-term`, `fixed-term contract position`, `temporary position/role/assignment`, `term position`), quote it, and preserve any stated duration verbatim. A bare "contract" or unqualified `contract position` in customer contracts, contract management/law, or contractor-status text does not fire it. Keep this separate from Signal 6. Add a non-scoring note and an optional compensation-conversation prompt covering finite term, benefits, renewal and transition risk; never invent a percentage premium or market benchmark.
+17. **Relocation Purchasing Power** — runs only when the JD states a relocation work location that differs from `config/profile.yml` → `location`/`candidate.location`, and `advertised_comp` resolves to a usable gross figure; otherwise `not evaluated`, say nothing. Run `node salary-gap.mjs --relocation --gross <midpoint> --posting-location "<JD location>" --home-location "<profile location>"` and report its own numbers — never hand-compute the arithmetic. `ok: false` (no row for either jurisdiction, same jurisdiction, cross-country) → not evaluated, say nothing. `ok: true` → state both sides' modeled take-home side by side, carrying the script's own `limitations` disclaimer (marginal tax brackets only; no basic personal amount, credits, CPP/EI, surtaxes, or cost-of-living modeled) and the not-financial/tax-advice framing. Never a verdict on the offer.
 
-Signals 1-5 and 7-9 set the tier. Signal 6 is `not evaluated` in batch, so it never feeds the tier either — it stays a descriptive, informational finding, as the Risk Summary already reports. Signals 10-16 never change the tier: report each one separately as its own finding, keep every one of them descriptive rather than assertive, and close them as informational, not legal advice.
+Signals 1-5 and 7-9 set the tier. Signal 6 is `not evaluated` in batch, so it never feeds the tier either — it stays a descriptive, informational finding, as the Risk Summary already reports. Signals 10-17 never change the tier: report each one separately as its own finding, keep every one of them descriptive rather than assertive, and close them as informational, not legal/financial advice.
 
 Use one tier: **High Confidence**, **Proceed with Caution**, or **Suspicious**. Present observations, not accusations, and explain thin evidence.
 
@@ -430,6 +431,7 @@ via: {agency/recruiter firm as a quoted string, or null for direct applications}
 company_confidential: {true when the end employer is unknown (company is "?"), else false}
 advertised_comp: {verbatim JD salary/range as a quoted string (e.g. "80-90k EUR"), or null when the JD states nothing}
 reports_to: {the JD's stated reporting line as a quoted string (e.g. "VP of Marketing"), or null when the JD names none}
+posting_location: {the JD's own stated work location as a quoted string (e.g. "Halifax, NS"), or null when the JD states no specific location requiring relocation, or is fully remote with no base jurisdiction}
 requirement_importance:
   - requirement: "{JD requirement}"
     jd_signal: "{verbatim JD quote for stated; structure reference for structural; null for inferred}"
@@ -444,6 +446,7 @@ risk_summary:
   ai_infra: "{consistent | mismatch | not_evaluated}"
   ai_screening_disclosure: "{disclosed | corroborating_only | no_match | not_evaluated}"
   fixed_term: "{detected | not_detected | not_evaluated}"
+  relocation_purchasing_power: "{computed | no_jurisdiction_match | not_evaluated}"
 ```
 
 Rules:
@@ -453,10 +456,11 @@ Rules:
 - `final_decision` must reflect the full evaluation, not only the CV match.
 - `advertised_comp` is the JD's **own** figure, verbatim; `null` when the JD states nothing — never estimate it and never substitute researched market data (Block D research stays in Block D). Batch workers never write `data/salary-observations.tsv` — the report itself is the advertised observation (`salary-gap.mjs` reads it).
 - `reports_to` is the reporting line the JD itself states, in the JD's own wording; `null` when the JD names none — never infer it from the title, the team size, or company research. It records the seat's altitude, which the title alone does not: an IC seat reporting to a Head of Marketing and one reporting to the CEO are different roles.
+- `posting_location` is the JD's **own** stated work location, verbatim (e.g. `"Halifax, NS"`); `null` when the JD states no specific location, or is fully remote with no base jurisdiction named. Feeds the relocation purchasing-power comparison (Block G Signal 16, #4694) — `salary-gap.mjs` reads it the same way it already reads `advertised_comp`. Never infer it from the company's HQ or from company research; only the JD's own words.
 - Do not invent missing data. Derive `confidence` from `score_evidence` using the Score Evidence tier rules above; the report's evidence table and `confidence_gaps` must explain the tier. Do not confuse it with `legitimacy_tier`.
 - `work_auth` reflects the Block A work-authorization tier: `no_sponsorship` only when the JD **explicitly** refuses sponsorship for a role outside the candidate's `authorized_in`; `unstated` when the JD is silent (neutral, not a blocker); `not_needed` when the role is within `authorized_in` or sponsorship isn't required; `sponsors` when the JD explicitly offers it.
 - `requirement_importance` mirrors Block B's table row by row — same rows, same verdicts, snake_cased. `evidence: stated` **requires** a non-null verbatim `jd_signal`; `jd_signal: null` is legal only for `structural` and `inferred`. `importance` is never `critical` or `high` when `evidence: inferred` — that is Block B's gate, machine-checkable here. `match` is `strong | partial | missing | na`, mirroring ✅ / ⚠️ / ❌ / ➖. Use `[]` when the JD yields no usable requirement list. No consumer reads this key yet; it is allowlisted so it round-trips.
-- `risk_summary` mirrors the `## Risk Summary` block row by row — same source verdicts, snake_cased: `legitimacy` from the Block G tier (`high_confidence` / `proceed_with_caution` / `suspicious`), `culture` from the Block A Culture screen (`pass` / `caution` / `fail`), `interview_redflags` from the red-flag file's warning level (`none` / `caution` / `warning`), `ai_screening_disclosure` from the Block G AI-screening disclosure signal (`disclosed` when the posting names AI/automated screening, `corroborating_only` when the jurisdiction requires disclosure and the posting is silent, `no_match` when the candidate's jurisdiction has no table row), and `fixed_term` from Signal 16 (`detected` / `not_detected`). Any row rendered `— not evaluated` (or `— no interview sessions yet`) is `not_evaluated` here. Never invent a value the block does not show.
+- `risk_summary` mirrors the `## Risk Summary` block row by row — same source verdicts, snake_cased: `legitimacy` from the Block G tier (`high_confidence` / `proceed_with_caution` / `suspicious`), `culture` from the Block A Culture screen (`pass` / `caution` / `fail`), `interview_redflags` from the red-flag file's warning level (`none` / `caution` / `warning`), `ai_screening_disclosure` from the Block G AI-screening disclosure signal (`disclosed` when the posting names AI/automated screening, `corroborating_only` when the jurisdiction requires disclosure and the posting is silent, `no_match` when the candidate's jurisdiction has no table row), `fixed_term` from Signal 16 (`detected` / `not_detected`), and `relocation_purchasing_power` from the Block G relocation signal (Signal 17, #4694) — `computed` when `node salary-gap.mjs --relocation` resolved both jurisdictions and returned `ok: true`, `no_jurisdiction_match` when the posting names a relocation location but it (or the candidate's own) has no row in `templates/jurisdiction-relocation-tax.yml`. Any row rendered `— not evaluated` (or `— no interview sessions yet`) is `not_evaluated` here. Never invent a value the block does not show.
 
 ### Step 3 — Save the Report
 
@@ -523,6 +527,7 @@ via: {agency/recruiter firm as a quoted string, or null for direct applications}
 company_confidential: {true when the end employer is unknown (company is "?"), else false}
 advertised_comp: {verbatim JD salary/range as a quoted string (e.g. "80-90k EUR"), or null when the JD states nothing}
 reports_to: {the JD's stated reporting line as a quoted string (e.g. "VP of Marketing"), or null when the JD names none}
+posting_location: {the JD's own stated work location as a quoted string (e.g. "Halifax, NS"), or null when the JD states no specific location requiring relocation, or is fully remote with no base jurisdiction}
 requirement_importance:
   - requirement: "{JD requirement}"
     jd_signal: "{verbatim JD quote for stated; structure reference for structural; null for inferred}"
@@ -537,6 +542,7 @@ risk_summary:
   ai_infra: "{consistent | mismatch | not_evaluated}"
   ai_screening_disclosure: "{disclosed | corroborating_only | no_match | not_evaluated}"
   fixed_term: "{detected | not_detected | not_evaluated}"
+  relocation_purchasing_power: "{computed | no_jurisdiction_match | not_evaluated}"
 ```
 ```
 
