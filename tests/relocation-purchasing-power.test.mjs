@@ -151,6 +151,138 @@ test('ad hoc --relocation mode requires --gross and --posting-location (usage er
   assert.match(r.stderr, /Usage: node salary-gap\.mjs --relocation/);
 });
 
+// ── #4696 CodeRabbit CWE-78 finding: --posting-location-file reads the
+//    JD-controlled location from a file instead of a shell argument, so a
+//    crafted location containing shell metacharacters is never given to a
+//    shell to interpret. These tests use spawnSync's array-argv form (which
+//    never invokes a shell either way), so they prove the FEATURE works —
+//    that the file's literal content reaches matchJurisdiction byte-for-byte,
+//    including characters that would be dangerous if shell-interpolated —
+//    not the shell-safety property itself, which is a property of the
+//    prompt-spec instructions in modes/oferta.md and batch/batch-prompt.md
+//    (covered by the dedicated tests below) rather than of this script. ──
+
+function withTempFile(content, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'career-ops-posting-location-'));
+  const file = join(dir, 'posting-location.txt');
+  writeFileSync(file, content);
+  try {
+    return fn(file);
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
+test('ad hoc --relocation mode: --posting-location-file resolves the same jurisdiction as --posting-location with the same text', () => {
+  withTempFile('Halifax, NS', (file) => {
+    const r = run([
+      '--relocation', '--gross', '60000',
+      '--posting-location-file', file,
+      '--home-location', 'Midland, ON',
+      '--currency', 'CAD',
+    ]);
+    assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.inputs.destCode, 'CA-NS');
+    assert.equal(out.inputs.postingLocation, 'Halifax, NS', 'trailing newline from the file is trimmed');
+    assert.equal(out.ok, true);
+  });
+});
+
+test('ad hoc --relocation mode: --posting-location-file content containing shell metacharacters reaches the script as literal text, never shell-expanded', () => {
+  withTempFile('Halifax, NS $(touch should-not-exist.txt)', (file) => {
+    const r = run([
+      '--relocation', '--gross', '60000',
+      '--posting-location-file', file,
+      '--home-location', 'Midland, ON',
+      '--currency', 'CAD',
+    ]);
+    assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.inputs.postingLocation, 'Halifax, NS $(touch should-not-exist.txt)',
+      'the command-substitution-shaped text is passed through literally, not executed and not stripped');
+    assert.equal(out.inputs.destCode, 'CA-NS', 'the alias still resolves despite the trailing junk text');
+  });
+});
+
+test('ad hoc --relocation mode: --posting-location-file takes precedence over --posting-location when both are given', () => {
+  withTempFile('Halifax, NS', (file) => {
+    const r = run([
+      '--relocation', '--gross', '60000',
+      '--posting-location', 'Vancouver, BC',
+      '--posting-location-file', file,
+      '--home-location', 'Midland, ON',
+      '--currency', 'CAD',
+    ]);
+    assert.equal(r.status, 0);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.inputs.postingLocation, 'Halifax, NS', 'the file form wins — it is the safe path, not a value a caller meant to replace');
+  });
+});
+
+test('ad hoc --relocation mode: an unreadable --posting-location-file is a usage error, not a silent fallback', () => {
+  const r = run([
+    '--relocation', '--gross', '60000',
+    '--posting-location-file', join(tmpdir(), 'career-ops-does-not-exist-4696.txt'),
+    '--home-location', 'Midland, ON',
+    '--currency', 'CAD',
+  ]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /Could not read --posting-location-file/);
+});
+
+// ── #4696 CodeRabbit finding #2 (follow-up round): matchJurisdiction must
+//    not fall back to a weak city-alias match when the text names an
+//    unseeded Canadian province/territory. One end-to-end check that the
+//    fix (templates/jurisdiction-relocation-tax.yml-independent blocking
+//    markers) is wired into the ad hoc CLI path; the exhaustive pure-function
+//    cases live in salary-gap.mjs's own --self-test. ──
+
+test('ad hoc --relocation mode: "Hamilton, Quebec" never false-matches CA-ON (unseeded province blocks the weak city alias)', () => {
+  withTempFile('Hamilton, Quebec', (file) => {
+    const r = run([
+      '--relocation', '--gross', '60000',
+      '--posting-location-file', file,
+      '--home-location', 'Toronto, ON',
+      '--currency', 'CAD',
+    ]);
+    assert.equal(r.status, 0);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.inputs.destCode, null, '"Hamilton, Quebec" must not resolve to CA-ON');
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, 'no-jurisdiction-match');
+  });
+});
+
+test('ad hoc --relocation mode: "Hamilton, QC" never false-matches CA-ON either', () => {
+  const r = run([
+    '--relocation', '--gross', '60000',
+    '--posting-location', 'Hamilton, QC',
+    '--home-location', 'Toronto, ON',
+    '--currency', 'CAD',
+  ]);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.inputs.destCode, null, '"Hamilton, QC" must not resolve to CA-ON');
+  assert.equal(out.ok, false);
+});
+
+// ── Prompt-spec wiring: both files must instruct the safe (file-based) form
+//    for the JD-controlled posting location, never the raw shell-argument
+//    form that motivated the CWE-78 finding. ──
+
+test('modes/oferta.md Signal 16 passes the JD location through a file, never --posting-location "<JD', () => {
+  const oferta = readFile('modes/oferta.md');
+  assert.match(oferta, /--posting-location-file/, 'Signal 16 uses the safe file-based flag');
+  assert.doesNotMatch(oferta, /--posting-location "<JD/, 'the JD-controlled value is never shell-interpolated directly');
+});
+
+test('batch/batch-prompt.md Signal 16 passes the JD location through a file, never --posting-location "<JD', () => {
+  const batchPrompt = readFile('batch/batch-prompt.md');
+  assert.match(batchPrompt, /--posting-location-file/, 'Signal 16 uses the safe file-based flag');
+  assert.doesNotMatch(batchPrompt, /--posting-location "<JD/, 'the JD-controlled value is never shell-interpolated directly');
+});
+
 // ── End-to-end: tracker row + report posting_location -> folded relocation field ──
 
 function fixtureDataRoot() {

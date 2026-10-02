@@ -36,7 +36,30 @@
  *      node salary-gap.mjs --relocation --gross <amount> --posting-location "<city, province>"
  *                          [--home-location "<city, province>"] [--currency <code>]
  *                                                (ad hoc relocation comparison, JSON)
+ *      node salary-gap.mjs --relocation --gross <amount> --posting-location-file <path>
+ *                          [--home-location "<city, province>"] [--currency <code>]
+ *                                                (same, but the posting location is read
+ *                                                 from a file instead of a shell argument —
+ *                                                 see CWE-78 note below)
  *      node salary-gap.mjs --self-test
+ *
+ * `--posting-location` vs `--posting-location-file` (#4696 CodeRabbit CWE-78
+ * finding): the posting location is the JD's own verbatim text — untrusted,
+ * external, JD-author-controlled. `modes/oferta.md` Signal 16 and
+ * `batch/batch-prompt.md`'s batch-worker equivalent (which runs with
+ * `--dangerously-skip-permissions`) both call this script from an agent-
+ * constructed Bash command. Interpolating that JD text directly into a
+ * double-quoted `--posting-location "<JD location>"` argument lets a crafted
+ * location containing `$(...)` or backticks execute as a shell command
+ * substitution before this script ever sees the string. `--posting-location-file
+ * <path>` sidesteps that: the agent writes the untrusted text to a file (e.g.
+ * via a quoted heredoc, `cat <<'EOF' > file`, which performs no shell
+ * expansion on its body) and passes only the file PATH on the command line —
+ * a value the agent itself chose, never JD-derived. `--posting-location`
+ * itself is unchanged and still accepted (e.g. for trusted/short values typed
+ * directly by a human), but the prompt-spec instructions in `modes/oferta.md`
+ * and `batch/batch-prompt.md` now use the file form for the JD-controlled
+ * value specifically.
  */
 
 import { readFileSync, existsSync, readdirSync } from 'fs';
@@ -98,6 +121,12 @@ const relocationMode = args.includes('--relocation');
 const relocGrossRaw = flagValue(args, '--gross');
 const relocCurrency = flagValue(args, '--currency') ?? null;
 const relocPostingLocation = flagValue(args, '--posting-location') ?? null;
+// File form (#4696 CodeRabbit CWE-78 finding): the posting location is
+// JD-controlled, untrusted text. Reading it from a file the caller already
+// wrote — rather than interpolating it into this process's own argv — means
+// shell metacharacters in the JD text are never given to a shell to expand in
+// the first place. See the file header comment for the full rationale.
+const relocPostingLocationFile = flagValue(args, '--posting-location-file') ?? null;
 const relocHomeLocationFlag = flagValue(args, '--home-location') ?? null;
 
 const TRUST = {
@@ -300,13 +329,18 @@ export function loadRelocationTable(tablePath = RELOCATION_TABLE_PATH) {
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Non-Canadian context markers (#4696 CodeRabbit finding #2). A bare
-// city-name alias ("Waterloo", "Hamilton", "Surrey") collides with a
-// same-named city outside the table's country. Rather than try to enumerate
-// every foreign city, block a city-only match whenever the text ALSO names
-// an unambiguous non-Canadian place (a US state, the UK, New Zealand, …) —
-// real signal the city-name alias alone cannot see.
-const FOREIGN_CONTEXT_MARKERS = [
+// Blocking context markers (#4696 CodeRabbit findings #2 and the follow-up
+// unseeded-province gap). A bare city-name alias ("Waterloo", "Hamilton",
+// "Surrey") collides with a same-named city outside the table's country, OR
+// with a same-named city in a Canadian province/territory the table simply
+// hasn't seeded yet ("Hamilton, Quebec" sharing its name with CA-ON's
+// Hamilton). Rather than try to enumerate every colliding city, block a
+// city-only match whenever the text ALSO names an unambiguous place the weak
+// match cannot be — a US state, the UK, New Zealand, … — OR one of the
+// Canadian provinces/territories not yet seeded in
+// templates/jurisdiction-relocation-tax.yml — real signal the city-name
+// alias alone cannot see.
+const BLOCKING_CONTEXT_MARKERS = [
   'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut',
   'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa',
   'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland', 'Massachusetts', 'Michigan',
@@ -318,8 +352,13 @@ const FOREIGN_CONTEXT_MARKERS = [
   'United States', 'USA',
   'United Kingdom', 'UK', 'England', 'Scotland', 'Wales',
   'New Zealand', 'Australia',
+  // Unseeded Canadian jurisdictions: a city alias must not override them.
+  'Quebec', 'Québec', 'QC', 'Manitoba', 'MB', 'Saskatchewan', 'SK',
+  'New Brunswick', 'NB', 'Prince Edward Island', 'PE',
+  'Newfoundland and Labrador', 'NL', 'Yukon', 'YT',
+  'Northwest Territories', 'NT', 'Nunavut', 'NU',
 ];
-const hasForeignContext = (text) => FOREIGN_CONTEXT_MARKERS.some(
+const hasBlockingContext = (text) => BLOCKING_CONTEXT_MARKERS.some(
   (m) => new RegExp(`\\b${escapeRegExp(m)}\\b`, 'i').test(text),
 );
 
@@ -366,8 +405,9 @@ function textContainsAlias(text, alias) {
  * outright over a bare city name, which disambiguates "Halifax, NS (in
  * office on Fridays)" to CA-NS only. When the only match is a bare city-name
  * alias (no strong signal in the text at all), the text is also checked for
- * an unambiguous non-Canadian context marker (a US state, "UK", "New
- * Zealand", …) — "Waterloo, Iowa", "Hamilton, New Zealand" and "Surrey, UK"
+ * an unambiguous blocking context marker — a US state, "UK", "New Zealand",
+ * … or an unseeded Canadian province/territory ("Quebec", "QC", …) — "Waterloo,
+ * Iowa", "Hamilton, New Zealand", "Surrey, UK" and "Hamilton, Quebec" all
  * share city names with CA-ON/CA-BC towns but are not those towns, and a
  * bare city name alone is not strong enough evidence to override that.
  *
@@ -402,7 +442,7 @@ export function matchJurisdiction(text, jurisdictions) {
   if (weakMatches.size !== 1) return null;
 
   const onlyCode = [...weakMatches][0];
-  if (hasForeignContext(s)) return null; // bare city name only, foreign context present -> no guess
+  if (hasBlockingContext(s)) return null; // bare city name only, blocking context present -> no guess
   return onlyCode;
 }
 
@@ -1219,6 +1259,21 @@ posting_location: "Halifax, NS"
     assert(matchJurisdiction('Toronto, ON', rt) === 'CA-ON', 'real "Toronto, ON" still resolves to CA-ON');
     assert(matchJurisdiction('Vancouver, BC', rt) === 'CA-BC', 'real "Vancouver, BC" still resolves to CA-BC');
     assert(matchJurisdiction('Calgary, Alberta', rt) === 'CA-AB', 'real "Calgary, Alberta" still resolves to CA-AB');
+
+    // matchJurisdiction unseeded-province regression (#4696 CodeRabbit finding,
+    // follow-up round): a bare city-name alias must not win just because the
+    // OTHER province it also names has no row yet. "Hamilton" is a real
+    // Ontario city alias, but "Hamilton, Ontario, Canada" is itself (never
+    // blocked by its own province's name), while "Hamilton, Quebec"/"Hamilton,
+    // QC" names a different, unseeded Canadian province and must not fall back
+    // to CA-ON. "Victoria, Prince Edward Island" already returned null before
+    // this fix (no table city happens to collide), and keeps returning null.
+    assert(matchJurisdiction('Hamilton, Quebec', rt) === null,
+      'Hamilton is also a Quebec city -- the unseeded-province context blocks the ON city-alias match');
+    assert(matchJurisdiction('Hamilton, QC', rt) === null,
+      'the QC abbreviation blocks the ON city-alias match the same way the full name does');
+    assert(matchJurisdiction('Victoria, Prince Edward Island', rt) === null,
+      'Victoria, PEI still resolves to null (no colliding table city, unaffected by this fix)');
   }
 
   // computeRelocationAdjustment: transparent inputs, correct math, honest failure reasons
@@ -1659,21 +1714,34 @@ function main() {
     // before anything has been written to reports/ or the tracker, there is
     // no tracker# to fold against yet.
     const gross = relocGrossRaw !== undefined ? parseAmount(relocGrossRaw)?.mid ?? null : null;
-    if (gross === null || !relocPostingLocation) {
-      console.error('Usage: node salary-gap.mjs --relocation --gross <amount> --posting-location "<city, province>" [--home-location "<city, province>"] [--currency <code>]');
+    // --posting-location-file wins when both forms are given (#4696 CWE-78
+    // fix): the file is the safe, non-shell-interpolated path, so prefer it
+    // over the inline flag rather than silently falling back to the one a
+    // caller may have meant to replace.
+    let postingLocation = relocPostingLocation;
+    if (relocPostingLocationFile !== null) {
+      try {
+        postingLocation = readFileSync(relocPostingLocationFile, 'utf-8').trim();
+      } catch (err) {
+        console.error(`Could not read --posting-location-file '${relocPostingLocationFile}': ${err.message}`);
+        process.exit(1);
+      }
+    }
+    if (gross === null || !postingLocation) {
+      console.error('Usage: node salary-gap.mjs --relocation --gross <amount> (--posting-location "<city, province>" | --posting-location-file <path>) [--home-location "<city, province>"] [--currency <code>]');
       process.exit(1);
     }
     const jurisdictions = loadRelocationTable();
     const homeLocation = relocHomeLocationFlag ?? loadProfileLocation();
     const homeCode = matchJurisdiction(homeLocation, jurisdictions);
-    const destCode = matchJurisdiction(relocPostingLocation, jurisdictions);
+    const destCode = matchJurisdiction(postingLocation, jurisdictions);
     const result = computeRelocationAdjustment({
       grossAnnual: gross, homeCode, destCode, jurisdictions, currency: relocCurrency,
     });
     console.log(JSON.stringify({
       inputs: {
         grossAnnual: gross, currency: relocCurrency,
-        homeLocation, postingLocation: relocPostingLocation, homeCode, destCode,
+        homeLocation, postingLocation, homeCode, destCode,
       },
       ...result,
     }, null, 2));

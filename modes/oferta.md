@@ -580,11 +580,16 @@ A posting that requires relocation to a different province/state can carry compe
 
 **Computation (mandatory — run the script, never hand-compute):**
 
+**Never interpolate the JD's stated location directly into a shell argument (#4696, CWE-78).** It is untrusted, JD-author-controlled text, and this step can run with elevated/skip-permissions execution. A crafted location containing `$(...)` or backticks would be shell-expanded before `salary-gap.mjs` ever sees it if pasted straight into a double-quoted `--posting-location "..."` argument. Instead, write it to a file with a single-quoted heredoc — which performs no shell expansion on its body, regardless of what the JD text contains — and pass the file's path, not the text itself:
+
 ```bash
-node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location "<JD's stated location>" --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
+cat <<'JD_LOCATION_EOF' > /tmp/career-ops-posting-location.txt
+<JD's stated location, verbatim>
+JD_LOCATION_EOF
+node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location-file /tmp/career-ops-posting-location.txt --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
 ```
 
-Always pass `--currency` with `advertised_comp`'s own stated currency (e.g. `CAD`, `USD`) — never omit it and never guess it. The script checks it against the matched jurisdiction's own table currency and refuses to compute (`ok: false, reason: 'currency-mismatch'`) rather than silently taxing a non-CAD figure under CAD brackets; an `advertised_comp` with no identifiable currency is the same as the gate's own "no usable gross figure" case — not evaluated.
+`--home-location` stays a plain double-quoted argument — it comes from `config/profile.yml`, a trusted user-layer file, never from the JD. Always pass `--currency` with `advertised_comp`'s own stated currency (e.g. `CAD`, `USD`) — never omit it and never guess it. The script checks it against the matched jurisdiction's own table currency and refuses to compute (`ok: false, reason: 'currency-mismatch'`) rather than silently taxing a non-CAD figure under CAD brackets; an `advertised_comp` with no identifiable currency is the same as the gate's own "no usable gross figure" case — not evaluated.
 
 Read the JSON result. Three distinct `ok: false` reason families, never conflated:
 - `no-jurisdiction-match` — the candidate's or posting's jurisdiction simply has no row in the table yet (evidence-strength honesty: absence of a table row is "no signal," never an assumed penalty).
