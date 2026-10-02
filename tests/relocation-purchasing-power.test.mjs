@@ -23,7 +23,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -231,6 +231,51 @@ test('ad hoc --relocation mode: an unreadable --posting-location-file is a usage
   assert.match(r.stderr, /Could not read --posting-location-file/);
 });
 
+// ── #4696 CodeRabbit follow-up finding: flagValue() alone cannot distinguish
+//    "flag absent" from "flag present but given a missing/invalid operand" —
+//    both read as `null` once collapsed. A trailing --posting-location-file
+//    with nothing after it must not silently fall back to --posting-location
+//    (or a generic usage error that never mentions the missing operand), and
+//    --posting-location-file --home-location "X" must not silently consume
+//    --home-location as the file path and then fail with a confusing
+//    "Could not read" error about a flag name instead of a path. ──
+
+test('ad hoc --relocation mode: a trailing --posting-location-file with no operand is a usage error naming the missing operand, not a silent fallback', () => {
+  const r = run([
+    '--relocation', '--gross', '60000',
+    '--home-location', 'Midland, ON',
+    '--currency', 'CAD',
+    '--posting-location-file',
+  ]);
+  assert.notEqual(r.status, 0, 'a missing operand must not silently succeed');
+  assert.match(r.stderr, /--posting-location-file requires a file path operand/);
+  assert.doesNotMatch(r.stderr, /Could not read --posting-location-file/,
+    'a missing operand is a distinct usage error, not a failed file read');
+});
+
+test('ad hoc --relocation mode: --posting-location-file followed by another flag never consumes that flag as the file path', () => {
+  const r = run([
+    '--relocation', '--gross', '60000',
+    '--posting-location-file', '--home-location', 'Midland, ON',
+    '--currency', 'CAD',
+  ]);
+  assert.notEqual(r.status, 0, 'an operand that looks like another flag must not be read as a path');
+  assert.match(r.stderr, /--posting-location-file requires a file path operand/);
+  assert.doesNotMatch(r.stderr, /Could not read --posting-location-file '--home-location'/,
+    'must reject before ever attempting to read "--home-location" as a file');
+});
+
+test('ad hoc --relocation mode: --posting-location-file= with an empty operand is a usage error, not a silent empty location', () => {
+  const r = run([
+    '--relocation', '--gross', '60000',
+    '--posting-location-file=',
+    '--home-location', 'Midland, ON',
+    '--currency', 'CAD',
+  ]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /--posting-location-file requires a file path operand/);
+});
+
 // ── #4696 CodeRabbit finding #2 (follow-up round): matchJurisdiction must
 //    not fall back to a weak city-alias match when the text names an
 //    unseeded Canadian province/territory. One end-to-end check that the
@@ -281,6 +326,113 @@ test('batch/batch-prompt.md Signal 16 passes the JD location through a file, nev
   const batchPrompt = readFile('batch/batch-prompt.md');
   assert.match(batchPrompt, /--posting-location-file/, 'Signal 16 uses the safe file-based flag');
   assert.doesNotMatch(batchPrompt, /--posting-location "<JD/, 'the JD-controlled value is never shell-interpolated directly');
+});
+
+// ── #4696 CodeRabbit follow-up finding (second round): a single-quoted
+//    heredoc with a FIXED delimiter is still exploitable — a JD location
+//    containing a line identical to the delimiter closes the heredoc early
+//    and the rest of the "location" text is executed as shell commands,
+//    under --dangerously-skip-permissions in batch workers. The fix replaces
+//    the heredoc with base64 encoding (only the base64 alphabet, which has no
+//    shell-special characters, ever reaches a shell command line). These
+//    tests lock that fix in so it cannot silently regress back to a heredoc
+//    in either prompt file. ──
+
+test('modes/oferta.md Signal 16 no longer uses a heredoc to write the JD location (heredoc delimiter collision, CWE-78 round 2)', () => {
+  const oferta = readFile('modes/oferta.md');
+  assert.doesNotMatch(oferta, /<<'?JD_LOCATION_EOF'?/, 'the fixed-delimiter heredoc must be gone, not just renamed');
+  assert.doesNotMatch(oferta, /cat <<'/, 'no heredoc of any delimiter name should remain for the posting location');
+});
+
+test('batch/batch-prompt.md Signal 16 no longer uses a heredoc to write the JD location (heredoc delimiter collision, CWE-78 round 2)', () => {
+  const batchPrompt = readFile('batch/batch-prompt.md');
+  assert.doesNotMatch(batchPrompt, /<<'?JD_LOCATION_EOF'?/, 'the fixed-delimiter heredoc must be gone, not just renamed');
+  assert.doesNotMatch(batchPrompt, /cat <<'/, 'no heredoc of any delimiter name should remain for the posting location');
+});
+
+test('modes/oferta.md Signal 16 writes the posting-location file via base64-decoded Node, not a shell-interpolated or heredoc-fed value', () => {
+  const oferta = readFile('modes/oferta.md');
+  assert.match(oferta, /Buffer\.from\("<base64-encoded JD location/, 'decodes a base64 string literal, never raw JD text');
+  assert.match(oferta, /"base64"/, 'uses base64 decoding');
+});
+
+test('batch/batch-prompt.md Signal 16 writes the posting-location file via base64-decoded Node, not a shell-interpolated or heredoc-fed value', () => {
+  const batchPrompt = readFile('batch/batch-prompt.md');
+  assert.match(batchPrompt, /Buffer\.from\("<base64-encoded JD location/, 'decodes a base64 string literal, never raw JD text');
+  assert.match(batchPrompt, /"base64"/, 'uses base64 decoding');
+});
+
+// Runs the EXACT documented decode expression — `Buffer.from("<b64>", "base64")`
+// written to stdout — via `node -e`, passed as a single argv element (never
+// through a shell string), and writes the raw decoded bytes to `file`. This
+// is the same invocation the instructions document; using spawnSync's array
+// argv form (rather than `shell: true`) keeps the test itself platform-
+// independent (no dependence on bash vs. cmd.exe heredoc/quoting behavior)
+// while still exercising the real encode -> embed -> decode -> write pipeline
+// byte-for-byte, which is what the fix is actually about.
+function decodeBase64LocationToFile(b64, file) {
+  const expr = `process.stdout.write(Buffer.from("${b64}", "base64"))`;
+  const result = spawnSync(process.execPath, ['-e', expr], { encoding: 'buffer' });
+  if (result.status !== 0) {
+    throw new Error(`decode step failed (status ${result.status}): ${result.stderr?.toString('utf-8')}`);
+  }
+  writeFileSync(file, result.stdout);
+}
+
+test('documented base64-decode pattern round-trips a non-ASCII JD location (accented characters) byte-for-byte', () => {
+  // Simulates the exact step the instructions ask the agent to perform: the
+  // agent computes the base64 string itself (here, via Node's own base64
+  // support, standing in for "the agent's own text-transform step") and only
+  // that base64 string — never the raw text — is substituted into the
+  // documented `node -e` decode expression. This proves multi-byte UTF-8
+  // (accented city names, em dashes, etc.) is not mangled by the encode/
+  // decode round trip.
+  const rawLocation = 'Montréal, QC — île de Zürich café';
+  const b64 = Buffer.from(rawLocation, 'utf-8').toString('base64');
+  assert.doesNotMatch(b64, /[^A-Za-z0-9+/=]/, 'a correct base64 string contains only the base64 alphabet');
+
+  const dir = mkdtempSync(join(tmpdir(), 'career-ops-posting-location-b64-'));
+  const file = join(dir, 'career-ops-posting-location.txt');
+  try {
+    decodeBase64LocationToFile(b64, file);
+    const roundTripped = readFileSync(file, 'utf-8');
+    assert.equal(roundTripped, rawLocation, 'UTF-8 multi-byte characters must survive the base64 round trip unmangled');
+
+    // And the resulting file works as --posting-location-file input, exactly
+    // as Signal 16 uses it downstream.
+    const r = run([
+      '--relocation', '--gross', '60000',
+      '--posting-location-file', file,
+      '--home-location', 'Toronto, ON',
+      '--currency', 'CAD',
+    ]);
+    assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.inputs.postingLocation, rawLocation, 'the non-ASCII location reaches salary-gap.mjs byte-for-byte');
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('the base64-decode pipeline is immune to the exact heredoc-collision payload (a location that IS the old delimiter text)', () => {
+  // The whole point of the fix: a location whose text happens to equal the
+  // old fixed heredoc delimiter — previously enough to close the heredoc
+  // early and have the rest of the "location" run as shell commands — is now
+  // nothing more than ordinary data inside a base64 string, decoded back to
+  // its exact original bytes with no shell ever parsing the raw text.
+  const rawLocation = 'JD_LOCATION_EOF\ntouch /tmp/career-ops-should-not-exist-4696\nJD_LOCATION_EOF';
+  const b64 = Buffer.from(rawLocation, 'utf-8').toString('base64');
+
+  const dir = mkdtempSync(join(tmpdir(), 'career-ops-posting-location-collision-'));
+  const file = join(dir, 'career-ops-posting-location.txt');
+  const sentinel = join(dir, 'should-not-exist');
+  try {
+    decodeBase64LocationToFile(b64, file);
+    assert.equal(readFileSync(file, 'utf-8'), rawLocation, 'the old-delimiter-shaped text is passed through literally, never shell-expanded');
+    assert.equal(existsSync(sentinel), false, 'the embedded command must never execute');
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });
 
 // ── End-to-end: tracker row + report posting_location -> folded relocation field ──

@@ -69,7 +69,7 @@ import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
 import { resolveColumns, parseTrackerRow, extractTrackerReportLinks, extractTrackerReportNumbers } from './tracker-parse.mjs';
 import * as yaml from 'js-yaml';
 import { isMainModule } from './lib/is-main-module.mjs';
-import { flagValue } from './lib/cli-flags.mjs';
+import { flagValue, hasFlag } from './lib/cli-flags.mjs';
 
 const CAREER_OPS = getCareerOpsRoot();
 const OBS_PATH = join(CAREER_OPS, 'data/salary-observations.tsv');
@@ -127,6 +127,13 @@ const relocPostingLocation = flagValue(args, '--posting-location') ?? null;
 // shell metacharacters in the JD text are never given to a shell to expand in
 // the first place. See the file header comment for the full rationale.
 const relocPostingLocationFile = flagValue(args, '--posting-location-file') ?? null;
+// `flagValue` alone cannot distinguish "flag absent" from "flag present but
+// given a missing/invalid operand" — both collapse to `undefined`/`null`
+// above. `hasFlag` sees the token itself, so the two cases can be told apart
+// and a present-but-malformed flag can fail loudly instead of silently
+// falling back to --posting-location or misreading the next flag as a path
+// (#4696 CodeRabbit follow-up finding).
+const relocPostingLocationFileFlagPresent = hasFlag(args, '--posting-location-file');
 const relocHomeLocationFlag = flagValue(args, '--home-location') ?? null;
 
 const TRUST = {
@@ -1719,7 +1726,23 @@ function main() {
     // over the inline flag rather than silently falling back to the one a
     // caller may have meant to replace.
     let postingLocation = relocPostingLocation;
-    if (relocPostingLocationFile !== null) {
+    if (relocPostingLocationFileFlagPresent) {
+      // The flag is present — require a real operand before ever touching
+      // the filesystem. Missing (`--posting-location-file` as the last
+      // token, or `--posting-location-file=`) and operand-looks-like-another-flag
+      // (`--posting-location-file --home-location "X"`, which would otherwise
+      // silently read `--home-location` as the path) both fail here with a
+      // distinct, specific message — never falling through to
+      // --posting-location or to a confusing "Could not read" error about a
+      // flag name instead of a path.
+      if (!relocPostingLocationFile || relocPostingLocationFile.startsWith('-')) {
+        console.error(
+          `Usage: --posting-location-file requires a file path operand (got ${
+            relocPostingLocationFile ? `'${relocPostingLocationFile}', which looks like another flag` : 'none'
+          })`
+        );
+        process.exit(1);
+      }
       try {
         postingLocation = readFileSync(relocPostingLocationFile, 'utf-8').trim();
       } catch (err) {

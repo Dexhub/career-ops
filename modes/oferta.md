@@ -8,8 +8,6 @@ When the candidate pastes a job (text or URL), ALWAYS deliver the 7 blocks (A-F 
 
 When the candidate pastes a **URL** (not JD text), confirm the posting is still live before doing any evaluation. A dead link must never reach Block A — a 404/expired page wastes a full A-H evaluation, report, and PDF on phantom content.
 
-**LinkedIn URLs:** first apply AGENTS.md → **LinkedIn JD loading guard (#4121)**, including on direct `oferta` entry. Reuse prior content and the one-attempt budget across mode handoffs; it overrides the generic CLI/browser fallback below. A missing JD or stuck skeleton stays unconfirmed even with a title and Apply button. Stop before Block A and all artifact/tracker writes until real JD text is available; never navigate again just to resolve this gate.
-
 1. Get the page content: if you arrived here from `auto-pipeline` (its Step 0.5 already navigated and cleared the link), reuse that snapshot — do not navigate again. On a direct URL entry, navigate with Playwright (`browser_navigate` + `browser_snapshot`) and read the title, URL, and visible content. **Opt-in:** if `scan.extractor: cli` is set in `config/profile.yml`, run `node browser-extract.mjs <url>` (default `--mode jd`) instead and use its compact `{ "url", "title", "text" }` (the distilled JD main text rather than the full page a11y tree — fewer tokens for the model, board-dependent), **falling back silently** to `browser_navigate` + `browser_snapshot` if it errors or is missing.
    - The CLI extractor reads only the outer document. If its output lacks a real JD or apply path, use Playwright to check for an embedded iframe before making any closure decision, even when the extractor returned successfully.
 2. Classify the posting:
@@ -571,7 +569,6 @@ Then append one optional negotiation talking point:
 > **Compensation conversation:** [Render in {language.output}: "Because this role is explicitly fixed-term, consider asking how the total package accounts for the finite term, benefits coverage, renewal uncertainty, and transition risk at the end of the term. Contract roles commonly carry different compensation structures from equivalent permanent roles; verify current benchmarks for this market and role before choosing an anchor." Never state or invent a percentage premium, market rate, entitlement, or legal conclusion.]
 
 This signal is corroborating information only. It never changes the 1–5 Global Score, the High Confidence / Proceed with Caution / Suspicious tier, or the application recommendation; it never blocks or discourages an application. If no explicit fixed-term language is present, report the check as clear and do not generate the negotiation talking point.
-
 **17. Relocation Purchasing Power** (from the JD's own stated work location + `config/profile.yml` → `location`/`candidate.location`, computed by `salary-gap.mjs` against `templates/jurisdiction-relocation-tax.yml`; jurisdiction-compliance-lens umbrella #2026, member #4694):
 
 A posting that requires relocation to a different province/state can carry compensation that looks "close enough" to the candidate's target on paper while representing meaningfully different real purchasing power once marginal tax brackets differ enough between the two jurisdictions. This signal surfaces that gap as a plain computation, never a verdict on the posting.
@@ -580,14 +577,20 @@ A posting that requires relocation to a different province/state can carry compe
 
 **Computation (mandatory — run the script, never hand-compute):**
 
-**Never interpolate the JD's stated location directly into a shell argument (#4696, CWE-78).** It is untrusted, JD-author-controlled text, and this step can run with elevated/skip-permissions execution. A crafted location containing `$(...)` or backticks would be shell-expanded before `salary-gap.mjs` ever sees it if pasted straight into a double-quoted `--posting-location "..."` argument. Instead, write it to a file with a single-quoted heredoc — which performs no shell expansion on its body, regardless of what the JD text contains — and pass the file's path, not the text itself:
+**Never interpolate the JD's stated location directly into a shell argument, and never write it through a fixed-delimiter heredoc either (#4696, CWE-78 — two rounds of this finding now).** It is untrusted, JD-author-controlled text, and this step can run with elevated/skip-permissions execution. A crafted location containing `$(...)` or backticks would be shell-expanded before `salary-gap.mjs` ever sees it if pasted straight into a double-quoted `--posting-location "..."` argument. A **single-quoted heredoc with a fixed delimiter is not safe either** — if the location text itself contains a line that is literally `JD_LOCATION_EOF` (or whatever fixed string is chosen), the heredoc closes early right there, and the shell reads every following line of the "location" text as new shell commands and executes them. Both failure modes are the same root cause: raw, attacker-controlled text landing somewhere a shell parses before any program (not even `salary-gap.mjs`) gets to see it.
+
+The only safe fix is to never let the raw location text touch a shell command line, argument, or heredoc body AT ALL — not even transiently. Do this instead:
+
+1. **You (the agent) compute the base64 encoding of the complete JD location text yourself, as a pure text transformation on the string you already have in context** — the same way you already judge which text is "the JD's stated location, verbatim" a few lines above. This is NOT a shell operation: do not pipe the raw text through `base64`, `printf`, a heredoc, or any other shell command to produce this value — that would just relocate the exact same injection risk into the encoding step instead of removing it. Encode the complete UTF-8 byte sequence of the location text (accented characters, CJK, emoji, etc. all encode correctly as UTF-8 — never transliterate or drop them first) as one unbroken base64 string with **no line wrapping**.
+2. Embed **only** that resulting base64 string — which by construction contains nothing but the characters `A-Z a-z 0-9 + / =`, none of them shell-special — as the string literal inside the `node -e` command below. The raw location text itself must never appear in any command you run, in any form, at any point in this process.
+3. Decode and write the file in the same step, using Node (already this project's runtime) rather than a platform-specific `base64` binary, so this works identically everywhere:
 
 ```bash
-cat <<'JD_LOCATION_EOF' > /tmp/career-ops-posting-location.txt
-<JD's stated location, verbatim>
-JD_LOCATION_EOF
+node -e 'process.stdout.write(Buffer.from("<base64-encoded JD location, no line wrapping>", "base64"))' > /tmp/career-ops-posting-location.txt
 node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location-file /tmp/career-ops-posting-location.txt --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
 ```
+
+**Self-check before running the first command (mandatory):** re-read the base64 string you are about to substitute in. If it contains anything outside `A-Z a-z 0-9 + / =`, or any whitespace/newline, you have not actually encoded the text — go back and encode it properly rather than patching around it (e.g. by quoting it differently). Decoding is exact (`Buffer.from(..., 'base64')` yields the identical original UTF-8 bytes, and `process.stdout.write` plus `>` write them to the file unmodified), so an incorrect result here means the encoding step was done wrong, not that the decode needs adjusting.
 
 `--home-location` stays a plain double-quoted argument — it comes from `config/profile.yml`, a trusted user-layer file, never from the JD. Always pass `--currency` with `advertised_comp`'s own stated currency (e.g. `CAD`, `USD`) — never omit it and never guess it. The script checks it against the matched jurisdiction's own table currency and refuses to compute (`ok: false, reason: 'currency-mismatch'`) rather than silently taxing a non-CAD figure under CAD brackets; an `advertised_comp` with no identifiable currency is the same as the gate's own "no usable gross figure" case — not evaluated.
 
@@ -670,6 +673,7 @@ Block format:
 | Interview red flags | — no interview sessions yet |
 | AI claims vs. infrastructure | — not evaluated |
 | Fixed-term contract | ℹ️ fixed term — "18-month contract" |
+| Relocation purchasing power | ℹ️ {home.jurisdiction} ~{home.takeHome} vs {dest.jurisdiction} ~{dest.takeHome} |
 ```
 
 Mirror the block into `## Machine Summary` as a `risk_summary:` map (exact key names and enum values in `batch/batch-prompt.md`, the Machine Summary source of truth) so downstream scripts consume it without re-parsing prose.
