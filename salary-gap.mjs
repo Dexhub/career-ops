@@ -298,6 +298,57 @@ export function loadRelocationTable(tablePath = RELOCATION_TABLE_PATH) {
   }
 }
 
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Non-Canadian context markers (#4696 CodeRabbit finding #2). A bare
+// city-name alias ("Waterloo", "Hamilton", "Surrey") collides with a
+// same-named city outside the table's country. Rather than try to enumerate
+// every foreign city, block a city-only match whenever the text ALSO names
+// an unambiguous non-Canadian place (a US state, the UK, New Zealand, …) —
+// real signal the city-name alias alone cannot see.
+const FOREIGN_CONTEXT_MARKERS = [
+  'Alabama', 'Alaska', 'Arizona', 'Arkansas', 'California', 'Colorado', 'Connecticut',
+  'Delaware', 'Florida', 'Georgia', 'Hawaii', 'Idaho', 'Illinois', 'Indiana', 'Iowa',
+  'Kansas', 'Kentucky', 'Louisiana', 'Maine', 'Maryland', 'Massachusetts', 'Michigan',
+  'Minnesota', 'Mississippi', 'Missouri', 'Montana', 'Nebraska', 'Nevada',
+  'New Hampshire', 'New Jersey', 'New Mexico', 'New York', 'North Carolina',
+  'North Dakota', 'Ohio', 'Oklahoma', 'Oregon', 'Pennsylvania', 'Rhode Island',
+  'South Carolina', 'South Dakota', 'Tennessee', 'Texas', 'Utah', 'Vermont',
+  'Virginia', 'Washington', 'West Virginia', 'Wisconsin', 'Wyoming',
+  'United States', 'USA',
+  'United Kingdom', 'UK', 'England', 'Scotland', 'Wales',
+  'New Zealand', 'Australia',
+];
+const hasForeignContext = (text) => FOREIGN_CONTEXT_MARKERS.some(
+  (m) => new RegExp(`\\b${escapeRegExp(m)}\\b`, 'i').test(text),
+);
+
+// An alias is a "strong" signal (a province/state's own name or its short
+// abbreviation) when it either IS the jurisdiction's own name, or reduces to
+// a bare 2-letter uppercase code once leading punctuation is stripped (", ON"
+// / " ON" -> "ON"). Everything else (a city name) is a "weak" signal: on its
+// own it can be a same-named city in another country entirely.
+function isStrongAlias(alias, row) {
+  const bare = alias.replace(/^[,\s]+/, '').trim();
+  if (/^[A-Z]{2}$/.test(bare)) return true;
+  const provinceName = String(row?.jurisdiction_name ?? '').split(',')[0].trim();
+  return !!provinceName && bare.toLowerCase() === provinceName.toLowerCase();
+}
+
+// Whole-word match for a name/city alias; a short (2-letter) abbreviation
+// alias is matched case-SENSITIVELY with its own boundary set so "ON" never
+// fires on the "on" in "on-site" or "in office on Fridays".
+function textContainsAlias(text, alias) {
+  const bare = alias.replace(/^[,\s]+/, '').trim();
+  if (!bare) return false;
+  if (/^[A-Z]{2}$/.test(bare)) {
+    const re = new RegExp(`(^|[\\s,(])${escapeRegExp(bare)}(?=$|[\\s,).])`);
+    return re.test(text);
+  }
+  const re = new RegExp(`\\b${escapeRegExp(bare)}\\b`, 'i');
+  return re.test(text);
+}
+
 /**
  * Match a free-text location string (the candidate's own config/profile.yml
  * location, or a posting's stated work location) against the table's
@@ -308,6 +359,18 @@ export function loadRelocationTable(tablePath = RELOCATION_TABLE_PATH) {
  * guess. A federal-level row is never matched directly; it carries no aliases
  * and is combined with whichever sub-national row matched instead.
  *
+ * Matching is whole-word and (for short abbreviation aliases) case-sensitive
+ * (#4696 CodeRabbit finding #2) — a naive substring match previously turned
+ * "Austin, TX (on-site)" into CA-ON via the "on" in "on-site". A province/
+ * state name or abbreviation ("NS", "Ontario") is a STRONG signal and wins
+ * outright over a bare city name, which disambiguates "Halifax, NS (in
+ * office on Fridays)" to CA-NS only. When the only match is a bare city-name
+ * alias (no strong signal in the text at all), the text is also checked for
+ * an unambiguous non-Canadian context marker (a US state, "UK", "New
+ * Zealand", …) — "Waterloo, Iowa", "Hamilton, New Zealand" and "Surrey, UK"
+ * share city names with CA-ON/CA-BC towns but are not those towns, and a
+ * bare city name alone is not strong enough evidence to override that.
+ *
  * @param {string} text - Free-text location.
  * @param {object} jurisdictions - Table from loadRelocationTable().
  * @returns {string|null} The matched jurisdiction code, or null.
@@ -315,16 +378,32 @@ export function loadRelocationTable(tablePath = RELOCATION_TABLE_PATH) {
 export function matchJurisdiction(text, jurisdictions) {
   const s = String(text ?? '').trim();
   if (!s || !jurisdictions) return null;
-  const matches = new Set();
+
+  const strongMatches = new Set();
+  const weakMatches = new Set();
   for (const [code, row] of Object.entries(jurisdictions)) {
     if (row?.level === 'federal') continue;
+    let strongHit = false;
+    let weakHit = false;
     for (const alias of row?.aliases ?? []) {
       const a = String(alias ?? '').trim();
-      if (!a) continue;
-      if (s.toLowerCase().includes(a.toLowerCase())) { matches.add(code); break; }
+      if (!a || !textContainsAlias(s, a)) continue;
+      if (isStrongAlias(a, row)) strongHit = true;
+      else weakHit = true;
     }
+    if (strongHit) strongMatches.add(code);
+    else if (weakHit) weakMatches.add(code);
   }
-  return matches.size === 1 ? [...matches][0] : null;
+
+  // A province/state name or abbreviation always wins over a bare city name,
+  // and resolves ambiguity between two jurisdictions that happen to share a
+  // city name's text (the weak match is simply discarded in that case).
+  if (strongMatches.size > 0) return strongMatches.size === 1 ? [...strongMatches][0] : null;
+  if (weakMatches.size !== 1) return null;
+
+  const onlyCode = [...weakMatches][0];
+  if (hasForeignContext(s)) return null; // bare city name only, foreign context present -> no guess
+  return onlyCode;
 }
 
 /**
@@ -361,13 +440,18 @@ export function bracketTax(brackets, income) {
  * posting is a "good" or "bad" offer.
  *
  * @param {object} params
- * @param {number} params.grossAnnual - Gross annual compensation (home currency, same both sides).
+ * @param {number} params.grossAnnual - Gross annual compensation, in `currency`.
  * @param {string} params.homeCode - Jurisdiction code of the candidate's home province/state.
  * @param {string} params.destCode - Jurisdiction code of the posting's work location.
  * @param {object} params.jurisdictions - Table from loadRelocationTable().
+ * @param {string} [params.currency] - The currency `grossAnnual` is actually denominated
+ *   in (e.g. the advertised comp's own currency, or the ad hoc `--currency` flag).
+ *   A table row's `currency` field (all seeded rows carry one) must match this,
+ *   case-insensitively, or the comparison is refused rather than silently taxed
+ *   under the wrong jurisdiction's brackets (#4696 CodeRabbit finding #3).
  * @returns {object} `{ ok: true, ... }` or `{ ok: false, reason }`.
  */
-export function computeRelocationAdjustment({ grossAnnual, homeCode, destCode, jurisdictions }) {
+export function computeRelocationAdjustment({ grossAnnual, homeCode, destCode, jurisdictions, currency }) {
   if (!jurisdictions) return { ok: false, reason: 'no-table' };
   if (!(grossAnnual > 0)) return { ok: false, reason: 'no-gross-amount' };
   if (!homeCode || !destCode) return { ok: false, reason: 'no-jurisdiction-match' };
@@ -376,6 +460,21 @@ export function computeRelocationAdjustment({ grossAnnual, homeCode, destCode, j
   const dest = jurisdictions[destCode];
   if (!home || !dest) return { ok: false, reason: 'no-jurisdiction-match' };
   if (home.country !== dest.country) return { ok: false, reason: 'cross-country-not-supported' };
+
+  // The brackets below are only meaningful in the table's own currency. Rows
+  // that declare one (every seeded CA-* row does) require a known, matching
+  // advertised/--currency value — an UNKNOWN or mismatched currency (e.g. a
+  // "150k USD" posting) must never be silently run through CAD brackets.
+  // Rows carrying no `currency` field (legacy/fixture tables) skip this check
+  // entirely, so existing non-CA fixtures keep behaving as before.
+  const tableCurrency = dest.currency ?? home.currency ?? null;
+  if (tableCurrency) {
+    const stated = currency ? String(currency).toUpperCase() : 'UNKNOWN';
+    if (stated === 'UNKNOWN' || stated !== String(tableCurrency).toUpperCase()) {
+      return { ok: false, reason: 'currency-mismatch' };
+    }
+  }
+
   const federalCode = Object.keys(jurisdictions).find(
     (c) => jurisdictions[c]?.level === 'federal' && jurisdictions[c]?.country === home.country,
   );
@@ -424,7 +523,10 @@ export function relocationForApplication(a, { jurisdictions, homeLocation }) {
   if (!jurisdictions || !homeLocation || !a?.postingLocation || !a?.advertised) return null;
   const homeCode = matchJurisdiction(homeLocation, jurisdictions);
   const destCode = matchJurisdiction(a.postingLocation, jurisdictions);
-  return computeRelocationAdjustment({ grossAnnual: a.advertised.value, homeCode, destCode, jurisdictions });
+  return computeRelocationAdjustment({
+    grossAnnual: a.advertised.value, homeCode, destCode, jurisdictions,
+    currency: a.advertised.currency,
+  });
 }
 
 const pctDelta = (from, to) => ((to - from) / from) * 100;
@@ -1090,6 +1192,35 @@ posting_location: "Halifax, NS"
   assert(matchJurisdiction('Springfield', AMBIGUOUS_FIXTURE) === null,
     'two different jurisdictions sharing an alias -> null, never an arbitrary pick');
 
+  // matchJurisdiction false-positive regression (#4696 CodeRabbit finding #2):
+  // whole-word + case-sensitive abbreviation matching, a province/state name or
+  // abbreviation always wins over a bare city name, and a bare city-name-only
+  // match is rejected when the text also carries an unambiguous non-Canadian
+  // context marker. Exercised against the REAL table (not a fixture) because
+  // the false positives were specifically against its real aliases.
+  {
+    const rt = loadRelocationTable();
+    assert(matchJurisdiction('Austin, TX (on-site)', rt) === null,
+      '"on-site" never false-matches the ON abbreviation (case-sensitive, word-boundary)');
+    assert(matchJurisdiction('Remote, Abu Dhabi', rt) === null,
+      '"Abu" never false-matches the AB abbreviation (case-sensitive)');
+    assert(matchJurisdiction('Abu Dhabi', rt) === null,
+      'bare "Abu Dhabi" never false-matches AB either');
+    assert(matchJurisdiction('Halifax, NS (in office on Fridays)', rt) === 'CA-NS',
+      'a real province abbreviation (NS) wins outright over the "on" in "on Fridays" -- no ambiguity');
+    assert(matchJurisdiction('Waterloo, Iowa', rt) === null,
+      'Waterloo is also an Iowa city -- the Iowa context blocks the ON city-alias match');
+    assert(matchJurisdiction('Hamilton, New Zealand', rt) === null,
+      'Hamilton is also a New Zealand city -- that context blocks the ON city-alias match');
+    assert(matchJurisdiction('Surrey, UK', rt) === null,
+      'Surrey is also a UK city -- that context blocks the BC city-alias match');
+    // True positives keep working: real Canadian cities/abbreviations still resolve.
+    assert(matchJurisdiction('Halifax, NS', rt) === 'CA-NS', 'real "Halifax, NS" still resolves to CA-NS');
+    assert(matchJurisdiction('Toronto, ON', rt) === 'CA-ON', 'real "Toronto, ON" still resolves to CA-ON');
+    assert(matchJurisdiction('Vancouver, BC', rt) === 'CA-BC', 'real "Vancouver, BC" still resolves to CA-BC');
+    assert(matchJurisdiction('Calgary, Alberta', rt) === 'CA-AB', 'real "Calgary, Alberta" still resolves to CA-AB');
+  }
+
   // computeRelocationAdjustment: transparent inputs, correct math, honest failure reasons
   const reloc1 = computeRelocationAdjustment({ grossAnnual: 60000, homeCode: 'XX-NORTH', destCode: 'XX-SOUTH', jurisdictions: RELOC_FIXTURE });
   assert(reloc1.ok === true, 'valid relocation comparison succeeds');
@@ -1142,9 +1273,39 @@ posting_location: "Halifax, NS"
   const realHalifax = matchJurisdiction('Halifax, NS', realTable);
   const realToronto = matchJurisdiction('Toronto, ON', realTable);
   assert(realHalifax === 'CA-NS' && realToronto === 'CA-ON', 'real table resolves the issue #4694 example cities (Halifax NS, Toronto/Midland ON)');
-  const realReloc = computeRelocationAdjustment({ grossAnnual: 60000, homeCode: realToronto, destCode: realHalifax, jurisdictions: realTable });
+  assert(realTable['CA-ON']?.currency === 'CAD' && realTable['CA-NS']?.currency === 'CAD',
+    'every seeded real jurisdiction row declares its currency');
+  const realReloc = computeRelocationAdjustment({
+    grossAnnual: 60000, homeCode: realToronto, destCode: realHalifax, jurisdictions: realTable, currency: 'CAD',
+  });
   assert(realReloc.ok === true && realReloc.dest.takeHome < realReloc.home.takeHome,
     `at the same $60k gross, NS's higher brackets leave less take-home than ON's — got ${JSON.stringify({ home: realReloc.home.takeHome, dest: realReloc.dest.takeHome })}`);
+
+  // currency-mismatch (#4696 CodeRabbit finding #3): a table row that declares
+  // a currency (every real CA-* row does) must never be silently taxed under
+  // the wrong currency's gross figure.
+  const usdMismatch = computeRelocationAdjustment({
+    grossAnnual: 150000, homeCode: realToronto, destCode: realHalifax, jurisdictions: realTable, currency: 'USD',
+  });
+  assert(usdMismatch.ok === false && usdMismatch.reason === 'currency-mismatch',
+    `a USD gross figure against the CAD table must refuse, not silently tax as CAD, got ${JSON.stringify(usdMismatch)}`);
+  const unknownMismatch = computeRelocationAdjustment({
+    grossAnnual: 150000, homeCode: realToronto, destCode: realHalifax, jurisdictions: realTable, currency: 'UNKNOWN',
+  });
+  assert(unknownMismatch.ok === false && unknownMismatch.reason === 'currency-mismatch',
+    'an UNKNOWN currency against a currency-bearing table row also refuses');
+  const omittedMismatch = computeRelocationAdjustment({
+    grossAnnual: 150000, homeCode: realToronto, destCode: realHalifax, jurisdictions: realTable,
+  });
+  assert(omittedMismatch.ok === false && omittedMismatch.reason === 'currency-mismatch',
+    'no currency supplied at all is treated the same as UNKNOWN, never assumed to match');
+  const caseInsensitiveMatch = computeRelocationAdjustment({
+    grossAnnual: 60000, homeCode: realToronto, destCode: realHalifax, jurisdictions: realTable, currency: 'cad',
+  });
+  assert(caseInsensitiveMatch.ok === true, 'currency comparison is case-insensitive ("cad" matches "CAD")');
+  // Legacy/fixture tables with no `currency` field on their rows skip the
+  // check entirely — RELOC_FIXTURE's own earlier `ok === true` assertions
+  // (reloc1, relocResult) already cover this with no currency argument at all.
 
   console.log('salary-gap self-test OK (parser + report extraction + fold + aggregates + currency guard + relocation purchasing-power)');
 }
@@ -1506,7 +1667,9 @@ function main() {
     const homeLocation = relocHomeLocationFlag ?? loadProfileLocation();
     const homeCode = matchJurisdiction(homeLocation, jurisdictions);
     const destCode = matchJurisdiction(relocPostingLocation, jurisdictions);
-    const result = computeRelocationAdjustment({ grossAnnual: gross, homeCode, destCode, jurisdictions });
+    const result = computeRelocationAdjustment({
+      grossAnnual: gross, homeCode, destCode, jurisdictions, currency: relocCurrency,
+    });
     console.log(JSON.stringify({
       inputs: {
         grossAnnual: gross, currency: relocCurrency,

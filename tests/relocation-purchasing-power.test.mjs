@@ -48,6 +48,7 @@ test('ad hoc --relocation mode reproduces the #4694 motivating example (Halifax 
     '--relocation', '--gross', '60000',
     '--posting-location', 'Halifax, NS',
     '--home-location', 'Midland, ON',
+    '--currency', 'CAD',
   ]);
   assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
   const out = JSON.parse(r.stdout);
@@ -66,6 +67,70 @@ test('ad hoc --relocation mode reproduces the #4694 motivating example (Halifax 
   assert.equal(out.inputs.grossAnnual, 60000);
   assert.equal(out.inputs.homeLocation, 'Midland, ON');
   assert.equal(out.inputs.postingLocation, 'Halifax, NS');
+});
+
+// ── CodeRabbit finding #3 (#4696): the --currency flag must actually be
+//    checked against the table's own currency, not just echoed back. ──
+
+test('ad hoc --relocation mode refuses a USD gross figure against the CAD table (currency-mismatch, not a silently-wrong number)', () => {
+  const r = run([
+    '--relocation', '--gross', '150000',
+    '--posting-location', 'Halifax, NS',
+    '--home-location', 'Midland, ON',
+    '--currency', 'USD',
+  ]);
+  assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, false, `expected ok:false for a USD gross against a CAD table, got ${JSON.stringify(out)}`);
+  assert.equal(out.reason, 'currency-mismatch');
+  assert.equal(out.home, undefined, 'no take-home figure is computed on a currency mismatch');
+  assert.equal(out.dest, undefined, 'no take-home figure is computed on a currency mismatch');
+});
+
+test('ad hoc --relocation mode refuses an UNKNOWN currency against the CAD table', () => {
+  const r = run([
+    '--relocation', '--gross', '150000',
+    '--posting-location', 'Halifax, NS',
+    '--home-location', 'Midland, ON',
+    '--currency', 'UNKNOWN',
+  ]);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, false);
+  assert.equal(out.reason, 'currency-mismatch');
+});
+
+test('ad hoc --relocation mode with --currency omitted entirely is treated as UNKNOWN, never assumed to match', () => {
+  const r = run([
+    '--relocation', '--gross', '150000',
+    '--posting-location', 'Halifax, NS',
+    '--home-location', 'Midland, ON',
+  ]);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.ok, false, `omitting --currency must not silently compute a CAD take-home, got ${JSON.stringify(out)}`);
+  assert.equal(out.reason, 'currency-mismatch');
+});
+
+// ── CodeRabbit finding #2 (#4696): matchJurisdiction false positives. The
+//    pure-function cases (word-boundary, case-sensitive abbreviations, and
+//    the foreign-context city-name disambiguation) are covered exhaustively
+//    in salary-gap.mjs's own --self-test; this is one end-to-end check that
+//    the fix is actually wired into the ad hoc CLI path, not just the
+//    exported function. ──
+
+test('ad hoc --relocation mode: a same-named foreign city (Surrey, UK) never false-matches a Canadian jurisdiction', () => {
+  const r = run([
+    '--relocation', '--gross', '60000',
+    '--posting-location', 'Surrey, UK',
+    '--home-location', 'Midland, ON',
+    '--currency', 'CAD',
+  ]);
+  assert.equal(r.status, 0);
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.inputs.destCode, null, 'Surrey, UK must not resolve to CA-BC');
+  assert.equal(out.ok, false);
+  assert.equal(out.reason, 'no-jurisdiction-match');
 });
 
 test('ad hoc --relocation mode with no resolvable jurisdiction reports a reason, not a guess', () => {

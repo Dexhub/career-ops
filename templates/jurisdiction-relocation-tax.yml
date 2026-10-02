@@ -52,6 +52,19 @@
 #       jurisdiction_name: string  — human-readable name for report output
 #       country: string            — country name (not code) for report output
 #       level: "federal" | "provincial" | "state"
+#       currency: string           — ISO 4217 code the brackets below are denominated
+#                                     in (e.g. "CAD"). REQUIRED on every sub-national
+#                                     row: salary-gap.mjs's computeRelocationAdjustment
+#                                     refuses to run gross figures through these
+#                                     brackets unless the advertised/--currency value
+#                                     matches this field exactly (case-insensitive) —
+#                                     an UNKNOWN or mismatched currency (e.g. a
+#                                     "150k USD" posting against this CAD table)
+#                                     returns `{ ok: false, reason: 'currency-mismatch' }`
+#                                     rather than silently taxing the wrong number
+#                                     (#4696). A row with no `currency` field skips
+#                                     this check entirely (legacy/fixture tables only —
+#                                     never omit it from a real jurisdiction row).
 #       tax_year: integer          — the tax year these brackets apply to
 #       aliases: list              — strings that identify this jurisdiction inside
 #                                     a free-text location (candidate's own
@@ -100,6 +113,7 @@ jurisdictions:
     jurisdiction_name: "Canada — Federal"
     country: "Canada"
     level: federal
+    currency: "CAD"
     tax_year: 2026
     # Federal rows are combined with every provincial row of the same country —
     # never matched directly against a location string, so no aliases here.
@@ -122,6 +136,7 @@ jurisdictions:
     jurisdiction_name: "Ontario, Canada"
     country: "Canada"
     level: provincial
+    currency: "CAD"
     tax_year: 2026
     aliases:
       - "Ontario"
@@ -161,6 +176,7 @@ jurisdictions:
     jurisdiction_name: "Nova Scotia, Canada"
     country: "Canada"
     level: provincial
+    currency: "CAD"
     tax_year: 2026
     aliases:
       - "Nova Scotia"
@@ -189,6 +205,7 @@ jurisdictions:
     jurisdiction_name: "Alberta, Canada"
     country: "Canada"
     level: provincial
+    currency: "CAD"
     tax_year: 2026
     aliases:
       - "Alberta"
@@ -218,6 +235,7 @@ jurisdictions:
     jurisdiction_name: "British Columbia, Canada"
     country: "Canada"
     level: provincial
+    currency: "CAD"
     tax_year: 2026
     aliases:
       - "British Columbia"
