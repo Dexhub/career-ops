@@ -6,7 +6,7 @@
 // own --self-test):
 //
 //   1. Ad hoc mode (`--relocation --gross ... --posting-location ...`) — what
-//      modes/oferta.md Signal 16 calls during a FRESH evaluation, before
+//      modes/oferta.md Signal 17 calls during a FRESH evaluation, before
 //      anything is written to reports/ or the tracker.
 //   2. The folded, per-application `relocation` field on the default/--summary
 //      output — computed from a tracker row + a report's own
@@ -316,16 +316,27 @@ test('ad hoc --relocation mode: "Hamilton, QC" never false-matches CA-ON either'
 //    for the JD-controlled posting location, never the raw shell-argument
 //    form that motivated the CWE-78 finding. ──
 
-test('modes/oferta.md Signal 16 passes the JD location through a file, never --posting-location "<JD', () => {
+test('modes/oferta.md Signal 17 passes the JD location through a file, never --posting-location "<JD', () => {
   const oferta = readFile('modes/oferta.md');
-  assert.match(oferta, /--posting-location-file/, 'Signal 16 uses the safe file-based flag');
+  assert.match(oferta, /--posting-location-file/, 'Signal 17 uses the safe file-based flag');
   assert.doesNotMatch(oferta, /--posting-location "<JD/, 'the JD-controlled value is never shell-interpolated directly');
 });
 
-test('batch/batch-prompt.md Signal 16 passes the JD location through a file, never --posting-location "<JD', () => {
+test('batch/batch-prompt.md Signal 17 passes the JD location through a file, never --posting-location "<JD', () => {
   const batchPrompt = readFile('batch/batch-prompt.md');
-  assert.match(batchPrompt, /--posting-location-file/, 'Signal 16 uses the safe file-based flag');
+  assert.match(batchPrompt, /--posting-location-file/, 'Signal 17 uses the safe file-based flag');
   assert.doesNotMatch(batchPrompt, /--posting-location "<JD/, 'the JD-controlled value is never shell-interpolated directly');
+});
+
+test('both Signal 17 prompts annualize only explicit, sufficiently specified compensation periods', () => {
+  for (const path of ['modes/oferta.md', 'batch/batch-prompt.md']) {
+    const prompt = readFile(path);
+    assert.match(prompt, /monthly[\s\S]{0,80}`midpoint × 12`/, `${path} documents monthly-to-annual conversion`);
+    assert.match(prompt, /hourly[\s\S]{0,220}(?:JD states weekly hours|JD's stated weekly hours)/, `${path} requires JD-stated weekly hours for hourly annualization`);
+    assert.match(prompt, /`midpoint × (?:the JD's stated|stated) weekly hours × 52`/, `${path} documents hourly-to-annual conversion`);
+    assert.match(prompt, /never assume a 40-hour week or a 2,080-hour year/, `${path} forbids guessing hourly work schedules`);
+    assert.match(prompt, /missing\/ambiguous period[\s\S]{0,100}(?:not evaluated|annual gross is unknown)/, `${path} skips compensation with an unclear period`);
+  }
 });
 
 // ── #4696 CodeRabbit follow-up finding (second round): a single-quoted
@@ -338,25 +349,25 @@ test('batch/batch-prompt.md Signal 16 passes the JD location through a file, nev
 //    tests lock that fix in so it cannot silently regress back to a heredoc
 //    in either prompt file. ──
 
-test('modes/oferta.md Signal 16 no longer uses a heredoc to write the JD location (heredoc delimiter collision, CWE-78 round 2)', () => {
+test('modes/oferta.md Signal 17 no longer uses a heredoc to write the JD location (heredoc delimiter collision, CWE-78 round 2)', () => {
   const oferta = readFile('modes/oferta.md');
   assert.doesNotMatch(oferta, /<<'?JD_LOCATION_EOF'?/, 'the fixed-delimiter heredoc must be gone, not just renamed');
   assert.doesNotMatch(oferta, /cat <<'/, 'no heredoc of any delimiter name should remain for the posting location');
 });
 
-test('batch/batch-prompt.md Signal 16 no longer uses a heredoc to write the JD location (heredoc delimiter collision, CWE-78 round 2)', () => {
+test('batch/batch-prompt.md Signal 17 no longer uses a heredoc to write the JD location (heredoc delimiter collision, CWE-78 round 2)', () => {
   const batchPrompt = readFile('batch/batch-prompt.md');
   assert.doesNotMatch(batchPrompt, /<<'?JD_LOCATION_EOF'?/, 'the fixed-delimiter heredoc must be gone, not just renamed');
   assert.doesNotMatch(batchPrompt, /cat <<'/, 'no heredoc of any delimiter name should remain for the posting location');
 });
 
-test('modes/oferta.md Signal 16 writes the posting-location file via base64-decoded Node, not a shell-interpolated or heredoc-fed value', () => {
+test('modes/oferta.md Signal 17 writes the posting-location file via base64-decoded Node, not a shell-interpolated or heredoc-fed value', () => {
   const oferta = readFile('modes/oferta.md');
   assert.match(oferta, /Buffer\.from\("<base64-encoded JD location/, 'decodes a base64 string literal, never raw JD text');
   assert.match(oferta, /"base64"/, 'uses base64 decoding');
 });
 
-test('batch/batch-prompt.md Signal 16 writes the posting-location file via base64-decoded Node, not a shell-interpolated or heredoc-fed value', () => {
+test('batch/batch-prompt.md Signal 17 writes the posting-location file via base64-decoded Node, not a shell-interpolated or heredoc-fed value', () => {
   const batchPrompt = readFile('batch/batch-prompt.md');
   assert.match(batchPrompt, /Buffer\.from\("<base64-encoded JD location/, 'decodes a base64 string literal, never raw JD text');
   assert.match(batchPrompt, /"base64"/, 'uses base64 decoding');
@@ -399,7 +410,7 @@ test('documented base64-decode pattern round-trips a non-ASCII JD location (acce
     assert.equal(roundTripped, rawLocation, 'UTF-8 multi-byte characters must survive the base64 round trip unmangled');
 
     // And the resulting file works as --posting-location-file input, exactly
-    // as Signal 16 uses it downstream.
+    // as Signal 17 uses it downstream.
     const r = run([
       '--relocation', '--gross', '60000',
       '--posting-location-file', file,
@@ -514,11 +525,11 @@ test('--summary mode renders the relocation line with the not-financial-advice c
 //    rather than a new inline section in test-all.mjs — see that file's own
 //    header: "NEW TESTS GO IN A FILE OF THEIR OWN") ──
 
-test('modes/oferta.md Block G carries Signal 16 and its Risk Summary row', () => {
+test('modes/oferta.md Block G carries Signal 17 and its Risk Summary row', () => {
   const oferta = readFile('modes/oferta.md');
-  assert.match(oferta, /\*\*16\. Relocation Purchasing Power\*\*/, 'Signal 16 heading present');
-  assert.match(oferta, /node salary-gap\.mjs --relocation --gross/, 'Signal 16 instructs running the real CLI, not hand-computing the arithmetic');
-  assert.match(oferta, /Not financial or tax advice|not financial or tax advice/i, 'Signal 16 carries the not-financial/tax-advice disclaimer');
+  assert.match(oferta, /\*\*17\. Relocation Purchasing Power\*\*/, 'Signal 17 heading present');
+  assert.match(oferta, /node salary-gap\.mjs --relocation --gross/, 'Signal 17 instructs running the real CLI, not hand-computing the arithmetic');
+  assert.match(oferta, /Not financial or tax advice|not financial or tax advice/i, 'Signal 17 carries the not-financial/tax-advice disclaimer');
   const riskSummarySection = oferta.slice(
     oferta.indexOf('## Risk Summary (after Block G)'),
     oferta.indexOf('Block format:'),

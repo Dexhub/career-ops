@@ -573,7 +573,7 @@ This signal is corroborating information only. It never changes the 1–5 Global
 
 A posting that requires relocation to a different province/state can carry compensation that looks "close enough" to the candidate's target on paper while representing meaningfully different real purchasing power once marginal tax brackets differ enough between the two jurisdictions. This signal surfaces that gap as a plain computation, never a verdict on the posting.
 
-**Gate (mandatory):** only runs when (a) the JD states a specific work location requiring relocation (not fully remote with no base jurisdiction), (b) that location differs from the candidate's own `config/profile.yml` location, and (c) `advertised_comp` resolves to a usable gross figure (the midpoint of a range is fine — this is a directional comparison, not an exact one). Missing any of the three → this signal is **not evaluated**; say nothing rather than guess.
+**Gate (mandatory):** only runs when (a) the JD states a specific work location requiring relocation (not fully remote with no base jurisdiction), (b) that location differs from the candidate's own `config/profile.yml` location, and (c) `advertised_comp` resolves to a usable **annual gross** figure (the midpoint of a range is fine — this is a directional comparison, not an exact one). An explicitly annual figure passes through unchanged. An explicitly monthly figure may be annualized as `midpoint × 12`. An explicitly hourly figure may be annualized as `midpoint × the JD's stated weekly hours × 52` — the weekly hours must come from the JD; never assume a 40-hour week or a 2,080-hour year. Any other period, an hourly figure without stated weekly hours, or a missing/ambiguous period means the annual gross is unknown and this signal is **not evaluated**. Missing any of the three gate inputs → say nothing rather than guess.
 
 **Computation (mandatory — run the script, never hand-compute):**
 
@@ -589,7 +589,7 @@ The only safe fix is to never let the raw location text touch a shell command li
 posting_location_file="$(mktemp /tmp/career-ops-posting-location.XXXXXX)"
 trap 'rm -f -- "$posting_location_file"' EXIT
 node -e 'process.stdout.write(Buffer.from("<base64-encoded JD location, no line wrapping>", "base64"))' > "$posting_location_file"
-node salary-gap.mjs --relocation --gross <advertised_comp midpoint> --posting-location-file "$posting_location_file" --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
+node salary-gap.mjs --relocation --gross <annual gross: annual midpoint; monthly midpoint × 12; or hourly midpoint × JD-stated weekly hours × 52> --posting-location-file "$posting_location_file" --home-location "<config/profile.yml location>" --currency <advertised_comp's own currency>
 ```
 
 **Self-check before running the first command (mandatory):** re-read the base64 string you are about to substitute in. If it contains anything outside `A-Z a-z 0-9 + / =`, or any whitespace/newline, you have not actually encoded the text — go back and encode it properly rather than patching around it (e.g. by quoting it differently). Decoding is exact (`Buffer.from(..., 'base64')` yields the identical original UTF-8 bytes, and `process.stdout.write` plus `>` write them to the file unmodified), so an incorrect result here means the encoding step was done wrong, not that the decode needs adjusting.
