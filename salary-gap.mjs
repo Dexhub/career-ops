@@ -199,9 +199,12 @@ export function parseAmount(raw) {
   if (!s || s === '?' || s === '-' || /^(n\/?a|null)$/i.test(s)) return null;
   // Keep period recognition separate from amount parsing, but allow an explicit
   // annual suffix to coexist with the numeric value in Machine Summary data.
-  // Other periods remain unparseable here because callers must annualize them
-  // from the JD's own stated inputs before treating them as annual gross.
-  s = s.replace(/\s*(?:\/\s*(?:year|yr)|per\s+(?:year|annum)|annual(?:ly)?|yearly)\s*$/i, '').trim();
+  // It may appear on either side of a trailing currency token ("60k CAD per
+  // year" or "60k per year CAD"), so strip annual/currency/annual in that
+  // order. Other periods remain unparseable because callers must annualize them
+  // from the JD's own inputs before treating them as annual gross.
+  const stripAnnual = (value) => value.replace(/\s*(?:\/\s*(?:year|yr)|per\s+(?:year|annum)|annual(?:ly)?|yearly)\s*$/i, '').trim();
+  s = stripAnnual(s);
   // Strip currency symbols anywhere (US pay-transparency ranges often repeat the
   // symbol on both bounds: "$123,684—$254,644 USD") and a trailing 3-letter
   // ISO-4217-style alpha token (any case — "450k SEK", "80-90k eur"). Exactly
@@ -209,6 +212,7 @@ export function parseAmount(raw) {
   // prose ("competitive") still fails the numeric match below even after losing
   // its last three letters.
   s = s.replace(/[€$£¥]/g, '').replace(/\s*[A-Za-z]{3}\s*$/, '').trim();
+  s = stripAnnual(s);
   const toNum = (numStr, kFlag) => {
     const n = parseFloat(canonicalizeSeparators(numStr));
     return Number.isNaN(n) ? null : (kFlag ? n * 1000 : n);
@@ -1205,6 +1209,12 @@ posting_location: "Halifax, NS"
     new Map([['50', relocReportObs]]),
   );
   assert(relocMapped.apps['50']?.postingLocation === 'Halifax, NS', 'mapTrackerToApps carries posting_location onto the owning tracker row');
+  const relocShared = mapTrackerToApps([
+    { num: '50', company: 'Fictional Corp', role: 'Backend Eng', report: '[050](../reports/050-fictional-corp-2026-09-01.md)', notes: '' },
+    { num: '52', company: 'Other Corp', role: 'Other Eng', report: '[050](../reports/050-fictional-corp-2026-09-01.md)', notes: '' },
+  ], new Map([['50', relocReportObs]]));
+  assert(relocShared.apps['50']?.postingLocation === 'Halifax, NS', 'a shared report keeps its posting location on the owning row');
+  assert(relocShared.apps['52']?.postingLocation === null, 'a later row sharing the report does not inherit its owner\'s posting location');
   const relocMappedNoReport = mapTrackerToApps([{ num: '51', company: 'Recruiter Co', role: 'Eng', report: '', notes: '' }], new Map());
   assert(relocMappedNoReport.apps['51']?.postingLocation === null, 'a report-less tracker row gets postingLocation: null, never undefined');
 
@@ -1478,7 +1488,7 @@ export function mapTrackerToApps(rows, reportsByNum) {
       // a gap the tracker row left, never overwrite what the row states.
       if (!company) company = report.company || null;
       if (!role) role = report.role || null;
-      if (!postingLocation) postingLocation = report.postingLocation || null;
+      if (!postingLocation && owner === id) postingLocation = report.postingLocation || null;
       if (report.observation && owner === id) observations.push({ ...report.observation, num: id });
     }
     apps[id] = { company: company || null, role: role || null, postingLocation: postingLocation || null };

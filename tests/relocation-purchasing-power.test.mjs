@@ -520,6 +520,21 @@ test('folded relocation requires an explicit annual period', () => {
   }
 });
 
+test('folded relocation accepts an annual period written before the currency', () => {
+  const dataRoot = fixtureDataRoot('60k per year CAD');
+  try {
+    const r = run([], { CAREER_OPS_ROOT: dataRoot, CAREER_OPS_DATA_DIR: '' });
+    assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    const app = out.applications.find((a) => a.company === 'WidgetCo');
+    assert.ok(app?.relocation?.ok, `expected annual comparison, got ${JSON.stringify(app?.relocation)}`);
+    assert.equal(app.advertised.value, 60000);
+    assert.equal(app.advertised.period, 'annual');
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
 test('--summary mode renders the relocation line with the not-financial-advice caveat', () => {
   const dataRoot = fixtureDataRoot();
   try {
