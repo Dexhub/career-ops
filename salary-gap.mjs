@@ -197,6 +197,11 @@ function canonicalizeSeparators(numStr) {
 export function parseAmount(raw) {
   let s = String(raw ?? '').trim();
   if (!s || s === '?' || s === '-' || /^(n\/?a|null)$/i.test(s)) return null;
+  // Keep period recognition separate from amount parsing, but allow an explicit
+  // annual suffix to coexist with the numeric value in Machine Summary data.
+  // Other periods remain unparseable here because callers must annualize them
+  // from the JD's own stated inputs before treating them as annual gross.
+  s = s.replace(/\s*(?:\/\s*(?:year|yr)|per\s+(?:year|annum)|annual(?:ly)?|yearly)\s*$/i, '').trim();
   // Strip currency symbols anywhere (US pay-transparency ranges often repeat the
   // symbol on both bounds: "$123,684—$254,644 USD") and a trailing 3-letter
   // ISO-4217-style alpha token (any case — "450k SEK", "80-90k eur"). Exactly
@@ -221,6 +226,14 @@ export function parseAmount(raw) {
     const v = toNum(single[1], single[2]);
     return v === null ? null : { min: v, max: v, mid: v };
   }
+  return null;
+}
+
+export function compensationPeriod(raw) {
+  const value = String(raw ?? '');
+  if (/(?:\/\s*(?:year|yr)\b|\bper\s+(?:year|annum)\b|\bannual(?:ly)?\b|\byearly\b)/i.test(value)) return 'annual';
+  if (/(?:\/\s*(?:month|mo)\b|\bper\s+month\b|\bmonthly\b)/i.test(value)) return 'monthly';
+  if (/(?:\/\s*(?:hour|hr)\b|\bper\s+hour\b|\bhourly\b)/i.test(value)) return 'hourly';
   return null;
 }
 
@@ -300,6 +313,7 @@ export function reportToObservation(content, num, date) {
     observation: adv === null ? null : {
       num, date, type: 'advertised', amount: adv, currency: currencyGuess,
       source: 'jd', note: 'from report Machine Summary', parsed: parseAmount(adv),
+      period: compensationPeriod(adv),
     },
   };
 }
@@ -568,6 +582,7 @@ export function computeRelocationAdjustment({ grossAnnual, homeCode, destCode, j
  */
 export function relocationForApplication(a, { jurisdictions, homeLocation }) {
   if (!jurisdictions || !homeLocation || !a?.postingLocation || !a?.advertised) return null;
+  if (a.advertised.period !== 'annual') return null;
   const homeCode = matchJurisdiction(homeLocation, jurisdictions);
   const destCode = matchJurisdiction(a.postingLocation, jurisdictions);
   return computeRelocationAdjustment({
@@ -591,7 +606,11 @@ function pickEffective(type, candidates) {
   if (!usable.length) return null;
   usable.sort((a, b) => (tiers[b.source] - tiers[a.source]) || (a.date < b.date ? 1 : -1));
   const top = usable[0];
-  return { value: top.parsed.mid, source: top.source, date: top.date, currency: top.currency, raw: top.amount };
+  return {
+    value: top.parsed.mid, source: top.source, date: top.date,
+    currency: top.currency, raw: top.amount,
+    period: top.period ?? compensationPeriod(top.amount),
+  };
 }
 
 // --- Fold + aggregates ---
@@ -1308,7 +1327,7 @@ posting_location: "Halifax, NS"
 
   // relocationForApplication: wraps fold()-shaped application objects; absence of any required
   // input is "not evaluated" (null), never a guess
-  const relocApp = { postingLocation: 'Southburg, ST', advertised: { value: 60000 } };
+  const relocApp = { postingLocation: 'Southburg, ST', advertised: { value: 60000, period: 'annual' } };
   const relocResult = relocationForApplication(relocApp, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' });
   assert(relocResult?.ok === true && relocResult.dest.jurisdiction === 'South Testland', 'relocationForApplication resolves both sides from free text');
   assert(relocationForApplication({ postingLocation: null, advertised: { value: 60000 } }, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' }) === null,

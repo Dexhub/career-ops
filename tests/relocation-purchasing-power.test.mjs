@@ -23,7 +23,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -425,22 +425,18 @@ test('documented base64-decode pattern round-trips a non-ASCII JD location (acce
   }
 });
 
-test('the base64-decode pipeline is immune to the exact heredoc-collision payload (a location that IS the old delimiter text)', () => {
-  // The whole point of the fix: a location whose text happens to equal the
-  // old fixed heredoc delimiter — previously enough to close the heredoc
-  // early and have the rest of the "location" run as shell commands — is now
-  // nothing more than ordinary data inside a base64 string, decoded back to
-  // its exact original bytes with no shell ever parsing the raw text.
+test('base64 decoding round-trips text shaped like the old heredoc collision payload', () => {
+  // This unit exercises the decoder, not a shell. It proves that delimiter-
+  // shaped text survives as literal file content; the prompt contract separately
+  // forbids placing the raw location in a shell command or heredoc.
   const rawLocation = 'JD_LOCATION_EOF\ntouch /tmp/career-ops-should-not-exist-4696\nJD_LOCATION_EOF';
   const b64 = Buffer.from(rawLocation, 'utf-8').toString('base64');
 
   const dir = mkdtempSync(join(tmpdir(), 'career-ops-posting-location-collision-'));
   const file = join(dir, 'career-ops-posting-location.txt');
-  const sentinel = join(dir, 'should-not-exist');
   try {
     decodeBase64LocationToFile(b64, file);
-    assert.equal(readFileSync(file, 'utf-8'), rawLocation, 'the old-delimiter-shaped text is passed through literally, never shell-expanded');
-    assert.equal(existsSync(sentinel), false, 'the embedded command must never execute');
+    assert.equal(readFileSync(file, 'utf-8'), rawLocation, 'the old-delimiter-shaped text is decoded byte-for-byte as ordinary data');
   } finally {
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
@@ -448,7 +444,7 @@ test('the base64-decode pipeline is immune to the exact heredoc-collision payloa
 
 // ── End-to-end: tracker row + report posting_location -> folded relocation field ──
 
-function fixtureDataRoot() {
+function fixtureDataRoot(advertisedComp = '60k CAD per year') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'career-ops-relocation-'));
   mkdirSync(join(dataRoot, 'data'), { recursive: true });
   mkdirSync(join(dataRoot, 'reports'), { recursive: true });
@@ -472,7 +468,7 @@ function fixtureDataRoot() {
     '```yaml',
     'company: "WidgetCo"',
     'role: "Backend Engineer"',
-    'advertised_comp: "60k CAD"',
+    `advertised_comp: "${advertisedComp}"`,
     'posting_location: "Halifax, NS"',
     '```',
     '',
@@ -503,6 +499,22 @@ test('folded output annotates the application with a relocation comparison from 
     assert.equal(app.relocation.home.jurisdiction, 'Ontario, Canada');
     assert.equal(app.relocation.dest.jurisdiction, 'Nova Scotia, Canada');
     assert.ok(app.relocation.dest.takeHome < app.relocation.home.takeHome);
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('folded relocation requires an explicit annual period', () => {
+  const dataRoot = fixtureDataRoot('60k CAD');
+  try {
+    const r = run([], { CAREER_OPS_ROOT: dataRoot, CAREER_OPS_DATA_DIR: '' });
+    assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    const app = out.applications.find((a) => a.company === 'WidgetCo');
+    assert.ok(app);
+    assert.equal(app.advertised.raw, '60k CAD');
+    assert.equal(app.advertised.period, null);
+    assert.equal(app.relocation, null, 'a periodless amount must not be treated as annual gross');
   } finally {
     rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
