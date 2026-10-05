@@ -588,7 +588,7 @@ export function computeRelocationAdjustment({ grossAnnual, homeCode, destCode, j
  * @returns {object|null}
  */
 export function relocationForApplication(a, { jurisdictions, homeLocation }) {
-  const postingLocation = a?.advertised?.postingLocation ?? a?.postingLocation;
+  const postingLocation = a?.advertised?.postingLocation;
   if (!jurisdictions || !homeLocation || !postingLocation || !a?.advertised) return null;
   if (a.advertised.period !== 'annual') return null;
   const homeCode = matchJurisdiction(homeLocation, jurisdictions);
@@ -1343,12 +1343,12 @@ posting_location: "Halifax, NS"
 
   // relocationForApplication: wraps fold()-shaped application objects; absence of any required
   // input is "not evaluated" (null), never a guess
-  const relocApp = { postingLocation: 'Southburg, ST', advertised: { value: 60000, period: 'annual' } };
+  const relocApp = { advertised: { value: 60000, period: 'annual', postingLocation: 'Southburg, ST' } };
   const relocResult = relocationForApplication(relocApp, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' });
   assert(relocResult?.ok === true && relocResult.dest.jurisdiction === 'South Testland', 'relocationForApplication resolves both sides from free text');
-  assert(relocationForApplication({ postingLocation: null, advertised: { value: 60000 } }, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' }) === null,
+  assert(relocationForApplication({ postingLocation: 'stale earlier location', advertised: { value: 60000, period: 'annual', postingLocation: null } }, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' }) === null,
     'no posting location -> null, not evaluated');
-  assert(relocationForApplication({ postingLocation: 'Southburg, ST', advertised: null }, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' }) === null,
+  assert(relocationForApplication({ advertised: null }, { jurisdictions: RELOC_FIXTURE, homeLocation: 'Testville, NT' }) === null,
     'no advertised figure -> null, not evaluated');
   assert(relocationForApplication(relocApp, { jurisdictions: RELOC_FIXTURE, homeLocation: null }) === null,
     'no resolvable home location -> null, not evaluated');
