@@ -45,17 +45,20 @@
  *
  * `--posting-location` vs `--posting-location-file` (#4696 CodeRabbit CWE-78
  * finding): the posting location is the JD's own verbatim text — untrusted,
- * external, JD-author-controlled. `modes/oferta.md` Signal 16 and
+ * external, JD-author-controlled. `modes/oferta.md` Signal 17 and
  * `batch/batch-prompt.md`'s batch-worker equivalent (which runs with
  * `--dangerously-skip-permissions`) both call this script from an agent-
  * constructed Bash command. Interpolating that JD text directly into a
  * double-quoted `--posting-location "<JD location>"` argument lets a crafted
  * location containing `$(...)` or backticks execute as a shell command
  * substitution before this script ever sees the string. `--posting-location-file
- * <path>` sidesteps that: the agent writes the untrusted text to a file (e.g.
- * via a quoted heredoc, `cat <<'EOF' > file`, which performs no shell
- * expansion on its body) and passes only the file PATH on the command line —
- * a value the agent itself chose, never JD-derived. `--posting-location`
+ * <path>` sidesteps that only when the raw JD text never enters shell syntax:
+ * the agent first base64-encodes the complete UTF-8 location as a pure text
+ * transformation, then a fixed `node -e` decoder writes those bytes to a
+ * temporary file. A quoted heredoc is not safe because JD text equal to its
+ * fixed delimiter can close it early. The command line receives only the
+ * base64 alphabet and the agent-chosen file PATH, never raw JD text.
+ * `--posting-location`
  * itself is unchanged and still accepted (e.g. for trusted/short values typed
  * directly by a human), but the prompt-spec instructions in `modes/oferta.md`
  * and `batch/batch-prompt.md` now use the file form for the JD-controlled
@@ -115,7 +118,7 @@ const statedForFlagIdx = args.indexOf('--stated-for');
 const statedForNum = statedForFlagIdx !== -1 ? args[statedForFlagIdx + 1] : null;
 // Relocation purchasing-power (#4694) — ad hoc mode: compute a comparison
 // directly from CLI inputs, without needing a tracker row or a saved report.
-// This is what modes/oferta.md Signal 16 calls during a FRESH evaluation,
+// This is what modes/oferta.md Signal 17 calls during a FRESH evaluation,
 // before anything has been written to reports/ or the tracker.
 const relocationMode = args.includes('--relocation');
 const relocGrossRaw = flagValue(args, '--gross');
@@ -317,7 +320,7 @@ export function reportToObservation(content, num, date) {
     observation: adv === null ? null : {
       num, date, type: 'advertised', amount: adv, currency: currencyGuess,
       source: 'jd', note: 'from report Machine Summary', parsed: parseAmount(adv),
-      period: compensationPeriod(adv),
+      period: compensationPeriod(adv), postingLocation,
     },
   };
 }
@@ -585,10 +588,11 @@ export function computeRelocationAdjustment({ grossAnnual, homeCode, destCode, j
  * @returns {object|null}
  */
 export function relocationForApplication(a, { jurisdictions, homeLocation }) {
-  if (!jurisdictions || !homeLocation || !a?.postingLocation || !a?.advertised) return null;
+  const postingLocation = a?.advertised?.postingLocation ?? a?.postingLocation;
+  if (!jurisdictions || !homeLocation || !postingLocation || !a?.advertised) return null;
   if (a.advertised.period !== 'annual') return null;
   const homeCode = matchJurisdiction(homeLocation, jurisdictions);
-  const destCode = matchJurisdiction(a.postingLocation, jurisdictions);
+  const destCode = matchJurisdiction(postingLocation, jurisdictions);
   return computeRelocationAdjustment({
     grossAnnual: a.advertised.value, homeCode, destCode, jurisdictions,
     currency: a.advertised.currency,
@@ -614,6 +618,7 @@ function pickEffective(type, candidates) {
     value: top.parsed.mid, source: top.source, date: top.date,
     currency: top.currency, raw: top.amount,
     period: top.period ?? compensationPeriod(top.amount),
+    postingLocation: top.postingLocation ?? null,
   };
 }
 
@@ -1204,6 +1209,7 @@ posting_location: "Halifax, NS"
 `;
   const relocReportObs = reportToObservation(RELOC_REPORT_FIXTURE, '050', '2026-09-01');
   assert(relocReportObs.postingLocation === 'Halifax, NS', 'reportToObservation extracts posting_location verbatim');
+  assert(relocReportObs.observation?.postingLocation === 'Halifax, NS', 'the advertised observation retains its own report posting_location');
   const relocMapped = mapTrackerToApps(
     [{ num: '50', company: '', role: '', report: '[050](../reports/050-fictional-corp-2026-09-01.md)', notes: '' }],
     new Map([['50', relocReportObs]]),

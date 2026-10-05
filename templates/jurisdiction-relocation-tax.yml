@@ -3,7 +3,7 @@
 # Part of the jurisdiction-compliance-lens umbrella (#2026), member "Interprovincial/
 # interstate relocation — real purchasing power". Consumed by salary-gap.mjs's
 # relocation-adjustment functions (loadRelocationTable / matchJurisdiction /
-# computeRelocationAdjustment) and surfaced in modes/oferta.md Block G, Signal 16.
+# computeRelocationAdjustment) and surfaced in modes/oferta.md Block G, Signal 17.
 #
 # This file is a DATA REFERENCE, not instruction logic: adding a new jurisdiction
 # (another province, a US state) never requires touching salary-gap.mjs's math —
@@ -25,7 +25,7 @@
 # Unverified or "I heard the rate is..." rows will be rejected in review.
 #
 # NEVER-ASSERT / PHRASING-DISCIPLINE RULE (mandatory, mirrored in modes/oferta.md
-# Signal 16): rows here compute a SIMPLIFIED, TRANSPARENT tax-bracket figure —
+# Signal 17): rows here compute a SIMPLIFIED, TRANSPARENT tax-bracket figure —
 # federal + sub-national MARGINAL BRACKETS ONLY, applied progressively. They do
 # NOT model basic personal amounts, non-refundable credits, CPP/EI/QPIP
 # contributions, provincial surtaxes (e.g. Ontario's), health premiums, or any

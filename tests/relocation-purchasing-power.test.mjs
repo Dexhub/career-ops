@@ -504,6 +504,43 @@ test('folded output annotates the application with a relocation comparison from 
   }
 });
 
+test('a re-evaluated application pairs the selected advertised compensation with that same report\'s posting_location', () => {
+  const dataRoot = fixtureDataRoot();
+  try {
+    writeFileSync(join(dataRoot, 'reports', '051-widgetco-2026-09-15.md'), [
+      '# Evaluation: WidgetCo — Backend Engineer',
+      '',
+      '## Machine Summary',
+      '',
+      '```yaml',
+      'company: "WidgetCo"',
+      'role: "Backend Engineer"',
+      'advertised_comp: "90k CAD per year"',
+      'posting_location: "Vancouver, BC"',
+      '```',
+      '',
+    ].join('\n'));
+    writeFileSync(join(dataRoot, 'data', 'applications.md'), [
+      '# Applications Tracker',
+      '',
+      '| # | Date | Company | Role | Score | Status | PDF | Report | Notes |',
+      '|---|------|---------|------|-------|--------|-----|--------|-------|',
+      '| 1 | 2026-09-15 | WidgetCo | Backend Engineer | 4.0/5 | Applied | ❌ | [50](reports/050-widgetco-2026-09-01.md) [51](reports/051-widgetco-2026-09-15.md) | re-evaluated role |',
+      '',
+    ].join('\n'));
+
+    const r = run([], { CAREER_OPS_ROOT: dataRoot, CAREER_OPS_DATA_DIR: '' });
+    assert.equal(r.status, 0, `exit 0 expected, got ${r.status}: ${r.stderr}`);
+    const app = JSON.parse(r.stdout).applications.find((a) => a.company === 'WidgetCo');
+    assert.ok(app);
+    assert.equal(app.advertised.raw, '90k CAD per year');
+    assert.equal(app.advertised.postingLocation, 'Vancouver, BC');
+    assert.equal(app.relocation.dest.jurisdiction, 'British Columbia, Canada');
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
 test('folded relocation requires an explicit annual period', () => {
   const dataRoot = fixtureDataRoot('60k CAD');
   try {
