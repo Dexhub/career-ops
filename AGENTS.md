@@ -508,8 +508,9 @@ Rules for agents working here:
 - **Never patch core scripts** to serve `auto/` — the one sanctioned exception
   is the AGENTS.md ethical-override patch in `auto/patches/`.
 - Job state lives in `data/auto/jobs/` (`node auto/state.mjs --list`); audit
-  trails in `output/<app>/audit/`; schedule via
-  `~/Library/LaunchAgents/io.career-ops.auto.plist` (6-hourly).
+  trails in `output/<app>/audit/`. Runs are **manual-only** (`node auto/run.mjs`):
+  the launchd schedule is disabled by user decision (2026-10-07) — do not
+  reinstall `io.career-ops.auto.plist` without explicit user approval.
 - After `npm run update`, re-apply `auto/patches/apply-ethical-override.mjs`
   and re-add this section if the update overwrote AGENTS.md.
 

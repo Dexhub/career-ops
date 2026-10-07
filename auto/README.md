@@ -13,7 +13,7 @@ file has `filled_in_by_user: true`.
 
 | File | Role |
 |---|---|
-| `run.mjs` | Orchestrator: one full cycle under a run lock. launchd entry point. |
+| `run.mjs` | Orchestrator: one full cycle under a run lock. Started manually. |
 | `eval-queue.mjs` | Pipeline rows → liveness gate → local-LLM eval → promote (score ≥ threshold → `queued`). |
 | `resume-library.mjs` | Builds the fact-gated PDF variant library from `cv.md` (`data/auto/resume-library/`). |
 | `resume-select.mjs` | Matches `queued` jobs to a variant → `resume_ready`. |
@@ -23,7 +23,7 @@ file has `filled_in_by_user: true`.
 | `state.mjs` | Job state machine (`data/auto/jobs/*.json`). `node auto/state.mjs --list` to inspect. |
 | `prompts/apply-submit.md` | Prompt template for the apply agent (audit contract, ATS quirks, honesty rules). |
 | `patches/` | The sanctioned AGENTS.md ethical-override patch. Re-apply after `npm run update`; `run.mjs` skips applies and warns if it's missing. |
-| `launchd/io.career-ops.auto.plist` | 6-hourly schedule. Install: `cp auto/launchd/*.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
+| `launchd/io.career-ops.auto.plist` | Optional 6-hourly schedule — **currently disabled** (user runs cycles manually). Re-enable only on request: `cp auto/launchd/*.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
 
 Config: `config/auto.yml` (threshold, daily soft limit, jitter, attempts,
 eval model, ATS allowlist, resume variants).
@@ -37,7 +37,7 @@ Dry runs (`--no-submit`) never mutate state.
 ## Running by hand
 
 ```
-node auto/run.mjs                 # full cycle (what launchd runs)
+node auto/run.mjs                 # full cycle (manual — scheduling disabled)
 node auto/run.mjs --skip-scan     # skip the slow network scan
 node auto/run.mjs --no-submit     # one dry-run apply, no state change
 node auto/apply-worker.mjs --job <needle> [--no-submit]
