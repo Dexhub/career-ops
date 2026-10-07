@@ -183,10 +183,12 @@ function digestToday() {
 
 // ---------- reverse proxy to the upstream web UI ----------
 
+// Styled to the career-ops design system: brand burnt-orange pill
+// (hsl(26 73% 51%), near-black foreground), rounded-full, Inter/system sans.
 const NAV_SNIPPET = '<a href="/auto" style="position:fixed;right:16px;bottom:16px;z-index:99999;'
-  + 'background:#101014;color:#d8d8e0;border:1px solid #3a3a44;border-radius:20px;'
-  + 'padding:8px 16px;font:600 13px/1 system-ui,sans-serif;text-decoration:none;'
-  + 'box-shadow:0 2px 12px rgba(0,0,0,.5)">&#9881; Mission Control</a>';
+  + 'background:hsl(26 73% 51%);color:hsl(24 30% 12%);border-radius:999px;'
+  + 'padding:8px 16px;font:500 13px/1 ui-sans-serif,system-ui,-apple-system,sans-serif;text-decoration:none;'
+  + 'box-shadow:0 1px 2px rgba(0,0,0,.15),0 4px 14px rgba(0,0,0,.18)">Mission Control</a>';
 
 /** Pure: headers for the proxied upstream request (Host/Origin/Referer rewritten). */
 export function rewriteProxyHeaders(headers) {
