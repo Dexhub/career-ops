@@ -1,0 +1,76 @@
+# config/auto.yml — autonomous apply pipeline configuration (local-only layer).
+#
+# Read by auto/*.mjs only. Core career-ops scripts never read this file, and
+# `npm run update` never touches it. Edit freely.
+
+# Jobs scoring >= this (inclusive) are promoted to the apply queue.
+score_threshold: 4.0
+
+# Soft ceiling on submissions per local calendar day. The orchestrator stops
+# applying (but keeps scanning/evaluating) once reached.
+daily_soft_limit: 100
+
+# Randomized sleep between consecutive applies, in minutes.
+jitter_min_minutes: 2
+jitter_max_minutes: 10
+
+# An applying job that errors is retried once on the next cycle; after this
+# many attempts it is marked failed (or parked when the reason is
+# captcha/login-wall).
+max_attempts: 2
+
+# Orchestrator cadence (informational — the launchd plist carries the real
+# interval; keep the two in sync).
+cycle_interval_hours: 6
+
+eval:
+  # Eval model. With base_url set, this is an LM Studio (OpenAI-compatible)
+  # model id run via openai-eval.mjs; without base_url it is a local Ollama
+  # model run via ollama-eval.mjs.
+  model: google/gemma-4-e4b
+  base_url: http://localhost:1234/v1
+  # Max new pipeline rows evaluated per cycle (cost/time bound, not a quota).
+  limit_per_cycle: 20
+  # Max rows gate-checked (liveness/JD network calls) per cycle. Bounds a run
+  # against a large pipeline backlog; the backlog drains across cycles.
+  gate_budget_per_cycle: 200
+
+# ATS families the apply worker handles autonomously. Anything else parks to
+# the Neo/manual lane. Phase 1 scope per plan: no Workday.
+ats_allowlist:
+  - greenhouse
+  - greenhouse-embedded
+  - lever
+  - ashby
+  - workable
+
+agent:
+  # Headless agent CLI driving the browser for applies. `claude` is primary;
+  # `codex` is the installed fallback if claude refuses to submit.
+  primary: claude
+  fallback: codex
+  # Hard wall-clock cap per apply attempt, minutes.
+  timeout_minutes: 25
+
+# Resume variants pre-built into data/auto/resume-library/<role-slug>/.
+# Seeded from config/profile.yml target_roles.primary plus general-IC titles.
+# Edit this list, then re-run `node auto/resume-library.mjs` to (re)generate.
+resume_variants:
+  - Head of AI Strategy & Adoption
+  - VP of AI Strategy & Adoption
+  - VP of Engineering
+  - VP of Product & Engineering
+  - Head of Engineering
+  - Senior Director of Engineering
+  - Director of Engineering
+  - Software Engineering Manager
+  - Senior Software Engineering Manager
+  - Engineering Manager, Platform or Infrastructure
+  - Principal Software Engineer
+  - Staff Software Engineer
+  - Solutions Architect
+  - Customer Success Manager
+  - Account Manager
+  - Software Engineer
+  - Senior Software Engineer
+  - AI Engineer

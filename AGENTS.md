@@ -429,7 +429,8 @@ A single-string `modes_dir` (today's default, ~90% of users) behaves exactly as 
 
 **This system is designed for quality, not quantity** — genuine matches, never mass-application spam.
 
-- **NEVER submit an application without the user reviewing it first.** Fill forms, draft answers, generate PDFs -- but always STOP before clicking Submit/Send/Apply. The user makes the final call.
+- **Interactive sessions: never submit without the user reviewing first.** Fill forms, draft answers, generate PDFs -- but always STOP before clicking Submit/Send/Apply in any interactive mode.
+- **LOCAL AUTONOMOUS EXCEPTION (this checkout only, user-authorized 2026-10-07):** the autonomous pipeline worker (`auto/apply-worker.mjs`) IS authorized to click Submit unattended, for jobs that scored >= the configured threshold, use a fact-gated resume variant, and answer from `config/profile.yml` (facts) + `config/standing-answers.yml` (user-confirmed preferences). Every attempt writes a mandatory audit dir. See `auto/patches/ethical-override.md`. This exception never extends to interactive sessions, never fabricates eligibility facts, and must not be committed upstream.
 - **Strongly discourage low-fit applications.** Below 4.0/5, explicitly recommend against applying; only proceed if the user has a specific reason to override.
 - **Quality over speed.** A well-targeted application to 5 companies beats a generic blast to 50. Guide the user toward fewer, better applications.
 - **Respect recruiters' time.** Only send what's worth reading.
@@ -496,6 +497,21 @@ Headless worker command per CLI:
 | Grok Build CLI | `grok -p "prompt"` |
 
 **Parallel fan-outs — reserve report numbers first.** Before spawning N parallel evaluators, reserve the range: `node reserve-report-num.mjs --count N` (prints e.g. `042-049`); hand each worker its own number. The allocator treats report files, sentinels, tracker row IDs, and tracker report links as occupied; each slot claim is individually atomic (on collision, claimed slots are released and the reservation restarts past it — permanent, harmless gaps). Release with `node reserve-report-num.mjs --release 042-049` when done; stale sentinels are GC'd after 4h, so reserve right before spawning. Never let parallel workers compute `max+1` themselves — that is the #749 race.
+
+## Local `auto/` Layer (this checkout only)
+
+`auto/` is a local, gitignored-from-upstream autonomous apply pipeline:
+scan → eval → resume select → unattended submissions (user-authorized, see
+"Ethical Use" exception above) → daily digest. Full docs in `auto/README.md`.
+Rules for agents working here:
+
+- **Never patch core scripts** to serve `auto/` — the one sanctioned exception
+  is the AGENTS.md ethical-override patch in `auto/patches/`.
+- Job state lives in `data/auto/jobs/` (`node auto/state.mjs --list`); audit
+  trails in `output/<app>/audit/`; schedule via
+  `~/Library/LaunchAgents/io.career-ops.auto.plist` (6-hourly).
+- After `npm run update`, re-apply `auto/patches/apply-ethical-override.mjs`
+  and re-add this section if the update overwrote AGENTS.md.
 
 ## Stack and Conventions
 

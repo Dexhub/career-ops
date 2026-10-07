@@ -1,0 +1,173 @@
+# config/standing-answers.yml — user-authored PREFERENCE answers for the
+# autonomous apply worker (auto/apply-worker.mjs).
+#
+# HOW THIS FILE IS USED
+#   Preference questions on application forms (salary, notice, start date,
+#   relocation, "how did you hear") are filled VERBATIM from this file. Set
+#   them as aggressively as you like — they are your stated preferences.
+#
+# WHAT THIS FILE IS NOT
+#   Factual eligibility (visa/work authorization, citizenship, degrees,
+#   certifications, criminal record) comes from config/profile.yml
+#   (location.* and application_facts.*) and is NEVER overridden here.
+#   The worker refuses to fabricate eligibility facts — hard constraint.
+#
+# PROVENANCE: `custom` below holds 127 answers ported verbatim from the old
+# system's user-confirmed answer store (jobs/career-ops
+# data/operator/answers.json, scope=global status=confirmed,
+# provenance user-confirmed). Port authorized by the user on 2026-10-07
+# ("you probably already have all standing answers from the old repo —
+# pull/use here; don't keep anything manual").
+
+filled_in_by_user: true
+
+salary:
+  # Used when the form wants one number (annual, USD).
+  expectation_single_number_usd: 200000
+  # Used when the form has a free-text salary field.
+  expectation_text: "$200K base; $300K-$400K total compensation including equity and bonus"
+  # Used when the form asks for a minimum.
+  minimum_usd: 200000
+
+availability:
+  notice_period: "Two weeks"
+  earliest_start_date: "Two weeks from offer acceptance"
+
+location_preferences:
+  willing_to_relocate: true
+  remote_ok: true
+  hybrid_ok: true
+  onsite_ok: true
+
+how_did_you_hear: "Company Website"
+
+# Recurring question text (lowercased, trimmed) -> verbatim answer.
+# Matching is exact-first, then fuzzy by the apply worker.
+custom:
+  "address line 2": "Apartment 504"
+  "are you a u.s. citizen?": "Yes"
+  "are you comfortable with business travel, including travel to france?": "Yes. I am comfortable with business travel, including France. No numeric travel limit was specified. This preference does not establish foreign entry or work permission."
+  "are you comfortable with routine nights and weekends?": "Yes"
+  "are you comfortable with up to 25% travel?": "Yes"
+  "are you currently authorized to work in the netherlands without obtaining new work authorization?": "Yes"
+  "are you currently authorized to work in the united kingdom without obtaining new work authorization?": "Yes"
+  "are you currently based in india, with the full legal right to work there?*": "No — I am based in San Francisco, California, USA."
+  "are you currently based in poland, with the full legal right to work there?*": "No — I am based in San Francisco, California, USA."
+  "are you currently enrolled in full-time education, and if so, is your graduation date over 2 months away?": "No"
+  "are you experienced working/ interacting regularly with overseas clients ?*": "Yes — I've worked regularly with overseas clients based in Canada, China, Europe, and South America, including distributed teams and manufacturing partners across time zones."
+  "are you legally authorized to travel to or between the united states and canada without requiring additional visas or permits?": "Yes"
+  "are you legally authorized to work in the united states?": "Yes"
+  "are you open to working on-site?": "Yes. I am based in San Francisco and open to working on-site."
+  "are you willing to relocate?": "Yes"
+  "base salary expectation": "$200,000 base salary (USD)"
+  "clearance eligibility - this position may require eligibility to obtain and maintain a u.s. security clearance.": "Yes"
+  "comfortable operating in fast-moving, ambiguous environments?": "Yes"
+  "current location": "San Francisco, California"
+  "current location / start typing...": "San Francisco, CA"
+  "describe a concrete example from the last month where ai meaningfully improved your work (tool used + impact)": "I use Claude and multi-agent coding tools daily. Last month I built an autonomous application-automation pipeline (deterministic state machine around an LLM form-filling agent with policy gates and audit trails), cutting a repetitive manual workflow to near-zero touch."
+  "desired base salary": "$200,000 base salary (USD)"
+  "do any of your relatives work for this company or its subsidiaries?": "No. I have no relatives in the United States and no relatives working for this company or its subsidiaries."
+  "do you consent to the background-check acknowledgment?": "Yes"
+  "do you currently have any noncompete, nonsolicitation, or other obligation that could restrict accepting these roles?": "No applicable restrictions"
+  "do you currently or have you previously worked for deloitte? if yes, please provide the dates during which you were employed by deloitte and your title(s).*": "No"
+  "do you enjoy being hands-on in ambiguous, early-stage environment?": "Yes"
+  "do you have 5+ years of experience managing engineering managers - people who had their own direct reports?*": "Not 5+ continuous years in a formal manager-of-managers chain. As founder/CEO I managed leads who had their own reports, and at iCoin I ran the engineering org as Director — but if the bar is a long big-company tenure managing multiple EMs, that isn't my exact profile. My strength is building and running whole engineering orgs hands-on in high-growth settings."
+  "do you have 5+ years of hands-on experience writing and shipping production java code as an engineer - years where you were writing the code yourself, not leading engineers who wrote it? *": "Not 5+ years in Java specifically. I have 12+ years of hands-on production engineering — systems and backend work at Apple, cloud/AI systems since — with Java as one of several languages I've shipped in rather than my primary depth. If the role requires a career Java IC, that isn't my profile; I lead Java-heavy teams from strong adjacent systems depth."
+  "do you have experience building mcps?": "Yes"
+  "do you have experience in a supply chain/logistics based company or worked on projects related to supply chain or logistics industry?*": "Yes - I've built supply chain tracking projects for a customer and also for Apple iPhone and Apple Watch."
+  "do you have experience working in a ai/saas product company ?*": "Yes - worked with a multiple AI and SAAS product companies."
+  "do you have hands-on, working knowledge of emv payment standards at a technical level? *": "Working familiarity rather than deep EMV specialization: at Apple I worked on the secure infrastructure behind Apple Pay (tokenized EMV contactless payments), and at iCoin I shipped secure-element-based payments-adjacent hardware. I understand the EMV trust model, tokenization, and certification landscape at an architectural level and would ramp a team's EMV-L2/L3 specialists quickly."
+  "do you have proven experience managing and leading and growing a team with a consistent record of mentoring and coaching team members?": "Yes"
+  "do you have relatives that currently work at obsidian security?*": "No"
+  "do you have work authorization for the country you are applying for?": "I am a United States citizen and authorized to work in the United States. This statement does not establish authorization in any other country; use separately confirmed country-specific work rights for non-US roles."
+  "do you hold a security clearance?": "No"
+  "do you hold an active or expired professional license?": "No"
+  "do you presently hold an active u.s. security clearance, or are you eligible to obtain and maintain a u.s. security clearance?": "No"
+  "does australian employment require visa sponsorship?": "Yes"
+  "due to sec auditor independence requirements, please let us know whether you have previously worked at, or if currently working at pricewaterhousecoopers (pwc), who is our independent auditor.": "No - I have never been employed by PwC"
+  "during which roles did you manage people?": "I managed people at iCoin Technology from August 2018 to July 2020 and at Aethon Labs from July 2020 through approximately May 2025. The exact durations associated with specific direct-report counts and the three-manager arrangement are not yet specified."
+  "expected total compensation": "$200K base salary; $300K-$400K total compensation including equity and bonus"
+  "have you been directly responsible for all the functions required to run a product end to end - backend, frontend, mobile, qa, devops/sre, and data engineering - with those functions reporting into you rather than provided by a separate central team?*": "Yes. As founder/CEO and earlier as iCoin's first engineering hire and Director of Engineering, every function needed to ship and run the product reported into me — backend, frontend/mobile clients, QA, DevOps/infra, and the data pipelines — through launch and production operation. I've owned the full stack as the accountable leader, not just one slice."
+  "have you been directly responsible for building software applications that run directly on point-of-sale (pos) terminal devices? *": "Not POS terminals specifically. The closest analog: at iCoin Technology I was directly responsible for software running on a secure embedded payments-adjacent hardware device (cryptocurrency hardware wallet) — firmware-to-cloud, secure element integration, and manufacturing bring-up — which shares the constrained-device, security-critical profile of POS platforms."
+  "have you been previously employed by this company or its subsidiaries?": "My complete employment history is the employers listed in my approved resume. Answer No only when this employer and the subsidiaries named by the question are not among those employers; use the actual resume history for a listed employer."
+  "have you been responsible for a crm, sales tooling, marketing technology, or customer growth/engagement charter within a technology company? if yes, briefly describe the charter and your scope.*": "Yes, as a founder/CEO: I owned the growth and customer-engagement charter end to end — building our CRM and sales pipeline tooling, marketing automation, analytics/attribution, and the measurement loop (A/B frameworks) that drove acquisition and retention decisions. Scope covered the tooling itself, the data model behind it, and the team using it. At AWS I now advise startup founders on exactly these growth-stack architectures."
+  "have you built internal engineering platforms, shared libraries, or developer tooling frameworks used by other engineering teams - not just feature products?*": "Yes. At AWS I convert field patterns into reusable frameworks and internal tooling adopted across account teams. At Apple I built shared security infrastructure (the backend behind Face ID / Apple Pay) consumed by multiple product teams rather than a single feature. And as a founder/CTO I owned the internal platform itself — CI/CD, shared libraries, and developer tooling the whole engineering team built on."
+  "have you ever been convicted of a felony or misdemeanor?": "No"
+  "have you ever been directly employed by (1) any government or military entity, state-owned enterprise, or publicly-funded institution, or (2) a government contractor in a role that recommended snowflake as part of government procurement?": "No"
+  "have you led engineering for a product or platform that operated in more than one country, where you had to also build for market-specific differences - regulation, payment methods, currency, language, or local infrastructure?*": "Yes. Apple's payment and device-security infrastructure runs in dozens of markets, and the Apple Pay work I supported had to respect per-market payment networks, regulators, and certification regimes. At iCoin we shipped a security-critical consumer hardware product internationally, handling regional compliance and localization. I'm used to designing one platform that absorbs market-specific regulation, payment rails, and currency differences."
+  "have you led the re-architecture or modernisation of a legacy platform serving 10 million or more users? *": "Yes — at Apple I worked on modernizing the device-security infrastructure behind Face ID and Apple Pay, platform services relied on by over a billion devices, evolving live security-critical systems without downtime. That work was at far beyond 10M-user scale, with the hardest constraint being zero tolerance for breakage during migration."
+  "have you managed managers who had their own direct reports?": "Yes. At times, three of my direct reports were managers, and each managed five people. The exact role and duration of this arrangement have not yet been specified."
+  "have you personally owned renewal and expansion revenue targets?": "Yes, at Aethon Labs and Amazon Web Services."
+  "have you previously been employed by moniepoint?*": "No"
+  "have you previously worked at a y combinator (yc)-backed startup?": "No, but I have worked at other venture-backed startups"
+  "have you worked across multiple pos device types from different hardware manufacturers? *": "Not POS devices specifically. I have shipped software across heterogeneous embedded hardware — secure-element-based devices at iCoin (working directly with silicon vendors and manufacturers in bring-up) and device-security infrastructure at Apple spanning many device generations — so multi-vendor hardware abstraction is familiar territory, just not POS SKUs yet."
+  "have you worked in fintech, payments, or financial services?*": "Yes. Three years at Apple on the security infrastructure behind Apple Pay — production payments at global scale — and two years as Director of Engineering at iCoin Technology building a cryptocurrency hardware wallet, squarely in fintech/custody."
+  "have you worked professionally for a proprietary trading firm (not solely as a customer or trader)?": "No"
+  "how did you discover this role?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you find out about us?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you hear about this job?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you hear about this opening?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you hear about this position?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you hear about this role?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you hear about us?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how did you learn about this opportunity?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "how do you coach or mentor the people you manage?": "I regularly coach people in one-on-ones. We discuss what is working and what is not, invite self-reflection, and exchange two-way feedback: one piece of advice for me and one for the team member. This is my actual coaching practice; no specific employee incident or measured outcome has been supplied."
+  "how do you learn about what customers want, and how much time did you spend on this in the last month?": "I learn what customers want by talking with them directly, running customer interviews, and reviewing their usage dashboards and product analytics. In the last month this was about 50% of my time."
+  "how many direct reports do you typically manage?": "I have led teams of 20+ at Aethon Labs and smaller focused teams as a Director of Engineering"
+  "how many years of experience do you have in presales engineering?*": "8+ years"
+  "how many years of experience do you have leading, managing, or formally mentoring technical presales, engineering, or architecture professionals?*": "7"
+  "how many years of hands-on production coding experience do you have in android using kotlin or java?*": "Android-specific production coding is not my core background — under a year hands-on. My 12+ years of production engineering are in backend/cloud, device security, and AI systems (Apple, AWS, founder/CTO), including leading teams that shipped mobile-facing platforms, so I lead Android teams from strong adjacent technical depth rather than daily Kotlin commits."
+  "how many years of professional software engineering experience do you have?": "15"
+  "how much code have you personally shipped in the last 3 months? what were you building?": "In the last three months I personally built and shipped several prototypes for different customers, including work on an AI inference platform and an AI agent security layer. I also built an offline voice-to-text transcription tool for MacBook that my team now uses to add notes into Salesforce."
+  "how soon are you available to join us if everything seems positive on your candidature for this job role?*": "In 2 weeks"
+  "how would you rate your current knowledge of sql, 1-4?": "3 - I am confident with aggregation and joining"
+  "if required, would you be eligable to obtain a government seceret clearance?": "Yes"
+  "in office attendance is an essential function for this role and necessary to enable effective teamwork and collaboration. do you currently reside within commuting distance or are you open to relocation to the local snowflake office(s) designated in this post?": "Yes"
+  "in which roles have you personally owned customer accounts?": "At Aethon Labs and Amazon Web Services, I personally owned customer accounts, renewal and expansion revenue targets, customer relationships, and delivery with a formal team. Exact portfolio figures and the dates for each commercial responsibility are not yet specified."
+  "location": "San Francisco, CA"
+  "location (city)*": "San Francisco, CA"
+  "on-call requirements: are you willing and able to participate in this job's on-call requirements?": "Yes"
+  "please add today's date": "2026-10-05"
+  "please let us know if you are open to work in us shifts?*": "Yes, I am"
+  "please let us know if you have worked in csm role ?*": "Not under the CSM title specifically, but I have owned the customer success function end to end: as a founder/CEO I was directly responsible for enterprise client onboarding, adoption, retention, and account growth, and at AWS I guide startup customers through adoption and expansion as a trusted advisor."
+  "referral source": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "salary expectations": "$200K base salary; $300K-$400K total compensation including equity and bonus"
+  "source": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "street address line 1": "250 King Street"
+  "we are a distributed company. what are your preferred working hours, and what hours are you willing to work? please include your time zone.": "Pacific Time (America/Los_Angeles). Core hours roughly 9am–6pm PT, flexible to shift earlier for EU/APAC overlap, and comfortable with occasional nights/weekends."
+  "were you referred by someone to apply to snapmagic?": "Company Website"
+  "what ai orchestration platform have you personally built for your team?": "I personally built an AI orchestration platform for my team. It helps segment customers, supports outreach, tracks relevant people on LinkedIn, helps with engagement, joins meetings to help answer questions, and remains available in Slack. It surfaces relevant tags, discussions and product updates, monitors AWS blogs, and creates Outlook email drafts with the relevant customer context and why the update matters. People can review and send those drafts. My most recent personally shipped production change was in November 2025; the initial launch date is not specified."
+  "what are your base salary expectations?": "$200,000 base salary (USD)"
+  "what are your compensation expectations?": "$200K base salary; $300K-$400K total compensation including equity and bonus"
+  "what are your total compensation expectations?": "$200K base salary; $300K-$400K total compensation including equity and bonus"
+  "what has been your typical split between frontend and backend work throughout your career?": "Primarily backend, platform, and infrastructure, with full-stack and systems work across my career"
+  "what is the largest number of direct reports you have managed?": "12"
+  "what is your current job level": "Senior individual contributor"
+  "what is your current job search timeline? are there any deadlines or competing processes we should be aware of?": "I am actively interviewing and moving efficiently. No hard deadline, but I have a few processes in progress, so timely scheduling is appreciated."
+  "what is your expected base salary?": "$200,000 base salary (USD)"
+  "what is your experience level managing other engineering managers or directors?*": "As a founder/CEO I built and led the entire engineering organization, hiring and managing engineering leads who ran their own teams, and as Director of Engineering at iCoin I managed senior engineers plus external engineering partners end to end. Most of my manager-of-managers experience comes from operating at the executive level in startups rather than long tenure inside a large multi-layer org — I set direction, grew the leaders under me, and stayed close to the technical work."
+  "what is your full address for job applications?": "250 King Street, Apartment 504, San Francisco, CA 94107, United States"
+  "what is your minimum annual cash salary for this role?": "$200,000 base salary (USD)"
+  "what is your primary language?": "English"
+  "what is your salesforce engineering experience?": "I have not led Salesforce engineering. I work with customers who build on Salesforce and understand their problems. Do not present that customer-facing experience as owning or leading Salesforce engineering."
+  "what pace do you do your best work at?": "Yes"
+  "what stage are you in your interviewing process?": "I am actively interviewing."
+  "what was the starting and ending size of a team you built?": "I built one team from zero to 11 people in total. The company and exact timeline for that growth have not yet been specified."
+  "what's your current notice period?": "Two weeks"
+  "when can you provide professional references?": "I can provide professional references after the interview."
+  "when did you last write code that shipped to production?": "November 2025, on the AI orchestration platform I personally built for my team."
+  "when did your management work at aethon labs end?": "Approximately May 2025"
+  "when would you be available to start a new position?": "Two weeks from the application date (two weeks notice)."
+  "where are you currently located?": "San Francisco, CA"
+  "where are you willing to relocate for a suitable role?": "Anywhere in the San Francisco Bay Area, elsewhere in the United States, or internationally. My current residence remains San Francisco. Willingness to relocate does not establish work authorization in another country."
+  "where did you hear about this job?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "where did you hear about us?": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
+  "which ai assistants, agents, or ai-powered tools have you personally used to complete real work in the last 30 days?": "Kilo (an open-source coding agent), Claude Code, Gemini, Codex, Jupyter notebooks, Amazon Quick Suite from AWS, Perplexity (heavily), and Replit."
+  "which best describes your experience working with customers in financial services?": "I have managed complex financial-services accounts and understand the regulatory, risk, and operational considerations that influence technology decisions"
+  "which companies have previously employed you?": "Apple, Amazon, and iCoin. For other named companies, no prior employment. The separately documented Aethon Labs founder/CEO history remains on the CV; clarify that relationship if a form specifically asks about Aethon."
+  "which formal sales methodology have you used?": "Challenger Sale and Challenger-style performance"
+  "which project or portfolio link should be used for relevant applications?": "https://github.com/dexhub"
+  "which state, province, or region do you currently live in?": "San Francisco, CA"
+  "will you now or in the future require sponsorship for employment visa status in the united states?": "No"
+  "will you now or in the future require visa sponsorship?": "US: no sponsorship required. Australia: sponsorship required. UK and Netherlands: currently work-authorized; future sponsorship requirements unconfirmed. Other countries unconfirmed."
+  "years of csm experience?": "4 to 7 years"

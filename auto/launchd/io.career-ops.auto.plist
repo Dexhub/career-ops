@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>            <string>io.career-ops.auto</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>auto/run.mjs</string>
+  </array>
+  <key>WorkingDirectory</key> <string>/Users/jarvis/AI-Playground/career-ops/career-ops</string>
+  <!-- Elapsed cadence: every 6h (keep in sync with config/auto.yml
+       cycle_interval_hours). launchd fires a missed run on wake; the run lock
+       makes overlapping fires harmless. -->
+  <key>StartInterval</key>    <integer>21600</integer>
+  <!-- The worker spawns `claude` (homebrew) / `codex` (~/.local/bin) and
+       `npx` (node bin dir); launchd's default PATH has none of them. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key> <string>/opt/homebrew/bin:/Users/jarvis/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>   <string>/Users/jarvis/AI-Playground/career-ops/career-ops/data/auto/run.log</string>
+  <key>StandardErrorPath</key> <string>/Users/jarvis/AI-Playground/career-ops/career-ops/data/auto/run.log</string>
+</dict>
+</plist>
