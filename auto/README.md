@@ -23,7 +23,8 @@ file has `filled_in_by_user: true`.
 | `state.mjs` | Job state machine (`data/auto/jobs/*.json`). `node auto/state.mjs --list` to inspect. |
 | `prompts/apply-submit.md` | Prompt template for the apply agent (audit contract, ATS quirks, honesty rules). |
 | `patches/` | The sanctioned AGENTS.md ethical-override patch. Re-apply after `npm run update`; `run.mjs` skips applies and warns if it's missing. |
-| `launchd/io.career-ops.auto.plist` | Optional 6-hourly schedule — **currently disabled** (user runs cycles manually). Re-enable only on request: `cp auto/launchd/*.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
+| `launchd/io.career-ops.auto.plist` | Optional 6-hourly schedule — **currently disabled** (user runs cycles manually). Re-enable only on request: `cp auto/launchd/io.career-ops.auto.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
+| `launchd/io.career-ops.web-ui.plist` | Web UI as an always-on service (installed): `next start` on http://127.0.0.1:3001, KeepAlive + RunAtLoad, logs to `data/web-ui.log`. This never applies to jobs by itself. |
 
 Config: `config/auto.yml` (threshold, daily soft limit, jitter, attempts,
 eval model, ATS allowlist, resume variants).
