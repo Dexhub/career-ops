@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-// auto/panel.mjs — local control panel for the auto/ layer.
+// auto/panel.mjs — Mission Control: the single UI for career-ops.
 //
-// One file, no dependencies. Serves http://127.0.0.1:3002 with:
-//   - start/stop of the orchestrator cycle (node auto/run.mjs)
-//   - live queue: every job with stage, score, attempts, failure reason
-//   - per-job drill-down: audit attempts, verdict vs agent claim, parked
-//     reasons, missing answers, and the screenshots the worker saved
-//   - run.log tail
+// One origin, http://127.0.0.1:3002 —
+//   /auto            the automation dashboard (auto/panel.html)
+//   /api/auto/*      panel API (status, jobs, drill-down, start/stop, requeue)
+//   everything else  reverse-proxied to the upstream web UI on 127.0.0.1:3001
+//                    (Host/Origin rewritten so its origin-guard passes; a small
+//                    floating "Mission Control" link is injected into HTML)
 //
+// The upstream app under web/ is never patched — `npm run update` stays safe.
 // The panel never applies to anything by itself; it only spawns/kills the
 // same `node auto/run.mjs` the user would run in a terminal.
 //
@@ -16,17 +17,20 @@
 //   node auto/panel.mjs --self-test
 
 import './lib/sanitize-env.mjs';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listJobs, submittedCountOn, STAGES } from './state.mjs';
+import { listJobs, loadJob, transition, submittedCountOn, STAGES } from './state.mjs';
+import { loadAutoConfig } from './lib/config.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_OWNER = join(ROOT, 'data', 'auto', 'orchestrator.lock', 'owner.json');
 const RUN_LOG = join(ROOT, 'data', 'auto', 'run.log');
 const OUTPUT_ROOT = join(ROOT, 'output');
+const PANEL_HTML = join(ROOT, 'auto', 'panel.html');
+const UPSTREAM = { host: '127.0.0.1', port: Number(process.env.CAREER_OPS_WEB_PORT) || 3001 };
 
 let panelChild = null; // cycle process started by this panel
 
@@ -91,7 +95,10 @@ export function jobSummaries() {
       stage: j.stage, score: j.score, attempts: j.attempts, lastError: j.lastError,
       auditDir: j.auditDir, updatedAt: j.timestamps?.at(-1)?.at ?? null,
     }))
-    .sort((a, b) => (order[a.stage] ?? 99) - (order[b.stage] ?? 99) || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+    .sort((a, b) =>
+      (order[a.stage] ?? 99) - (order[b.stage] ?? 99)
+      || (b.score ?? 0) - (a.score ?? 0) // within a stage, highest score = next up
+      || (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
 }
 
 /** Full detail for one job: state file plus every audit attempt with artifacts. */
@@ -129,7 +136,19 @@ export function safeOutputPath(relPath) {
   return existsSync(abs) && statSync(abs).isFile() ? abs : null;
 }
 
-function logTail(lines = 60) {
+/** parked/failed → queued with attempts reset. The state machine enforces legality. */
+export function requeueJob(urlKey) {
+  const job = loadJob(urlKey);
+  if (!job) return { ok: false, error: 'job not found' };
+  try {
+    transition(job, 'queued', { attempts: 0, lastError: null });
+    return { ok: true, stage: job.stage };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+function logTail(lines = 200) {
   try {
     const text = readFileSync(RUN_LOG, 'utf8');
     return text.split('\n').slice(-lines).join('\n');
@@ -141,14 +160,78 @@ function statusPayload() {
   const counts = {};
   for (const j of jobs) counts[j.stage] = (counts[j.stage] ?? 0) + 1;
   const applying = jobs.find((j) => j.stage === 'applying');
+  let dailyLimit = null;
+  try { dailyLimit = loadAutoConfig().daily_soft_limit ?? null; } catch { /* config absent */ }
+  const day = new Date().toISOString().slice(0, 10);
   return {
     cycle: cycleState(),
     counts,
     total: jobs.length,
-    submittedToday: submittedCountOn(new Date().toISOString().slice(0, 10)),
+    submittedToday: submittedCountOn(day),
+    dailyLimit,
     workingOn: applying ? `${applying.company} — ${applying.role}` : null,
+    digestToday: existsSync(join(ROOT, 'data', 'auto', `digest-${day}.md`)),
     logTail: logTail(),
   };
+}
+
+function digestToday() {
+  const day = new Date().toISOString().slice(0, 10);
+  const p = join(ROOT, 'data', 'auto', `digest-${day}.md`);
+  return existsSync(p) ? readFileSync(p, 'utf8') : null;
+}
+
+// ---------- reverse proxy to the upstream web UI ----------
+
+const NAV_SNIPPET = '<a href="/auto" style="position:fixed;right:16px;bottom:16px;z-index:99999;'
+  + 'background:#101014;color:#d8d8e0;border:1px solid #3a3a44;border-radius:20px;'
+  + 'padding:8px 16px;font:600 13px/1 system-ui,sans-serif;text-decoration:none;'
+  + 'box-shadow:0 2px 12px rgba(0,0,0,.5)">&#9881; Mission Control</a>';
+
+/** Pure: headers for the proxied upstream request (Host/Origin/Referer rewritten). */
+export function rewriteProxyHeaders(headers) {
+  const h = { ...headers };
+  h.host = `${UPSTREAM.host}:${UPSTREAM.port}`;
+  delete h['accept-encoding']; // identity responses so HTML can be injected
+  if (h.origin) h.origin = `http://${UPSTREAM.host}:${UPSTREAM.port}`;
+  if (h.referer) h.referer = h.referer.replace(/^https?:\/\/[^/]+/, `http://${UPSTREAM.host}:${UPSTREAM.port}`);
+  return h;
+}
+
+/** Pure: inject the Mission Control link into an upstream HTML page. */
+export function injectNav(html) {
+  return html.includes('</body>') ? html.replace('</body>', `${NAV_SNIPPET}</body>`) : html + NAV_SNIPPET;
+}
+
+function proxyToUpstream(req, res) {
+  const up = httpRequest({
+    host: UPSTREAM.host, port: UPSTREAM.port, path: req.url,
+    method: req.method, headers: rewriteProxyHeaders(req.headers),
+  }, (ur) => {
+    const type = ur.headers['content-type'] ?? '';
+    if (type.includes('text/html')) {
+      const chunks = [];
+      ur.on('data', (c) => chunks.push(c));
+      ur.on('end', () => {
+        const body = injectNav(Buffer.concat(chunks).toString('utf8'));
+        const h = { ...ur.headers };
+        delete h['content-length']; delete h['transfer-encoding']; delete h['content-encoding'];
+        res.writeHead(ur.statusCode, { ...h, 'content-length': Buffer.byteLength(body) });
+        res.end(body);
+      });
+    } else {
+      res.writeHead(ur.statusCode, ur.headers);
+      ur.pipe(res);
+    }
+  });
+  up.on('error', () => {
+    res.writeHead(502, { 'content-type': 'text/html; charset=utf-8' });
+    res.end('<body style="background:#101014;color:#d8d8e0;font:14px ui-monospace,monospace;padding:40px">'
+      + '<h2>Upstream web UI is not responding</h2>'
+      + `<p>Expected on ${UPSTREAM.host}:${UPSTREAM.port} (launchd service io.career-ops.web-ui).</p>`
+      + '<p><a style="color:#58a6ff" href="/auto">&larr; Mission Control still works</a></p></body>');
+  });
+  req.pipe(up);
 }
 
 // ---------- http ----------
@@ -174,118 +257,45 @@ export function createPanelServer() {
   return createServer(async (req, res) => {
     if (!hostAllowed(req)) return send(res, 403, { error: 'loopback only' });
     const url = new URL(req.url, 'http://127.0.0.1');
+    const p = url.pathname;
     try {
-      if (req.method === 'GET' && url.pathname === '/') return send(res, 200, PAGE, 'text/html; charset=utf-8');
-      if (req.method === 'GET' && url.pathname === '/api/status') return send(res, 200, statusPayload());
-      if (req.method === 'GET' && url.pathname === '/api/jobs') return send(res, 200, { jobs: jobSummaries() });
-      if (req.method === 'GET' && url.pathname === '/api/job') {
-        const detail = jobDetail(url.searchParams.get('key'));
-        return detail ? send(res, 200, detail) : send(res, 404, { error: 'job not found' });
+      if (req.method === 'GET' && (p === '/auto' || p === '/auto/')) {
+        return send(res, 200, readFileSync(PANEL_HTML, 'utf8'), 'text/html; charset=utf-8');
       }
-      if (req.method === 'GET' && url.pathname === '/api/file') {
-        const abs = safeOutputPath(url.searchParams.get('p'));
-        if (!abs) return send(res, 404, { error: 'not found' });
-        const types = { '.png': 'image/png', '.json': 'application/json', '.md': 'text/plain', '.txt': 'text/plain', '.yml': 'text/plain' };
-        return send(res, 200, readFileSync(abs), types[extname(abs)]);
+      if (p.startsWith('/api/auto/')) {
+        if (req.method === 'GET' && p === '/api/auto/status') return send(res, 200, statusPayload());
+        if (req.method === 'GET' && p === '/api/auto/jobs') return send(res, 200, { jobs: jobSummaries() });
+        if (req.method === 'GET' && p === '/api/auto/job') {
+          const detail = jobDetail(url.searchParams.get('key'));
+          return detail ? send(res, 200, detail) : send(res, 404, { error: 'job not found' });
+        }
+        if (req.method === 'GET' && p === '/api/auto/file') {
+          const abs = safeOutputPath(url.searchParams.get('p'));
+          if (!abs) return send(res, 404, { error: 'not found' });
+          const types = { '.png': 'image/png', '.json': 'application/json', '.md': 'text/plain', '.txt': 'text/plain', '.yml': 'text/plain' };
+          return send(res, 200, readFileSync(abs), types[extname(abs)]);
+        }
+        if (req.method === 'GET' && p === '/api/auto/digest') {
+          const text = digestToday();
+          return text ? send(res, 200, text, 'text/plain; charset=utf-8') : send(res, 404, { error: 'no digest today' });
+        }
+        if (req.method === 'POST' && p === '/api/auto/start') {
+          const body = await readBody(req);
+          return send(res, 200, startCycle({ skipScan: !!body.skipScan }));
+        }
+        if (req.method === 'POST' && p === '/api/auto/stop') return send(res, 200, stopCycle());
+        if (req.method === 'POST' && p === '/api/auto/requeue') {
+          const body = await readBody(req);
+          return send(res, 200, requeueJob(body.key));
+        }
+        return send(res, 404, { error: 'not found' });
       }
-      if (req.method === 'POST' && url.pathname === '/api/start') {
-        const body = await readBody(req);
-        return send(res, 200, startCycle({ skipScan: !!body.skipScan }));
-      }
-      if (req.method === 'POST' && url.pathname === '/api/stop') return send(res, 200, stopCycle());
-      send(res, 404, { error: 'not found' });
+      return proxyToUpstream(req, res);
     } catch (err) {
       send(res, 500, { error: err.message });
     }
   });
 }
-
-// ---------- page ----------
-
-const PAGE = /* html */ `<!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>career-ops auto panel</title>
-<style>
-  :root{color-scheme:dark}
-  body{font:14px/1.5 ui-monospace,Menlo,monospace;background:#101014;color:#d8d8e0;margin:0;padding:20px;max-width:1100px;margin-inline:auto}
-  h1{font-size:16px;display:flex;align-items:center;gap:10px}
-  .dot{width:10px;height:10px;border-radius:50%;background:#555;display:inline-block}
-  .dot.on{background:#3fb950;box-shadow:0 0 8px #3fb950}
-  button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:6px 14px;font:inherit;cursor:pointer}
-  button.stop{background:#da3633}button:disabled{opacity:.4;cursor:default}
-  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
-  .chip{background:#1b1b22;border:1px solid #2a2a33;border-radius:14px;padding:2px 10px}
-  table{width:100%;border-collapse:collapse;margin-top:8px}
-  td,th{padding:5px 8px;border-bottom:1px solid #22222a;text-align:left;vertical-align:top}
-  tr.job{cursor:pointer}tr.job:hover{background:#17171d}
-  .stage{border-radius:10px;padding:1px 8px;font-size:12px;background:#30363d}
-  .stage.submitted{background:#1a5c2a}.stage.failed,.stage.parked{background:#6e2b2b}
-  .stage.applying{background:#8a6d00}.stage.queued,.stage.resume_ready{background:#1f4b7a}
-  .err{color:#f0883e;font-size:12px}
-  #detail{background:#15151b;border:1px solid #2a2a33;border-radius:8px;padding:14px;margin:14px 0;display:none}
-  #detail img{max-width:100%;border:1px solid #333;border-radius:6px;margin:6px 0}
-  pre{background:#0b0b0e;padding:10px;border-radius:6px;overflow:auto;max-height:260px;white-space:pre-wrap}
-  .muted{color:#777}
-  a{color:#58a6ff}
-</style>
-<h1><span class="dot" id="dot"></span>career-ops auto panel
-  <span id="working" class="muted"></span>
-  <span style="flex:1"></span>
-  <label class="muted"><input type="checkbox" id="skipScan" checked> skip scan</label>
-  <button id="start">Start cycle</button>
-  <button id="stop" class="stop">Stop</button>
-</h1>
-<div class="chips" id="chips"></div>
-<div id="detail"></div>
-<table id="jobs"><thead><tr><th>stage</th><th>company</th><th>role</th><th>score</th><th>att</th><th>last error / reason</th></tr></thead><tbody></tbody></table>
-<h3 class="muted">run.log</h3>
-<pre id="log"></pre>
-<script>
-const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-async function refresh(){
-  const s=await (await fetch('/api/status')).json();
-  $('dot').className='dot'+(s.cycle.running?' on':'');
-  $('working').textContent=s.cycle.running?('cycle running (pid '+s.cycle.pid+(s.workingOn?', on: '+s.workingOn:'')+')'):'idle';
-  $('start').disabled=s.cycle.running; $('stop').disabled=!s.cycle.running;
-  $('chips').innerHTML=Object.entries(s.counts).map(([k,v])=>'<span class="chip">'+esc(k)+': <b>'+v+'</b></span>').join('')
-    +'<span class="chip">submitted today: <b>'+s.submittedToday+'</b></span>';
-  $('log').textContent=s.logTail||'(empty)';
-  const j=await (await fetch('/api/jobs')).json();
-  $('jobs').querySelector('tbody').innerHTML=j.jobs.map(x=>
-    '<tr class="job" data-key="'+esc(x.urlKey)+'"><td><span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span></td><td>'+esc(x.company)+
-    '</td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td><td>'+(x.attempts||0)+'</td><td class="err">'+esc(x.lastError??'')+'</td></tr>').join('');
-}
-document.addEventListener('click',async e=>{
-  const row=e.target.closest('tr.job');
-  if(row) return showDetail(row.dataset.key);
-  if(e.target.id==='start'){await fetch('/api/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({skipScan:$('skipScan').checked})});refresh();}
-  if(e.target.id==='stop'){await fetch('/api/stop',{method:'POST'});setTimeout(refresh,800);}
-});
-async function showDetail(key){
-  const r=await fetch('/api/job?key='+encodeURIComponent(key));
-  if(!r.ok)return;
-  const {job,attempts}=await r.json();
-  let h='<b>'+esc(job.company)+' — '+esc(job.role)+'</b> <span class="stage '+esc(job.stage)+'">'+esc(job.stage)+'</span>'
-    +' <a href="'+esc(job.url)+'" target="_blank">posting</a><br>'
-    +'<span class="muted">score '+(job.score??'—')+' · attempts '+(job.attempts||0)+' · '+esc(job.ats||'?')+'</span>';
-  if(job.lastError)h+='<div class="err">'+esc(job.lastError)+'</div>';
-  h+='<div class="muted">'+job.timestamps.map(t=>esc(t.stage)+' @ '+esc(t.at.slice(0,19).replace('T',' '))).join(' → ')+'</div>';
-  for(const a of attempts){
-    h+='<hr><b>'+esc(a.name)+'</b>';
-    if(a.verdict)h+=' — verdict: <b>'+esc(a.verdict.status??'?')+'</b>'+(a.verdict.reason?' <span class="err">('+esc(a.verdict.reason)+')</span>':'');
-    if(a.result){
-      h+='<div>agent claim: '+esc(a.result.status??'?')+(a.result.parked_reason?' · parked_reason: <span class="err">'+esc(a.result.parked_reason)+'</span>':'')+'</div>';
-      if(a.result.missing?.length)h+='<div class="err">missing: '+a.result.missing.map(m=>esc(m.label)+' ('+esc(m.needed)+')').join('; ')+'</div>';
-    }
-    if(a.answersPath)h+='<div><a href="/api/file?p='+encodeURIComponent(a.answersPath)+'" target="_blank">answers.json</a></div>';
-    for(const s of a.shots)h+='<div class="muted">'+esc(s.split('/').pop())+'</div><img loading="lazy" src="/api/file?p='+encodeURIComponent(s)+'">';
-  }
-  if(!attempts.length)h+='<div class="muted">no apply attempts yet</div>';
-  $('detail').innerHTML=h; $('detail').style.display='block'; $('detail').scrollIntoView({behavior:'smooth'});
-}
-refresh(); setInterval(refresh,4000);
-</script>`;
 
 // ---------- self-test / main ----------
 
@@ -298,9 +308,35 @@ async function selfTest() {
   const check = (name, ok) => { console.log(`${ok ? 'ok' : 'FAIL'} - ${name}`); if (!ok) failed++; };
 
   const s = statusPayload();
-  check('status payload has cycle/counts/submittedToday', 'cycle' in s && 'counts' in s && typeof s.submittedToday === 'number');
+  check('status payload has cycle/counts/submittedToday/dailyLimit',
+    'cycle' in s && 'counts' in s && typeof s.submittedToday === 'number' && 'dailyLimit' in s);
+  check('panel.html exists', existsSync(PANEL_HTML));
   check('file guard rejects traversal', safeOutputPath('../cv.md') === null && safeOutputPath('/etc/passwd') === null);
   check('file guard rejects non-artifact extensions', safeOutputPath('output/x/audit/attempt-1/evil.sh') === null);
+
+  const h = rewriteProxyHeaders({ host: '127.0.0.1:3002', origin: 'http://127.0.0.1:3002', 'accept-encoding': 'gzip', referer: 'http://127.0.0.1:3002/jobs' });
+  check('proxy rewrites host/origin/referer to upstream', h.host === '127.0.0.1:3001' && h.origin === 'http://127.0.0.1:3001'
+    && h.referer === 'http://127.0.0.1:3001/jobs' && !('accept-encoding' in h));
+  check('nav injection lands before </body>', injectNav('<html><body>x</body></html>').includes('Mission Control</a></body>'));
+
+  // requeue against a temp jobs dir — never touches real state
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'auto-panel-'));
+  const prevDir = process.env.CAREER_OPS_AUTO_JOBS_DIR;
+  process.env.CAREER_OPS_AUTO_JOBS_DIR = tmp;
+  try {
+    const { createJob } = await import('./state.mjs');
+    const { job } = createJob({ url: 'https://boards.greenhouse.io/acme/jobs/123', company: 'acme', role: 'cto' });
+    for (const st of ['evaluated', 'queued', 'resume_ready', 'applying', 'failed']) transition(job, st, { attempts: 2 });
+    const r = requeueJob(job.urlKey);
+    check('requeue failed→queued resets attempts', r.ok === true && loadJob(job.urlKey).stage === 'queued' && loadJob(job.urlKey).attempts === 0);
+    check('requeue refuses an illegal stage', requeueJob(job.urlKey).ok === false); // already queued
+  } finally {
+    if (prevDir === undefined) delete process.env.CAREER_OPS_AUTO_JOBS_DIR;
+    else process.env.CAREER_OPS_AUTO_JOBS_DIR = prevDir;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 
   // start/stop checks only when no real cycle is running: stopCycle on an
   // external cycle would kill the user's live run (that is its job).
@@ -327,7 +363,7 @@ if (isMainModule(import.meta.url)) {
   } else {
     const port = Number(args[args.indexOf('--port') + 1]) || 3002;
     createPanelServer().listen(port, '127.0.0.1', () => {
-      console.log(`auto panel: http://127.0.0.1:${port} (loopback only)`);
+      console.log(`mission control: http://127.0.0.1:${port}/auto (loopback only; proxies ${UPSTREAM.host}:${UPSTREAM.port})`);
     });
   }
 }

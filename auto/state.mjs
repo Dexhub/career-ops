@@ -12,7 +12,8 @@
  *                 skipped    skipped                  failed
  *
  * `applying → applying` is the retry edge (attempts++). `parked → queued`
- * lets a user re-queue a job after clearing the obstacle manually.
+ * and `failed → queued` let a user re-queue a job (panel Requeue button or
+ * CLI) after clearing the obstacle manually; requeue resets attempts.
  */
 
 import { createHash } from 'node:crypto';
@@ -47,7 +48,7 @@ export const LEGAL_TRANSITIONS = Object.freeze({
   applying:     ['applying', 'submitted', 'failed', 'parked'],
   submitted:    [],
   parked:       ['queued', 'skipped'],
-  failed:       [],
+  failed:       ['queued'],
   skipped:      [],
 });
 

@@ -1,0 +1,175 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Career Ops — Mission Control</title>
+<style>
+  :root{color-scheme:dark}
+  body{font:14px/1.5 ui-monospace,Menlo,monospace;background:#101014;color:#d8d8e0;margin:0;padding:20px;max-width:1200px;margin-inline:auto}
+  h1{font-size:17px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 4px}
+  h2{font-size:13px;color:#8b8b96;text-transform:uppercase;letter-spacing:.08em;margin:26px 0 8px}
+  .dot{width:10px;height:10px;border-radius:50%;background:#555;display:inline-block;flex:none}
+  .dot.on{background:#3fb950;box-shadow:0 0 8px #3fb950}
+  nav{display:flex;gap:4px;flex-wrap:wrap;margin:10px 0 2px}
+  nav a{color:#9ba6b5;text-decoration:none;padding:4px 10px;border-radius:6px;font-size:13px}
+  nav a:hover{background:#1b1b22;color:#d8d8e0}
+  nav a.here{background:#1f2630;color:#58a6ff}
+  button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:6px 14px;font:inherit;cursor:pointer}
+  button.stop{background:#da3633}button.ghost{background:#21262d;color:#c9d1d9}
+  button:disabled{opacity:.4;cursor:default}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{background:#1b1b22;border:1px solid #2a2a33;border-radius:14px;padding:2px 10px}
+  .bar{height:6px;background:#22222a;border-radius:3px;overflow:hidden;flex:1;min-width:90px;max-width:220px}
+  .bar>i{display:block;height:100%;background:#3fb950;border-radius:3px}
+  table{width:100%;border-collapse:collapse;margin-top:8px}
+  td,th{padding:5px 8px;border-bottom:1px solid #22222a;text-align:left;vertical-align:top}
+  tr.job{cursor:pointer}tr.job:hover{background:#17171d}
+  .stage{border-radius:10px;padding:1px 8px;font-size:12px;background:#30363d;white-space:nowrap}
+  .stage.submitted{background:#1a5c2a}.stage.failed{background:#6e2b2b}.stage.parked{background:#7a5b1f}
+  .stage.applying{background:#8a6d00}.stage.queued,.stage.resume_ready{background:#1f4b7a}
+  .err{color:#f0883e;font-size:12px}
+  .card{background:#15151b;border:1px solid #2a2a33;border-radius:8px;padding:10px 14px;margin:8px 0}
+  .card.attn{border-left:3px solid #d29922}
+  .card.fail{border-left:3px solid #da3633}
+  .card.win{border-left:3px solid #3fb950}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  #detail{background:#15151b;border:1px solid #2a2a33;border-radius:8px;padding:14px;margin:14px 0;display:none}
+  #detail img{max-width:100%;border:1px solid #333;border-radius:6px;margin:6px 0}
+  pre{background:#0b0b0e;padding:10px;border-radius:6px;overflow:auto;max-height:300px;white-space:pre-wrap}
+  .muted{color:#777}
+  a{color:#58a6ff}
+  .logfilters{display:flex;gap:6px;margin:6px 0}
+  .logfilters button{font-size:12px;padding:3px 10px}
+  .logfilters button.sel{background:#1f6feb}
+</style>
+
+<h1><span class="dot" id="dot"></span>Career Ops — Mission Control
+  <span id="working" class="muted" style="font-weight:normal;font-size:13px"></span>
+  <span style="flex:1"></span>
+  <span class="muted" style="font-size:12px">submitted today <b id="subCount" style="color:#d8d8e0">0</b><span id="subLimit"></span></span>
+  <span class="bar"><i id="subBar" style="width:0"></i></span>
+  <label class="muted" style="font-size:12px"><input type="checkbox" id="skipScan" checked> skip scan</label>
+  <button id="start">Start cycle</button>
+  <button id="stop" class="stop">Stop</button>
+</h1>
+<div class="muted" style="font-size:12px">Manual-only: nothing runs on a schedule. Starting a cycle authorizes autonomous applies until it finishes or you stop it.</div>
+
+<nav>
+  <a href="/auto" class="here">Dashboard</a>
+  <a href="/">Home</a>
+  <a href="/pipeline">Pipeline</a>
+  <a href="/followups">Follow-ups</a>
+  <a href="/cv">Master CV</a>
+  <a href="/explore">Find jobs</a>
+</nav>
+
+<div class="chips" id="chips"></div>
+<div id="detail"></div>
+
+<div id="attnWrap" style="display:none"><h2>Needs attention</h2><div id="attn"></div></div>
+<div id="winsWrap" style="display:none"><h2>Submitted — verified movement, not busywork</h2><div id="wins"></div></div>
+
+<h2>All jobs <span class="muted" style="text-transform:none;letter-spacing:0">(queued rows are in worker pick order)</span></h2>
+<table id="jobs"><thead><tr><th>stage</th><th>company</th><th>role</th><th>score</th><th>att</th><th>last error / reason</th></tr></thead><tbody></tbody></table>
+
+<h2>Activity</h2>
+<div class="logfilters" id="logfilters">
+  <button data-f="all" class="sel">all</button>
+  <button data-f="scan:">scan</button>
+  <button data-f="eval-queue:">eval</button>
+  <button data-f="apply-worker:">apply</button>
+  <button data-f="run:">run</button>
+  <button data-f="__err">errors</button>
+</div>
+<pre id="log"></pre>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let logFilter='all', rawLog='';
+
+function renderLog(){
+  let lines=rawLog.split('\n');
+  if(logFilter==='__err') lines=lines.filter(l=>/fail|error|refus|illegal|parked/i.test(l));
+  else if(logFilter!=='all') lines=lines.filter(l=>l.startsWith(logFilter)||l.trimStart().startsWith('→'));
+  $('log').textContent=lines.join('\n')||'(empty)';
+}
+
+function jobLine(x,cls,extra){
+  return '<div class="card '+cls+'"><div class="row">'
+    +'<span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span>'
+    +'<b>'+esc(x.company)+'</b> '+esc(x.role)
+    +'<span class="muted">score '+(x.score??'—')+'</span>'
+    +'<span style="flex:1"></span>'+extra+'</div>'
+    +(x.lastError?'<div class="err">'+esc(x.lastError)+'</div>':'')+'</div>';
+}
+
+async function refresh(){
+  const s=await (await fetch('/api/auto/status')).json();
+  $('dot').className='dot'+(s.cycle.running?' on':'');
+  $('working').textContent=s.cycle.running
+    ?('cycle running · pid '+s.cycle.pid+(s.cycle.source==='external'?' (external)':'')+(s.workingOn?' · applying to: '+s.workingOn:''))
+    :'idle — start a cycle to work the queue';
+  $('start').disabled=s.cycle.running; $('stop').disabled=!s.cycle.running;
+  $('subCount').textContent=s.submittedToday;
+  $('subLimit').textContent=s.dailyLimit?(' / '+s.dailyLimit):'';
+  $('subBar').style.width=s.dailyLimit?Math.min(100,100*s.submittedToday/s.dailyLimit)+'%':'0';
+  $('chips').innerHTML=Object.entries(s.counts).map(([k,v])=>'<span class="chip">'+esc(k)+': <b>'+v+'</b></span>').join('')
+    +(s.digestToday?'<a class="chip" href="/api/auto/digest" target="_blank">today\u2019s digest</a>':'');
+  rawLog=s.logTail||''; renderLog();
+
+  const j=(await (await fetch('/api/auto/jobs')).json()).jobs;
+  const attn=j.filter(x=>x.stage==='parked'||x.stage==='failed');
+  $('attnWrap').style.display=attn.length?'':'none';
+  $('attn').innerHTML=attn.map(x=>jobLine(x,x.stage==='failed'?'fail':'attn',
+    '<button class="ghost" data-ev="'+esc(x.urlKey)+'">Evidence</button>'
+    +'<button data-rq="'+esc(x.urlKey)+'">Requeue</button>')).join('');
+  const wins=j.filter(x=>x.stage==='submitted');
+  $('winsWrap').style.display=wins.length?'':'none';
+  $('wins').innerHTML=wins.map(x=>jobLine(x,'win',
+    '<span class="muted">'+esc((x.updatedAt||'').slice(0,16).replace('T',' '))+'</span>'
+    +'<button class="ghost" data-ev="'+esc(x.urlKey)+'">Evidence</button>')).join('');
+  $('jobs').querySelector('tbody').innerHTML=j.map(x=>
+    '<tr class="job" data-key="'+esc(x.urlKey)+'"><td><span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span></td><td>'+esc(x.company)+
+    '</td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td><td>'+(x.attempts||0)+'</td><td class="err">'+esc(x.lastError??'')+'</td></tr>').join('');
+}
+
+document.addEventListener('click',async e=>{
+  const f=e.target.closest('#logfilters button');
+  if(f){logFilter=f.dataset.f;document.querySelectorAll('#logfilters button').forEach(b=>b.classList.toggle('sel',b===f));renderLog();return;}
+  if(e.target.dataset.ev) return showDetail(e.target.dataset.ev);
+  if(e.target.dataset.rq){
+    const r=await (await fetch('/api/auto/requeue',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key:e.target.dataset.rq})})).json();
+    if(!r.ok)alert('Requeue refused: '+r.error);
+    return refresh();
+  }
+  const row=e.target.closest('tr.job');
+  if(row) return showDetail(row.dataset.key);
+  if(e.target.id==='start'){await fetch('/api/auto/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({skipScan:$('skipScan').checked})});refresh();}
+  if(e.target.id==='stop'){await fetch('/api/auto/stop',{method:'POST'});setTimeout(refresh,800);}
+});
+
+async function showDetail(key){
+  const r=await fetch('/api/auto/job?key='+encodeURIComponent(key));
+  if(!r.ok)return;
+  const {job,attempts}=await r.json();
+  let h='<div class="row"><b>'+esc(job.company)+' — '+esc(job.role)+'</b> <span class="stage '+esc(job.stage)+'">'+esc(job.stage)+'</span>'
+    +' <a href="'+esc(job.url)+'" target="_blank">posting</a><span style="flex:1"></span>'
+    +((job.stage==='parked'||job.stage==='failed')?'<button data-rq="'+esc(job.urlKey)+'">Requeue</button>':'')
+    +'<button class="ghost" onclick="this.closest(\'#detail\').style.display=\'none\'">close</button></div>'
+    +'<span class="muted">score '+(job.score??'—')+' · attempts '+(job.attempts||0)+' · '+esc(job.ats||'?')+'</span>';
+  if(job.lastError)h+='<div class="err">'+esc(job.lastError)+'</div>';
+  h+='<div class="muted">'+job.timestamps.map(t=>esc(t.stage)+' @ '+esc(t.at.slice(0,19).replace('T',' '))).join(' → ')+'</div>';
+  for(const a of attempts){
+    h+='<hr><b>'+esc(a.name)+'</b>';
+    if(a.verdict)h+=' — verdict: <b>'+esc(a.verdict.status??'?')+'</b>'+(a.verdict.reason?' <span class="err">('+esc(a.verdict.reason)+')</span>':'');
+    if(a.result){
+      h+='<div>agent claim: '+esc(a.result.status??'?')+(a.result.parked_reason?' · parked_reason: <span class="err">'+esc(a.result.parked_reason)+'</span>':'')+'</div>';
+      if(a.result.missing?.length)h+='<div class="err">missing: '+a.result.missing.map(m=>esc(m.label)+' ('+esc(m.needed)+')').join('; ')+'</div>';
+    }
+    if(a.answersPath)h+='<div><a href="/api/auto/file?p='+encodeURIComponent(a.answersPath)+'" target="_blank">answers.json</a></div>';
+    for(const s of a.shots)h+='<div class="muted">'+esc(s.split('/').pop())+'</div><img loading="lazy" src="/api/auto/file?p='+encodeURIComponent(s)+'">';
+  }
+  if(!attempts.length)h+='<div class="muted">no apply attempts yet</div>';
+  $('detail').innerHTML=h; $('detail').style.display='block'; $('detail').scrollIntoView({behavior:'smooth'});
+}
+refresh(); setInterval(refresh,4000);
+</script>
