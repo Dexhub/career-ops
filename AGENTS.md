@@ -514,6 +514,9 @@ Rules for agents working here:
 - The web UI runs as an always-on service (`io.career-ops.web-ui`,
   http://127.0.0.1:3001, production build). Serving the UI is fine; it must
   never trigger applies on its own.
+- The auto control panel (`auto/panel.mjs`, `io.career-ops.panel`,
+  http://127.0.0.1:3002) is the user's start/stop + queue/audit viewer.
+  It only spawns/kills `node auto/run.mjs`; it never applies by itself.
 - After `npm run update`, re-apply `auto/patches/apply-ethical-override.mjs`
   and re-add this section if the update overwrote AGENTS.md.
 
