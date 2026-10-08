@@ -23,8 +23,10 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listJobs, loadJob, transition, submittedCountOn, STAGES } from './state.mjs';
-import { loadAutoConfig } from './lib/config.mjs';
+import { listJobs, loadJob, pickOrder, saveJob, transition, submittedCountOn, STAGES } from './state.mjs';
+import { AUTO_CONFIG_PATH, loadAutoConfig } from './lib/config.mjs';
+import { loadRadar, saveRadar } from './radar.mjs';
+import { agentFlags, setAgentEnabled } from './lib/agent-flags.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -112,7 +114,8 @@ export function jobSummaries() {
   return listJobs()
     .map((j) => ({
       urlKey: j.urlKey, url: j.url, company: j.company, role: j.role, ats: j.ats,
-      stage: j.stage, score: j.score, attempts: j.attempts, lastError: j.lastError,
+      stage: j.stage, score: j.score, attempts: j.attempts, evalAttempts: j.evalAttempts || 0, lastError: j.lastError,
+      priority: j.priority || 0, held: !!j.held,
       auditDir: j.auditDir, updatedAt: j.timestamps?.at(-1)?.at ?? null,
     }))
     .sort((a, b) =>
@@ -172,6 +175,195 @@ export function requeueJob(urlKey) {
 export function requeueJobs(keys) {
   const results = (Array.isArray(keys) ? keys : []).map((key) => ({ key, ...requeueJob(key) }));
   return { ok: results.every((r) => r.ok), requeued: results.filter((r) => r.ok).length, results };
+}
+
+/**
+ * Re-rank: send a never-scored job back through the ranker. Clears the retry
+ * counter + error so the next cycle's eval pass picks it up again. Legal for
+ * `discovered` (still waiting) and `parked` jobs that never got a score;
+ * anything already scored is refused — use requeue for apply-side retries.
+ */
+export function rerankJob(urlKey) {
+  const job = loadJob(urlKey);
+  if (!job) return { ok: false, error: 'job not found' };
+  if (job.score != null) return { ok: false, error: `already scored ${job.score} — re-rank is for unscored jobs` };
+  try {
+    if (job.stage === 'parked') {
+      transition(job, 'discovered', { evalAttempts: 0, lastError: null });
+    } else if (job.stage === 'discovered') {
+      job.evalAttempts = 0;
+      job.lastError = null;
+      saveJob(job);
+    } else {
+      return { ok: false, error: `cannot re-rank from stage ${job.stage}` };
+    }
+    return { ok: true, stage: job.stage };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/** Bulk re-rank; one refusal never blocks the rest. */
+export function rerankJobs(keys) {
+  const results = (Array.isArray(keys) ? keys : []).map((key) => ({ key, ...rerankJob(key) }));
+  return { ok: results.every((r) => r.ok), reranked: results.filter((r) => r.ok).length, results };
+}
+
+/**
+ * Queue edits: bump a job to the front of the pick order, or bench it
+ * without parking. Both touch panel-owned fields only (priority, held) —
+ * never the stage, so the state machine stays authoritative.
+ */
+export function editQueue(urlKey, action) {
+  const job = loadJob(urlKey);
+  if (!job) return { ok: false, error: 'job not found' };
+  if (action === 'bump') {
+    const top = Math.max(0, ...listJobs(['resume_ready', 'applying']).map((j) => j.priority || 0));
+    job.priority = top + 1;
+    job.held = false;
+  } else if (action === 'unbump') job.priority = 0;
+  else if (action === 'hold') { job.held = true; job.priority = 0; }
+  else if (action === 'release') job.held = false;
+  else return { ok: false, error: `unknown action "${action}"` };
+  saveJob(job);
+  return { ok: true, priority: job.priority || 0, held: !!job.held };
+}
+
+// ---------- config editing (whitelisted auto.yml fields) ----------
+
+export const EDITABLE_CONFIG = Object.freeze({
+  score_threshold:        { kind: 'number', min: 0, max: 5,    label: 'Score threshold', help: 'jobs scoring ≥ this are queued to apply' },
+  daily_soft_limit:       { kind: 'int',    min: 1, max: 1000, label: 'Daily submit limit', help: 'applies stop for the day once reached' },
+  jitter_min_minutes:     { kind: 'int',    min: 0, max: 120,  label: 'Jitter min (minutes)', help: 'random pause between applies, lower bound' },
+  jitter_max_minutes:     { kind: 'int',    min: 0, max: 240,  label: 'Jitter max (minutes)', help: 'random pause between applies, upper bound' },
+  max_attempts:           { kind: 'int',    min: 1, max: 5,    label: 'Max apply attempts', help: 'after this many errors a job is failed/parked' },
+  'eval.model':           { kind: 'string', pattern: '^[\\w./:@-]+$', label: 'Eval model', help: 'model id on the local eval endpoint' },
+  'eval.limit_per_cycle': { kind: 'int',    min: 1, max: 500,  label: 'Evals per cycle', help: 'max new postings ranked each cycle' },
+});
+
+/** Pure: apply whitelisted edits to the auto.yml text, preserving comments. */
+export function applyConfigEdits(text, patch) {
+  const changed = []; const errors = [];
+  for (const [key, raw] of Object.entries(patch || {})) {
+    const spec = EDITABLE_CONFIG[key];
+    if (!spec) { errors.push(`${key}: not editable`); continue; }
+    let v;
+    if (spec.kind === 'string') {
+      v = String(raw).trim();
+      if (!new RegExp(spec.pattern).test(v)) { errors.push(`${key}: invalid value`); continue; }
+    } else {
+      v = Number(raw);
+      const bad = !Number.isFinite(v) || v < spec.min || v > spec.max || (spec.kind === 'int' && !Number.isInteger(v));
+      if (bad) { errors.push(`${key}: must be a${spec.kind === 'int' ? 'n integer' : ' number'} ${spec.min}–${spec.max}`); continue; }
+    }
+    const [head, leaf] = key.includes('.') ? key.split('.') : [null, key];
+    const indent = head ? '  ' : '';
+    const re = new RegExp(`^${indent}${leaf}:[^\\n]*$`, 'm');
+    if (!re.test(text)) { errors.push(`${key}: line not found in auto.yml`); continue; }
+    text = text.replace(re, `${indent}${leaf}: ${v}`);
+    changed.push(key);
+  }
+  return { text, changed, errors };
+}
+
+export function configPayload() {
+  const cfg = loadAutoConfig({ fresh: true });
+  const get = (k) => k.split('.').reduce((o, p) => (o ? o[p] : undefined), cfg);
+  return {
+    fields: Object.entries(EDITABLE_CONFIG).map(([key, spec]) => ({ key, ...spec, value: get(key) ?? null })),
+    path: 'config/auto.yml',
+  };
+}
+
+export function updateConfig(patch) {
+  const raw = readFileSync(AUTO_CONFIG_PATH, 'utf8');
+  const { text, changed, errors } = applyConfigEdits(raw, patch);
+  if (changed.length) {
+    writeFileSync(AUTO_CONFIG_PATH, text, 'utf8');
+    loadAutoConfig({ fresh: true });
+  }
+  return { ok: errors.length === 0, changed, errors, note: changed.length ? 'applies from the next cycle start' : null };
+}
+
+// ---------- analytics ----------
+
+export function analyticsPayload() {
+  const jobs = listJobs();
+  const submittedByDay = {}; const discoveredByDay = {};
+  const scoreDist = {}; const reasonMap = {}; const applies = [];
+  for (const j of jobs) {
+    for (const t of j.timestamps ?? []) {
+      const day = t.at.slice(0, 10);
+      if (t.stage === 'discovered') discoveredByDay[day] = (discoveredByDay[day] || 0) + 1;
+      if (t.stage === 'submitted') submittedByDay[day] = (submittedByDay[day] || 0) + 1;
+    }
+    if (j.score != null) { const b = String(Math.round(j.score)); scoreDist[b] = (scoreDist[b] || 0) + 1; }
+    if ((j.stage === 'parked' || j.stage === 'failed') && j.lastError) {
+      const r = j.lastError.slice(0, 90);
+      reasonMap[r] = reasonMap[r] || { count: 0, stage: j.stage, companies: [] };
+      reasonMap[r].count += 1;
+      if (reasonMap[r].companies.length < 6) reasonMap[r].companies.push(j.company);
+    }
+    if (j.stage === 'submitted') {
+      const sub = j.timestamps?.findLast?.((t) => t.stage === 'submitted');
+      const appl = j.timestamps?.filter((t) => t.stage === 'applying').at(-1);
+      if (sub && appl) {
+        const minutes = Math.round((new Date(sub.at) - new Date(appl.at)) / 6000) / 10;
+        if (minutes >= 0 && minutes < 24 * 60) applies.push({ company: j.company, role: j.role, minutes, day: sub.at.slice(0, 10) });
+      }
+    }
+  }
+  applies.sort((a, b) => b.day.localeCompare(a.day));
+  const mins = applies.map((a) => a.minutes).sort((a, b) => a - b);
+  const funnel = {};
+  for (const j of jobs) funnel[j.stage] = (funnel[j.stage] || 0) + 1;
+  return {
+    total: jobs.length, funnel, submittedByDay, discoveredByDay, scoreDist,
+    reasons: Object.entries(reasonMap).map(([reason, v]) => ({ reason, ...v })).sort((a, b) => b.count - a.count),
+    applies,
+    timePerApply: {
+      count: mins.length,
+      avg: mins.length ? Math.round(mins.reduce((s, m) => s + m, 0) / mins.length * 10) / 10 : null,
+      median: mins.length ? mins[Math.floor(mins.length / 2)] : null,
+    },
+  };
+}
+
+// ---------- radar (startup intel) ----------
+
+const RADAR_LOG = join(ROOT, 'data', 'auto', 'radar.log');
+const RADAR_STATUSES = ['watching', 'reach_out', 'contacted', 'dismissed'];
+let radarChild = null;
+
+export function startRadarScan({ refresh = false, cmd = null } = {}) {
+  if (radarChild && processAlive(radarChild.pid)) return { ok: false, error: 'radar scan already running' };
+  const fd = openSync(RADAR_LOG, 'a');
+  const [bin, ...args] = cmd ?? [process.execPath, join(ROOT, 'auto', 'radar.mjs'), ...(refresh ? ['--refresh'] : [])];
+  const child = spawn(bin, args, { cwd: ROOT, detached: true, stdio: ['ignore', fd, fd] });
+  closeSync(fd);
+  child.on('exit', () => { if (radarChild === child) radarChild = null; });
+  child.unref();
+  radarChild = child;
+  return { ok: true, pid: child.pid };
+}
+
+export function radarPayload() {
+  let tail = '';
+  try { tail = readFileSync(RADAR_LOG, 'utf8').split('\n').filter(Boolean).slice(-12).join('\n'); } catch { /* no log yet */ }
+  return { ...loadRadar(), scanning: !!(radarChild && processAlive(radarChild.pid)), logTail: tail };
+}
+
+export function updateRadarEntry(id, patch = {}) {
+  const radar = loadRadar();
+  const entry = radar.companies.find((c) => c.id === id);
+  if (!entry) return { ok: false, error: 'company not found' };
+  if (patch.status !== undefined) {
+    if (!RADAR_STATUSES.includes(patch.status)) return { ok: false, error: `status must be one of ${RADAR_STATUSES.join(', ')}` };
+    entry.status = patch.status;
+  }
+  if (patch.notes !== undefined) entry.notes = String(patch.notes).slice(0, 2000);
+  saveRadar(radar);
+  return { ok: true };
 }
 
 function logTail(lines = 200) {
@@ -259,6 +451,7 @@ export function operatorPayload() {
     lastActivityAt: logMtime,
     workers: parseWorkers(logTail(400), cycle.running),
     applying: liveAttempt(),
+    agents: agentFlags(),
   };
 }
 
@@ -267,13 +460,18 @@ function statusPayload() {
   const counts = {};
   for (const j of jobs) counts[j.stage] = (counts[j.stage] ?? 0) + 1;
   const applying = jobs.find((j) => j.stage === 'applying');
-  let dailyLimit = null;
-  try { dailyLimit = loadAutoConfig().daily_soft_limit ?? null; } catch { /* config absent */ }
+  let dailyLimit = null; let maxAttempts = 2;
+  try {
+    const cfg = loadAutoConfig();
+    dailyLimit = cfg.daily_soft_limit ?? null;
+    maxAttempts = cfg.max_attempts ?? 2;
+  } catch { /* config absent */ }
   const day = new Date().toISOString().slice(0, 10);
   return {
     cycle: cycleState(),
     pauseRequested: pauseRequested(),
     counts,
+    maxAttempts,
     total: jobs.length,
     submittedToday: submittedCountOn(day),
     dailyLimit,
@@ -291,12 +489,46 @@ function digestToday() {
 
 // ---------- reverse proxy to the upstream web UI ----------
 
-// Styled to the career-ops design system: brand burnt-orange pill
-// (hsl(26 73% 51%), near-black foreground), rounded-full, Inter/system sans.
-const NAV_SNIPPET = '<a href="/auto" style="position:fixed;right:16px;bottom:16px;z-index:99999;'
-  + 'background:hsl(26 73% 51%);color:hsl(24 30% 12%);border-radius:999px;'
-  + 'padding:8px 16px;font:500 13px/1 ui-sans-serif,system-ui,-apple-system,sans-serif;text-decoration:none;'
-  + 'box-shadow:0 1px 2px rgba(0,0,0,.15),0 4px 14px rgba(0,0,0,.18)">Mission Control</a>';
+// A "Mission Control" section is injected into the upstream app's own left
+// sidebar (<aside><nav>), cloning the look of its existing links. Pages
+// without a sidebar fall back to the floating brand pill. The observer
+// re-inserts after Next.js re-renders the nav.
+const NAV_LINKS = [
+  ['Overview', '/auto'], ['Operator', '/auto#operator'], ['Queue', '/auto#queue'],
+  ['Errors', '/auto#errors'], ['Analytics', '/auto#analytics'], ['Radar', '/auto#radar'],
+  ['Settings', '/auto#settings'],
+];
+const NAV_SNIPPET = `<script>(function(){
+var LINKS=${JSON.stringify(NAV_LINKS)};
+function insert(){
+  var any=false;
+  document.querySelectorAll('aside nav').forEach(function(nav){
+    if(nav.querySelector('[data-mc]')){any=true;return;}
+    var tpl=nav.querySelector('a[class*="text-muted"]')||nav.querySelector('a');
+    var sect=document.createElement('div');sect.setAttribute('data-mc','1');
+    var h=document.createElement('div');h.textContent='Mission Control';
+    h.style.cssText='margin:18px 0 4px;padding:0 12px;font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:hsl(26 73% 51%)';
+    sect.appendChild(h);
+    LINKS.forEach(function(l){
+      var a=document.createElement('a');a.href=l[1];a.textContent=l[0];
+      if(tpl){a.className=tpl.className.replace(/bg-brand-soft|text-brand-text/g,'').trim();}
+      else{a.style.cssText='display:block;padding:8px 12px;font-size:14px;color:inherit;text-decoration:none';}
+      sect.appendChild(a);
+    });
+    nav.appendChild(sect);any=true;
+  });
+  return any;
+}
+function pill(){
+  if(document.querySelector('[data-mc-pill]'))return;
+  var a=document.createElement('a');a.setAttribute('data-mc-pill','1');a.href='/auto';a.textContent='Mission Control';
+  a.style.cssText='position:fixed;right:16px;bottom:16px;z-index:99999;background:hsl(26 73% 51%);color:hsl(24 30% 12%);border-radius:999px;padding:8px 16px;font:500 13px/1 ui-sans-serif,system-ui,-apple-system,sans-serif;text-decoration:none;box-shadow:0 1px 2px rgba(0,0,0,.15),0 4px 14px rgba(0,0,0,.18)';
+  if(document.body)document.body.appendChild(a);
+}
+function go(){if(!insert())pill();}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',go);else go();
+new MutationObserver(function(){insert();}).observe(document.documentElement,{childList:true,subtree:true});
+})();</script>`;
 
 /** Pure: headers for the proxied upstream request (Host/Origin/Referer rewritten). */
 export function rewriteProxyHeaders(headers) {
@@ -401,6 +633,33 @@ export function createPanelServer() {
           const body = await readBody(req);
           return send(res, 200, body.keys ? requeueJobs(body.keys) : requeueJob(body.key));
         }
+        if (req.method === 'POST' && p === '/api/auto/rerank') {
+          const body = await readBody(req);
+          return send(res, 200, body.keys ? rerankJobs(body.keys) : rerankJob(body.key));
+        }
+        if (req.method === 'POST' && p === '/api/auto/agent') {
+          const body = await readBody(req);
+          return send(res, 200, setAgentEnabled(body.agent, !!body.enabled));
+        }
+        if (req.method === 'POST' && p === '/api/auto/queue-edit') {
+          const body = await readBody(req);
+          return send(res, 200, editQueue(body.key, body.action));
+        }
+        if (req.method === 'GET' && p === '/api/auto/config') return send(res, 200, configPayload());
+        if (req.method === 'POST' && p === '/api/auto/config') {
+          const body = await readBody(req);
+          return send(res, 200, updateConfig(body.patch ?? body));
+        }
+        if (req.method === 'GET' && p === '/api/auto/analytics') return send(res, 200, analyticsPayload());
+        if (req.method === 'GET' && p === '/api/auto/radar') return send(res, 200, radarPayload());
+        if (req.method === 'POST' && p === '/api/auto/radar/scan') {
+          const body = await readBody(req);
+          return send(res, 200, startRadarScan({ refresh: !!body.refresh }));
+        }
+        if (req.method === 'POST' && p === '/api/auto/radar/update') {
+          const body = await readBody(req);
+          return send(res, 200, updateRadarEntry(body.id, body.patch ?? {}));
+        }
         return send(res, 404, { error: 'not found' });
       }
       return proxyToUpstream(req, res);
@@ -431,7 +690,25 @@ async function selfTest() {
   const h = rewriteProxyHeaders({ host: '127.0.0.1:3001', origin: 'http://127.0.0.1:3001', 'accept-encoding': 'gzip', referer: 'http://127.0.0.1:3001/jobs' });
   check('proxy rewrites host/origin/referer to upstream', h.host === up && h.origin === `http://${up}`
     && h.referer === `http://${up}/jobs` && !('accept-encoding' in h));
-  check('nav injection lands before </body>', injectNav('<html><body>x</body></html>').includes('Mission Control</a></body>'));
+  const injected = injectNav('<html><body>x</body></html>');
+  check('nav injection lands before </body>', injected.includes('Mission Control')
+    && injected.includes('data-mc-pill') && injected.trimEnd().endsWith('</body></html>'));
+
+  // config editing: pure text patcher
+  const yml = 'score_threshold: 4.0 # keep\ndaily_soft_limit: 100\neval:\n  model: old/model\n  limit_per_cycle: 20\n';
+  const ed = applyConfigEdits(yml, { score_threshold: 3.5, 'eval.model': 'new/model-2', bogus_key: 1 });
+  check('applyConfigEdits patches whitelisted lines only',
+    ed.text.includes('score_threshold: 3.5') && ed.text.includes('  model: new/model-2')
+    && ed.changed.length === 2 && ed.errors.length === 1 && ed.errors[0].startsWith('bogus_key'));
+  const bad = applyConfigEdits(yml, { daily_soft_limit: 'lots', max_attempts: 99 });
+  check('applyConfigEdits rejects invalid values', bad.changed.length === 0 && bad.errors.length === 2);
+  check('config payload lists all editable fields with values',
+    configPayload().fields.length === Object.keys(EDITABLE_CONFIG).length
+    && configPayload().fields.every((f) => f.label && f.value !== undefined));
+
+  const an = analyticsPayload();
+  check('analytics payload has funnel/scoreDist/reasons/timePerApply',
+    'funnel' in an && 'scoreDist' in an && Array.isArray(an.reasons) && 'timePerApply' in an);
 
   const w = parseWorkers('eval-queue: evaluating acme — CTO\napply-worker: spawning claude (timeout 25m)', true);
   check('parseWorkers: applying wins the activity line', w.activity === 'applying');
@@ -458,6 +735,44 @@ async function selfTest() {
     check('requeue refuses an illegal stage', requeueJob(job.urlKey).ok === false); // already queued
     const bulk = requeueJobs([job.urlKey, 'nonexistent']);
     check('bulk requeue reports per-key results', bulk.ok === false && bulk.results.length === 2 && bulk.requeued === 0);
+
+    // queue edits in the same temp dir
+    const b = editQueue(job.urlKey, 'bump');
+    check('bump sets priority above the pool', b.ok === true && loadJob(job.urlKey).priority === 1);
+    const h = editQueue(job.urlKey, 'hold');
+    check('hold benches the job and clears priority',
+      h.ok === true && loadJob(job.urlKey).held === true && loadJob(job.urlKey).priority === 0
+      && pickOrder([loadJob(job.urlKey)]).length === 0);
+    check('release returns it to the pool', editQueue(job.urlKey, 'release').ok === true && loadJob(job.urlKey).held === false);
+    check('queue edit rejects unknown action/key',
+      editQueue(job.urlKey, 'explode').ok === false && editQueue('nonexistent', 'bump').ok === false);
+
+    // re-rank: a never-scored parked job goes back to discovered; scored jobs are refused
+    const { job: rj } = createJob({ url: 'https://boards.greenhouse.io/beta/jobs/9', company: 'beta', role: 'vp' });
+    transition(rj, 'parked', { lastError: 'eval failed 3× (last: timeout)', evalAttempts: 3 });
+    const rr = rerankJob(rj.urlKey);
+    const rjAfter = loadJob(rj.urlKey);
+    check('rerank parked-unscored → discovered, counter reset',
+      rr.ok === true && rjAfter.stage === 'discovered' && rjAfter.evalAttempts === 0 && rjAfter.lastError === null);
+    rjAfter.lastError = 'eval failed: flaky'; rjAfter.evalAttempts = 2; saveJob(rjAfter);
+    check('rerank discovered-with-error clears retry state in place',
+      rerankJob(rj.urlKey).ok === true && loadJob(rj.urlKey).evalAttempts === 0 && loadJob(rj.urlKey).lastError === null);
+    const scored = loadJob(job.urlKey); scored.score = 4.5; saveJob(scored);
+    check('rerank refuses a scored job', rerankJob(job.urlKey).ok === false);
+    check('bulk rerank reports per-key results', rerankJobs([rj.urlKey, 'nonexistent']).ok === false);
+
+    // per-agent stop flags round-trip (real flag dir — restore at the end)
+    const { agentEnabled } = await import('./lib/agent-flags.mjs');
+    const before = agentFlags();
+    try {
+      check('agent toggle rejects unknown agent', setAgentEnabled('mystery', false).ok === false);
+      setAgentEnabled('rank', false);
+      check('stop flag disables the agent', agentEnabled('rank') === false && agentFlags().rank === false);
+      setAgentEnabled('rank', true);
+      check('resume clears the flag', agentEnabled('rank') === true);
+    } finally {
+      for (const [a, on] of Object.entries(before)) setAgentEnabled(a, on);
+    }
   } finally {
     if (prevDir === undefined) delete process.env.CAREER_OPS_AUTO_JOBS_DIR;
     else process.env.CAREER_OPS_AUTO_JOBS_DIR = prevDir;

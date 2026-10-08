@@ -47,7 +47,7 @@ export const LEGAL_TRANSITIONS = Object.freeze({
   resume_ready: ['applying', 'parked', 'skipped'],
   applying:     ['applying', 'submitted', 'failed', 'parked'],
   submitted:    [],
-  parked:       ['queued', 'skipped'],
+  parked:       ['queued', 'skipped', 'discovered'], // → discovered: re-rank a job parked before it was ever scored
   failed:       ['queued'],
   skipped:      [],
 });
@@ -159,6 +159,25 @@ export function listJobs(stages) {
   return jobs;
 }
 
+/**
+ * The ONE pick order shared by the orchestrator, the apply worker, and the
+ * panel's queue view: pickable jobs (resume_ready, or applying with attempts
+ * left), minus held jobs, sorted priority desc → score desc → oldest first.
+ * `priority` (bump-to-front) and `held` (bench without parking) are optional
+ * job fields set from Mission Control.
+ * @param {object[]} jobs
+ * @param {number} [maxAttempts]
+ * @returns {object[]}
+ */
+export function pickOrder(jobs, maxAttempts = 2) {
+  return jobs
+    .filter((j) => !j.held
+      && (j.stage === 'resume_ready' || (j.stage === 'applying' && (j.attempts || 0) < maxAttempts)))
+    .sort((a, b) => (b.priority || 0) - (a.priority || 0)
+      || (b.score || 0) - (a.score || 0)
+      || (a.timestamps?.at(-1)?.at || '').localeCompare(b.timestamps?.at(-1)?.at || ''));
+}
+
 /** Count of jobs submitted on the given local calendar day (YYYY-MM-DD). */
 export function submittedCountOn(day) {
   let n = 0;
@@ -180,7 +199,7 @@ async function runSelfTest() {
   process.env.CAREER_OPS_AUTO_JOBS_DIR = tmp;
   // jobsDir() resolves the env var at call time, so the module's own exports
   // can be exercised directly against the temp dir.
-  const mod = { createJob, loadJob, transition, listJobs, submittedCountOn, jobFileName };
+  const mod = { createJob, loadJob, transition, listJobs, submittedCountOn, jobFileName, pickOrder };
   const url = 'https://job-boards.greenhouse.io/example/jobs/123?utm_source=x';
   let pass = 0; let fail = 0;
   const check = (name, fn) => {
@@ -223,6 +242,18 @@ async function runSelfTest() {
   check('submittedCountOn today', () => {
     const today = new Date().toISOString().slice(0, 10);
     assert(mod.submittedCountOn(today) === 1, 'one submission today');
+  });
+  check('pickOrder: priority beats score, held is excluded, attempts gate applies', () => {
+    const mk = (o) => ({ attempts: 0, timestamps: [{ stage: o.stage, at: '2026-01-01T00:00:00Z' }], ...o });
+    const jobs = [
+      mk({ urlKey: 'a', stage: 'resume_ready', score: 5 }),
+      mk({ urlKey: 'b', stage: 'resume_ready', score: 3, priority: 1 }),
+      mk({ urlKey: 'c', stage: 'resume_ready', score: 4, held: true }),
+      mk({ urlKey: 'd', stage: 'applying', score: 5, attempts: 2 }),
+      mk({ urlKey: 'e', stage: 'applying', score: 2, attempts: 1 }),
+    ];
+    const order = pickOrder(jobs, 2).map((j) => j.urlKey);
+    assert(order.join(',') === 'b,a,e', `got ${order.join(',')}`);
   });
   check('jobFileName refuses empty key', () => {
     let threw = false;

@@ -512,20 +512,27 @@ Rules for agents working here:
   the launchd schedule is disabled by user decision (2026-10-07) — do not
   reinstall `io.career-ops.auto.plist` without explicit user approval.
 - Single UI: Mission Control (`auto/panel.mjs` + `auto/panel.html`,
-  `io.career-ops.panel`, **http://127.0.0.1:3001**). `/auto` is a tabbed
-  automation dashboard — Overview (start / pause-after-current / stop-now,
-  submitted-today vs limit, triage, submitted evidence), Operator (live view
-  of orchestrator/ranker/apply-agent incl. in-progress screenshots via
-  `/api/auto/operator`), Queue (worker pick order + funnel), Errors
-  (multi-select bulk retry of failed/parked, ranker failures, skipped), Log
-  (filterable). Every other path reverse-proxies to the upstream web UI on
-  :3003 (Host/Origin rewritten for its origin-guard; a "Mission Control" link
-  is injected into proxied HTML). The upstream app under `web/` is never
-  patched. The panel only spawns/kills `node auto/run.mjs`; it never applies
-  by itself. Requeue uses the state machine's `parked→queued` / `failed→queued`
-  edges (attempts reset). Pause writes `data/auto/pause-requested`;
-  `run.mjs` checks it between applies and stops gracefully after the
-  in-flight job.
+  `io.career-ops.panel`, **http://127.0.0.1:3001**). `/auto` has a left
+  sidebar mirroring the upstream app's nav plus tabs — Overview (start /
+  pause-after-current / stop-now, submitted-today vs limit, triage, submitted
+  evidence), Operator (live cards for orchestrator + scan/ranking/submission
+  agents with per-agent feeds, screenshots via `/api/auto/operator`, and
+  per-agent Stop/Resume), Queue (worker pick order with search + bump/hold/
+  release), Errors (multi-select bulk retry of failed/parked; Ranker-failures
+  table with per-row/bulk Re-rank), Analytics, Radar (`auto/radar.mjs`
+  startup intel → `data/auto/radar.json`), Settings (edits whitelisted
+  `config/auto.yml` fields in place), Log (filterable per agent). Every other
+  path reverse-proxies to the upstream web UI on :3003 (Host/Origin rewritten
+  for its origin-guard; a "Mission Control" nav section is injected into
+  proxied pages' sidebars). The upstream app under `web/` is never patched.
+  The panel only spawns/kills `node auto/run.mjs`; it never applies by
+  itself. Requeue uses the state machine's `parked→queued` / `failed→queued`
+  edges (attempts reset); Re-rank uses `parked→discovered` for never-scored
+  jobs (`evalAttempts` reset; eval/JD-fetch failures park after 3 strikes).
+  Pause writes `data/auto/pause-requested`; per-agent stops write
+  `data/auto/agents/<scan|rank|apply>.stopped` — `run.mjs`/`eval-queue.mjs`
+  check these at safe points (between stages, between evals, between applies)
+  and stop gracefully without killing the cycle.
 - The upstream web UI still runs as an always-on service
   (`io.career-ops.web-ui`, http://127.0.0.1:3003, production build) behind the
   proxy (port overridable via `CAREER_OPS_WEB_PORT`). Serving the UI is fine;

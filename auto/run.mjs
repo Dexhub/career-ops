@@ -25,8 +25,9 @@ import { acquirePipelineLock } from '../pipeline-lock.mjs';
 import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
-import { listJobs, loadJob, saveJob, submittedCountOn, transition } from './state.mjs';
+import { listJobs, loadJob, pickOrder, saveJob, submittedCountOn, transition } from './state.mjs';
 import { runApply } from './apply-worker.mjs';
+import { agentEnabled } from './lib/agent-flags.mjs';
 import { writeDigest } from './digest.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,8 +72,10 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   try { unlinkSync(PAUSE_FLAG); } catch { /* a pause from a past cycle is stale */ }
 
   if (!applyOnly) {
-    if (!skipScan) stage('scan', [join(ROOT, 'scan.mjs'), '--quiet'], log);
-    stage('eval', [join(ROOT, 'auto', 'eval-queue.mjs')], log);
+    if (!skipScan && agentEnabled('scan')) stage('scan', [join(ROOT, 'scan.mjs'), '--quiet'], log);
+    else if (!skipScan) log('run: scan agent stopped from Mission Control — skipping scan stage');
+    if (agentEnabled('rank')) stage('eval', [join(ROOT, 'auto', 'eval-queue.mjs')], log);
+    else log('run: ranking agent stopped from Mission Control — skipping rank stage');
     stage('select', [join(ROOT, 'auto', 'resume-select.mjs')], log);
   }
 
@@ -108,15 +111,18 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
       log('run: pause requested — stopping before the next apply');
       break;
     }
+    if (!agentEnabled('apply')) {
+      log('run: submission agent stopped from Mission Control — stopping before the next apply');
+      break;
+    }
     const today = new Date().toISOString().slice(0, 10);
     const submittedToday = submittedCountOn(today);
     if (submittedToday >= limit) {
       log(`run: daily soft limit reached (${submittedToday}/${limit}) — stopping applies`);
       break;
     }
-    const next = listJobs(['resume_ready', 'applying'])
-      .find((j) => !applied.has(j.urlKey)
-        && (j.stage === 'resume_ready' || (j.attempts || 0) < (cfg.max_attempts ?? 2)));
+    const next = pickOrder(listJobs(['resume_ready', 'applying']), cfg.max_attempts ?? 2)
+      .find((j) => !applied.has(j.urlKey));
     if (!next) { log('run: apply queue drained'); break; }
     applied.add(next.urlKey);
 

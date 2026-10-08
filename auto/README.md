@@ -25,7 +25,8 @@ file has `filled_in_by_user: true`.
 | `patches/` | The sanctioned AGENTS.md ethical-override patch. Re-apply after `npm run update`; `run.mjs` skips applies and warns if it's missing. |
 | `launchd/io.career-ops.auto.plist` | Optional 6-hourly schedule — **currently disabled** (user runs cycles manually). Re-enable only on request: `cp auto/launchd/io.career-ops.auto.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
 | `launchd/io.career-ops.web-ui.plist` | Web UI as an always-on service (installed): `next start` on http://127.0.0.1:3003, KeepAlive + RunAtLoad, logs to `data/web-ui.log`. This never applies to jobs by itself. |
-| `panel.mjs` + `panel.html` | **Mission Control — the single UI** at http://127.0.0.1:3001. `/auto` is tabbed: **Overview** (Start / Pause after current / Stop now, submitted-today vs daily limit, needs-attention triage, submitted list with evidence, per-job drill-down, digest), **Operator** (live orchestrator/ranker/apply-agent view with in-progress screenshots, polled from `/api/auto/operator`), **Queue** (exact worker pick order + funnel counts), **Errors** (failed/parked with multi-select bulk retry, ranker failures, skipped), **Log** (filterable activity log). Every other path reverse-proxies the upstream web UI on :3003 (`CAREER_OPS_WEB_PORT`; Host/Origin rewritten; "Mission Control" link injected into proxied pages) so one origin serves everything. Never applies by itself. |
+| `panel.mjs` + `panel.html` | **Mission Control — the single UI** at http://127.0.0.1:3001. `/auto` has a left sidebar (mirrors the upstream app's nav) with tabs: **Overview** (Start / Pause after current / Stop now, submitted-today vs daily limit, needs-attention triage, submitted list with evidence, per-job drill-down, digest), **Operator** (live cards for orchestrator + scan/ranking/submission agents with per-agent feeds, in-progress screenshots, and per-agent **Stop/Resume** buttons — flag files in `data/auto/agents/*.stopped`, checked by the cycle at safe points so one agent stops without killing the cycle), **Queue** (exact worker pick order with search, **bump/hold/release** row controls — panel-owned `priority`/`held` job fields), **Errors** (failed/parked with multi-select bulk retry; **Ranker failures** table for never-scored jobs with per-row/bulk **Re-rank**), **Analytics** (funnel, submits/discoveries per day, score distribution, time-per-apply, grouped park/fail reasons), **Radar** (startup rocket-ship intel via `radar.mjs`), **Settings** (edits whitelisted `config/auto.yml` fields in place, comments preserved), **Log** (filterable per-agent activity log). Every other path reverse-proxies the upstream web UI on :3003 (`CAREER_OPS_WEB_PORT`; Host/Origin rewritten; a "Mission Control" nav section is injected into proxied pages' sidebars) so one origin serves everything. Never applies by itself. |
+| `radar.mjs` | Startup intel: groups pipeline jobs by company, has the eval model assess each (verdict rocket_ship/promising/pass + evidence) → `data/auto/radar.json`. User status/notes survive re-scans. `node auto/radar.mjs --limit N [--refresh]`. |
 | `launchd/io.career-ops.panel.plist` | Panel as an always-on service (installed), logs to `data/auto/panel.log`. Cycles started from the panel survive the browser/terminal closing. |
 
 Config: `config/auto.yml` (threshold, daily soft limit, jitter, attempts,
@@ -37,7 +38,11 @@ eval model, ATS allowlist, resume variants).
 with `parked` (needs a human), `failed` (exhausted attempts), `skipped`.
 `parked → queued` and `failed → queued` are the requeue edges (panel
 Requeue button, or multi-select bulk retry on the Errors tab; attempts
-reset to 0).
+reset to 0). `parked → discovered` is the re-rank edge for jobs parked
+before they were ever scored (JD fetch or eval failed 3×) — the panel's
+Re-rank button resets `evalAttempts` so the next cycle's rank stage
+retries them. Eval and JD-fetch failures both retry automatically and
+park after 3 strikes.
 Dry runs (`--no-submit`) never mutate state.
 
 Pause: the panel's "Pause after current" writes `data/auto/pause-requested`;

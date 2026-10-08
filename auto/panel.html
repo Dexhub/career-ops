@@ -26,7 +26,35 @@
     -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
     background-image:radial-gradient(circle,hsl(var(--dot)) 1px,transparent 1px);background-size:24px 24px;
   }
-  main{max-width:1100px;margin:0 auto;padding:28px 24px 60px}
+  .layout{display:flex;min-height:100vh;align-items:stretch}
+  main{flex:1;min-width:0;max-width:1100px;margin:0 auto;padding:24px 24px 60px}
+  #side{
+    width:228px;flex:none;position:sticky;top:0;height:100vh;overflow-y:auto;
+    background:var(--surface);border-right:1px solid var(--border);
+    padding:18px 10px 14px;display:flex;flex-direction:column;gap:2px;
+  }
+  .sidehead{font-size:14px;font-weight:600;letter-spacing:-.01em;display:flex;align-items:center;gap:9px;padding:2px 12px 10px}
+  .sidelabel{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint);padding:0 12px;margin:16px 0 4px}
+  .sidelabel.mc{color:var(--brand-text)}
+  .sidenav{display:flex;flex-direction:column;gap:1px;margin:0}
+  .sidenav a,.sidenav button.tab{
+    display:flex;align-items:center;gap:8px;text-align:left;justify-content:flex-start;
+    color:var(--muted);padding:7px 12px;border-radius:.5rem;font-size:13.5px;font-weight:500;
+    background:transparent;border:none;cursor:pointer;
+  }
+  .sidenav a:hover,.sidenav button.tab:hover{background:var(--surface-hover);color:var(--fg);text-decoration:none}
+  .sidenav .here{background:var(--brand-soft);color:var(--brand-text)}
+  .sidenav .pill-badge{display:inline-block;min-width:16px;text-align:center;font-size:10px;font-weight:700;border-radius:999px;padding:1px 5px;margin-left:auto;background:hsl(0 72% 51% / .15);color:hsl(0 72% 45%)}
+  .dark .sidenav .pill-badge{color:hsl(0 85% 72%)}
+  .sidefoot{margin-top:auto;padding:12px 12px 0;display:flex;align-items:center;gap:8px}
+  @media(max-width:900px){
+    .layout{display:block}
+    #side{position:static;width:auto;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;border-right:none;border-bottom:1px solid var(--border);padding:10px 12px}
+    .sidehead{padding:0 8px 0 0}
+    .sidelabel{display:none}
+    .sidenav{flex-direction:row;flex-wrap:wrap}
+    .sidefoot{margin:0;padding:0 0 0 8px}
+  }
   h1{font-size:22px;letter-spacing:-.01em;font-weight:600;margin:0;display:flex;align-items:center;gap:10px}
   h2{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin:30px 0 10px}
   h2 .note{text-transform:none;letter-spacing:0;font-weight:400}
@@ -83,6 +111,7 @@
   .cardgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:10px}
   .cardgrid .card{margin:0}
   .card h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);font-weight:600;margin:0 0 8px;display:flex;align-items:center;gap:8px}
+  .agbtn{font-size:11px;padding:2px 10px;text-transform:none;letter-spacing:0;font-weight:500}
   .livefeed{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.65;color:var(--muted);white-space:pre-wrap;word-break:break-word;max-height:170px;overflow:auto}
 
   .stage{display:inline-flex;align-items:center;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid transparent;background:var(--surface-hover);color:var(--muted)}
@@ -123,36 +152,79 @@
   .logfilters button:hover{color:var(--fg)}
   .logfilters button.sel{background:var(--brand-soft);border-color:hsl(26 73% 51% / .3);color:var(--brand-text)}
   .tabpane{display:none}.tabpane.show{display:block}
+
+  input.search,input.field,textarea.field,select.field{
+    font:inherit;font-size:13px;color:var(--fg);background:var(--surface);
+    border:1px solid var(--border);border-radius:.5rem;padding:6px 10px;outline:none;
+  }
+  input.search{width:260px;max-width:100%}
+  input.search:focus,input.field:focus,textarea.field:focus{border-color:var(--brand)}
+  .hbar{display:flex;align-items:center;gap:10px;font-size:12.5px;margin:3px 0}
+  .hbar .lbl{width:86px;flex:none;color:var(--muted);text-align:right}
+  .hbar .trk{flex:1;height:14px;background:var(--surface-hover);border:1px solid var(--border);border-radius:4px;overflow:hidden}
+  .hbar .trk i{display:block;height:100%;background:linear-gradient(90deg,var(--brand),var(--brand-200))}
+  .hbar .n{width:34px;flex:none;color:var(--fg);font-weight:600}
+  .verdict{display:inline-flex;align-items:center;gap:5px;border-radius:999px;padding:2px 10px;font-size:11px;font-weight:700;border:1px solid transparent}
+  .verdict.rocket_ship{color:hsl(162 91% 24%);background:hsl(160 64% 46% / .14);border-color:hsl(160 64% 46% / .3)}
+  .dark .verdict.rocket_ship{color:hsl(158 64% 60%)}
+  .verdict.promising{color:hsl(217 80% 42%);background:hsl(217 91% 60% / .10);border-color:hsl(217 91% 60% / .28)}
+  .dark .verdict.promising{color:hsl(213 90% 70%)}
+  .verdict.pass,.verdict.none{color:var(--faint);background:var(--surface-hover);border-color:var(--border)}
+  .rowbtn{font-size:11px;padding:2px 9px;background:transparent;border-color:var(--border);color:var(--muted)}
+  .rowbtn:hover{color:var(--fg);border-color:var(--faint)}
+  tr.heldrow td{opacity:.55}
+  .pri{color:var(--brand-text);font-weight:700;font-size:11px}
+  .setrow{display:grid;grid-template-columns:210px 150px 1fr;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)}
+  .setrow:last-of-type{border-bottom:none}
+  .setrow .k{font-weight:600;font-size:13px}
+  .setrow .h{color:var(--faint);font-size:12px}
+  @media(max-width:720px){.setrow{grid-template-columns:1fr;gap:4px}}
 </style>
-</head><body><main>
+</head><body>
+<div class="layout">
+
+<aside id="side">
+  <div class="sidehead"><span class="dot" id="dot"></span>Mission Control</div>
+  <nav id="tabs" class="sidenav">
+    <button class="tab here" data-tab="overview">Overview</button>
+    <button class="tab" data-tab="operator">Operator</button>
+    <button class="tab" data-tab="queue">Queue</button>
+    <button class="tab" data-tab="errors">Errors<span class="pill-badge" id="errBadge" style="display:none">0</span></button>
+    <button class="tab" data-tab="analytics">Analytics</button>
+    <button class="tab" data-tab="radar">Radar</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="log">Log</button>
+  </nav>
+  <div class="sidelabel">career-ops</div>
+  <nav class="sidenav">
+    <a href="/">Today</a>
+    <a href="/explore">Explore</a>
+    <a href="/scheduled-scans">Scheduled scans</a>
+    <a href="/pipeline">Pipeline</a>
+    <a href="/followups">Follow-ups</a>
+    <a href="/portals">Portals</a>
+    <a href="/analytics">Analytics</a>
+    <a href="/cv">CV</a>
+    <a href="/config">Config</a>
+  </nav>
+  <div class="sidefoot">
+    <button id="theme" class="ghost" title="Toggle theme">◐</button>
+    <span class="muted" style="font-size:11px">manual-start only</span>
+  </div>
+</aside>
+
+<main>
 
 <div class="topbar">
-  <h1><span class="dot" id="dot"></span>Mission Control</h1>
-  <span class="spacer"></span>
   <span class="count">submitted today <b id="subCount">0</b><span id="subLimit"></span></span>
   <span class="bar"><i id="subBar" style="width:0"></i></span>
+  <span class="spacer"></span>
   <label class="opt"><input type="checkbox" id="skipScan" checked> skip scan</label>
   <button id="start" class="primary">Start cycle</button>
   <button id="pause" class="warn" title="Finish the current application, then stop — no mid-form kill">Pause after current</button>
   <button id="stop" class="danger" title="Kill immediately — the in-flight application is abandoned">Stop now</button>
-  <button id="theme" class="ghost" title="Toggle theme">◐</button>
 </div>
 <p class="sub" id="working">—</p>
-<p class="sub" style="font-size:12px;color:var(--faint)">Manual-only: nothing runs on a schedule. Starting a cycle authorizes autonomous applies until it finishes or you stop it.</p>
-
-<nav id="tabs">
-  <button class="tab here" data-tab="overview">Overview</button>
-  <button class="tab" data-tab="operator">Operator</button>
-  <button class="tab" data-tab="queue">Queue</button>
-  <button class="tab" data-tab="errors">Errors<span class="pill-badge" id="errBadge" style="display:none">0</span></button>
-  <button class="tab" data-tab="log">Log</button>
-  <span class="sep"></span>
-  <a href="/">Home</a>
-  <a href="/pipeline">Pipeline</a>
-  <a href="/followups">Follow-ups</a>
-  <a href="/cv">Master CV</a>
-  <a href="/explore">Find jobs</a>
-</nav>
 
 <div id="detail"></div>
 
@@ -165,7 +237,7 @@
 
 <!-- ======================= OPERATOR ======================= -->
 <section class="tabpane" id="pane-operator">
-  <h2>Live workers <span class="note" id="opStamp"></span></h2>
+  <h2>Live workers <span class="note" id="opStamp"></span> <span class="note">— stop/resume one agent without killing the cycle; it takes effect at the next safe point</span></h2>
   <div class="cardgrid">
     <div class="card">
       <h3><span class="dot" id="opRunDot"></span>Orchestrator</h3>
@@ -173,13 +245,21 @@
       <div class="livefeed" id="opRunFeed"></div>
     </div>
     <div class="card">
-      <h3><span class="dot" id="opEvalDot"></span>Ranker <span class="note muted" style="text-transform:none;letter-spacing:0;font-weight:400">scores each posting 0–5</span></h3>
+      <h3><span class="dot" id="opScanDot"></span>Scan agent <span class="note muted" style="text-transform:none;letter-spacing:0;font-weight:400">finds new postings</span>
+        <button class="ghost agbtn" data-ag="scan" style="margin-left:auto">…</button></h3>
+      <div id="opScan" class="muted">—</div>
+      <div class="livefeed" id="opScanFeed"></div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" id="opEvalDot"></span>Ranking agent <span class="note muted" style="text-transform:none;letter-spacing:0;font-weight:400">scores each posting 0–5</span>
+        <button class="ghost agbtn" data-ag="rank" style="margin-left:auto">…</button></h3>
       <div id="opEval" class="muted">—</div>
       <div class="livefeed" id="opEvalFeed"></div>
     </div>
   </div>
   <div class="card" style="margin-top:10px">
-    <h3><span class="dot" id="opApplyDot"></span>Apply agent <span class="note muted" style="text-transform:none;letter-spacing:0;font-weight:400">fills and submits forms in a real browser</span></h3>
+    <h3><span class="dot" id="opApplyDot"></span>Submission agent <span class="note muted" style="text-transform:none;letter-spacing:0;font-weight:400">fills and submits forms in a real browser</span>
+      <button class="ghost agbtn" data-ag="apply" style="margin-left:auto">…</button></h3>
     <div id="opApply" class="muted">No application in flight.</div>
     <div class="livefeed" id="opApplyFeed"></div>
     <div id="opFiles" class="muted" style="font-size:12px;margin-top:6px"></div>
@@ -189,8 +269,16 @@
 
 <!-- ======================= QUEUE ======================= -->
 <section class="tabpane" id="pane-queue">
-  <h2>Up next <span class="note">— exact worker pick order: resume_ready &amp; retryable applying, highest score first</span></h2>
-  <table id="queueTbl"><thead><tr><th></th><th>stage</th><th>company</th><th>role</th><th>score</th><th>att</th><th>updated</th></tr></thead><tbody></tbody></table>
+  <div class="row" style="margin-top:14px">
+    <input class="search" id="qSearch" placeholder="filter company / role…">
+    <span class="muted" style="font-size:12px">⬆ bump = apply this one first · hold = keep it, skip it for now</span>
+  </div>
+  <h2>Up next <span class="note">— exact worker pick order: bumped first, then highest score, then oldest</span></h2>
+  <table id="queueTbl"><thead><tr><th></th><th>stage</th><th>company</th><th>role</th><th>score</th><th>att</th><th>updated</th><th></th></tr></thead><tbody></tbody></table>
+  <div id="heldWrap" style="display:none">
+    <h2>On hold <span class="note">— kept out of the pick order until released</span></h2>
+    <table id="heldTbl"><thead><tr><th>stage</th><th>company</th><th>role</th><th>score</th><th></th></tr></thead><tbody></tbody></table>
+  </div>
   <h2>Earlier in the funnel <span class="note">— discovered → evaluated → queued; promoted by the next cycle's rank/select stages</span></h2>
   <table id="funnelTbl"><thead><tr><th>stage</th><th>company</th><th>role</th><th>score</th><th>note</th></tr></thead><tbody></tbody></table>
 </section>
@@ -202,15 +290,56 @@
     <label class="opt"><input type="checkbox" id="selAll"> select all</label>
     <button id="retrySel" class="primary" disabled>Retry selected</button>
     <span class="muted" id="retryNote" style="font-size:12px"></span>
+    <span class="spacer"></span>
+    <input class="search" id="eSearch" placeholder="filter company / role / error…">
   </div>
   <table id="errTbl"><thead><tr><th></th><th>stage</th><th>company</th><th>role</th><th>att</th><th>why it failed</th><th></th></tr></thead><tbody></tbody></table>
   <div id="evalErrWrap" style="display:none">
-    <h2>Ranker failures <span class="note">— evaluation errors; these retry automatically on the next cycle's rank stage</span></h2>
-    <table id="evalErrTbl"><thead><tr><th>company</th><th>role</th><th>eval attempts</th><th>error</th></tr></thead><tbody></tbody></table>
+    <h2>Ranker failures <span class="note">— never scored; retried automatically each cycle (3 strikes → parked here). Re-rank resets the counter</span>
+      <button id="rerankAll" class="ghost" style="margin-left:8px">Re-rank all</button></h2>
+    <table id="evalErrTbl"><thead><tr><th>stage</th><th>company</th><th>role</th><th>tries</th><th>error</th><th></th></tr></thead><tbody></tbody></table>
   </div>
   <div id="skipWrap" style="display:none">
     <h2>Skipped <span class="note">— ranked below the apply threshold; shown for transparency</span></h2>
     <table id="skipTbl"><thead><tr><th>company</th><th>role</th><th>score</th><th>reason</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- ======================= ANALYTICS ======================= -->
+<section class="tabpane" id="pane-analytics">
+  <h2>Funnel <span class="note" id="anStamp"></span></h2>
+  <div class="chips" id="anFunnel"></div>
+  <div class="cardgrid" style="margin-top:12px">
+    <div class="card"><h3>Submissions per day</h3><div id="anSub"></div></div>
+    <div class="card"><h3>Discoveries per day</h3><div id="anDisc"></div></div>
+    <div class="card"><h3>Score distribution <span class="note muted" style="text-transform:none;letter-spacing:0;font-weight:400">0–5 fit score from the ranker</span></h3><div id="anScore"></div></div>
+    <div class="card"><h3>Time per application</h3><div id="anTime"></div></div>
+  </div>
+  <div id="anReasonWrap" style="display:none">
+    <h2>Why applications park or fail <span class="note">— grouped by error</span></h2>
+    <table id="anReasonTbl"><thead><tr><th>count</th><th>stage</th><th>reason</th><th>companies</th></tr></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<!-- ======================= RADAR ======================= -->
+<section class="tabpane" id="pane-radar">
+  <div class="row" style="margin-top:14px">
+    <button id="radarScan" class="primary">Scan for rocket ships</button>
+    <button id="radarRescan" class="ghost" title="Re-assess companies that already have a verdict">Re-assess all</button>
+    <span class="muted" id="radarState" style="font-size:12px"></span>
+  </div>
+  <p class="sub" style="font-size:12px;color:var(--faint)">Companies already in your pipeline, judged by the local eval model for growth potential — who's worth joining early, reaching out to, keeping an eye on. Verdicts come only from evidence in the saved JD reports.</p>
+  <pre id="radarLog" style="display:none;max-height:140px"></pre>
+  <div id="radarList"></div>
+</section>
+
+<!-- ======================= SETTINGS ======================= -->
+<section class="tabpane" id="pane-settings">
+  <h2>Pipeline settings <span class="note">— writes <span style="font-family:ui-monospace,monospace">config/auto.yml</span> (comments preserved); applies from the next cycle start</span></h2>
+  <div class="card" id="setForm"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="setSave" class="primary">Save changes</button>
+    <span id="setNote" class="muted" style="font-size:12px"></span>
   </div>
 </section>
 
@@ -236,6 +365,8 @@ const post=(p,body)=>fetch('/api/auto/'+p,{method:'POST',headers:{'content-type'
 const fmtT=t=>t?t.slice(0,16).replace('T',' '):'—';
 const ago=t=>{if(!t)return'';const s=Math.max(0,(Date.now()-new Date(t))/1000);return s<90?Math.round(s)+'s ago':s<5400?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago';};
 let logFilter='all', rawLog='', curTab='overview', selected=new Set();
+let lastJobs=[], maxAtt=2, running=false;
+const match=(x,q)=>!q||((x.company||'')+' '+(x.role||'')+' '+(x.lastError||'')).toLowerCase().includes(q);
 
 $('theme').onclick=()=>{
   const d=document.documentElement.classList.toggle('dark');
@@ -249,9 +380,13 @@ function setTab(t){
   document.querySelectorAll('#tabs .tab').forEach(b=>b.classList.toggle('here',b.dataset.tab===t));
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('show',p.id==='pane-'+t));
   if(t==='operator')refreshOperator();
+  if(t==='analytics')refreshAnalytics();
+  if(t==='radar')refreshRadar();
+  if(t==='settings')loadSettings();
   try{history.replaceState(null,'','#'+t);}catch(e){}
 }
 if(location.hash.length>1)setTab(location.hash.slice(1));
+window.addEventListener('hashchange',()=>{const t=location.hash.slice(1);if(t&&t!==curTab)setTab(t);});
 
 // ---- log ----
 function renderLog(){
@@ -273,7 +408,7 @@ function jobLine(x,cls,extra){
 // ---- main refresh (status + jobs drive overview/queue/errors/log) ----
 async function refresh(){
   const s=await api('status');
-  const running=s.cycle.running;
+  running=s.cycle.running; maxAtt=s.maxAttempts||2;
   $('dot').className='dot'+(running?(s.pauseRequested?' pause':' on'):'');
   $('working').textContent=running
     ?('Cycle running · pid '+s.cycle.pid+(s.cycle.source==='external'?' (external)':'')
@@ -291,6 +426,7 @@ async function refresh(){
   rawLog=s.logTail||''; renderLog();
 
   const j=(await api('jobs')).jobs;
+  lastJobs=j;
 
   // overview
   const attn=j.filter(x=>x.stage==='parked'||x.stage==='failed');
@@ -304,39 +440,65 @@ async function refresh(){
     '<span class="muted" style="font-size:12px">'+esc(fmtT(x.updatedAt))+'</span>'
     +'<button class="ghost" data-ev="'+esc(x.urlKey)+'">Evidence</button>')).join('');
 
-  // queue tab — mirror of the worker's pick rule
-  const pickable=j.filter(x=>x.stage==='resume_ready'||(x.stage==='applying'&&(x.attempts||0)<2));
-  $('queueTbl').querySelector('tbody').innerHTML=pickable.map((x,i)=>
-    '<tr class="job'+(i===0&&!running?' nextup':'')+'" data-key="'+esc(x.urlKey)+'">'
-    +'<td>'+(i===0?'<span class="stage next">'+(running?'current':'next up')+'</span>':i+1)+'</td>'
+  renderQueue(); renderErrors();
+}
+
+// ---- queue tab — same pick rule as the worker: !held, bumped first, score, oldest ----
+function renderQueue(){
+  const j=lastJobs, q=$('qSearch').value.trim().toLowerCase();
+  const pickable=j.filter(x=>!x.held&&(x.stage==='resume_ready'||(x.stage==='applying'&&(x.attempts||0)<maxAtt)))
+    .sort((a,b)=>(b.priority||0)-(a.priority||0)||(b.score||0)-(a.score||0)||String(a.updatedAt||'').localeCompare(String(b.updatedAt||'')));
+  $('queueTbl').querySelector('tbody').innerHTML=pickable.filter(x=>match(x,q)).map(x=>{
+    const i=pickable.indexOf(x);
+    return '<tr class="job'+(i===0&&!running?' nextup':'')+'" data-key="'+esc(x.urlKey)+'">'
+    +'<td>'+(i===0?'<span class="stage next">'+(running?'current':'next up')+'</span>':i+1)
+    +(x.priority?' <span class="pri" title="bumped">⬆</span>':'')+'</td>'
     +'<td><span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span></td>'
-    +'<td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td><td>'+(x.attempts||0)+'</td><td class="muted">'+esc(fmtT(x.updatedAt))+'</td></tr>').join('')
-    ||'<tr><td colspan="7" class="muted">apply queue is empty</td></tr>';
-  const funnel=j.filter(x=>['discovered','evaluated','queued'].includes(x.stage)&&!(x.stage==='discovered'&&x.lastError));
+    +'<td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td><td>'+(x.attempts||0)+'</td><td class="muted">'+esc(fmtT(x.updatedAt))+'</td>'
+    +'<td class="row">'+(x.priority
+      ?'<button class="rowbtn" data-qe="unbump" data-key="'+esc(x.urlKey)+'" title="back to score order">un-bump</button>'
+      :'<button class="rowbtn" data-qe="bump" data-key="'+esc(x.urlKey)+'" title="apply this one first">⬆ bump</button>')
+    +'<button class="rowbtn" data-qe="hold" data-key="'+esc(x.urlKey)+'" title="skip it for now, keep the job">hold</button></td></tr>';}).join('')
+    ||'<tr><td colspan="8" class="muted">'+(q?'no match':'apply queue is empty')+'</td></tr>';
+  const held=j.filter(x=>x.held&&match(x,q));
+  $('heldWrap').style.display=held.length?'':'none';
+  $('heldTbl').querySelector('tbody').innerHTML=held.map(x=>
+    '<tr class="job heldrow" data-key="'+esc(x.urlKey)+'"><td><span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span></td>'
+    +'<td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td>'
+    +'<td><button class="rowbtn" data-qe="release" data-key="'+esc(x.urlKey)+'">release</button></td></tr>').join('');
+  const funnel=j.filter(x=>['discovered','evaluated','queued'].includes(x.stage)&&!(x.stage==='discovered'&&x.lastError)&&match(x,q));
   $('funnelTbl').querySelector('tbody').innerHTML=funnel.map(x=>
     '<tr class="job" data-key="'+esc(x.urlKey)+'"><td><span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span></td>'
     +'<td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td><td class="muted">'+esc(x.lastError??'')+'</td></tr>').join('')
-    ||'<tr><td colspan="5" class="muted">nothing waiting upstream</td></tr>';
+    ||'<tr><td colspan="5" class="muted">'+(q?'no match':'nothing waiting upstream')+'</td></tr>';
+}
 
-  // errors tab
-  const errs=j.filter(x=>x.stage==='failed'||x.stage==='parked');
+// ---- errors tab ----
+function renderErrors(){
+  const j=lastJobs, q=$('eSearch').value.trim().toLowerCase();
+  // Ranker-parked jobs (parked before ever getting a score) belong to the
+  // ranker section below — requeueing them would skip scoring entirely.
+  const errs=j.filter(x=>x.stage==='failed'||(x.stage==='parked'&&x.score!=null));
   $('errBadge').style.display=errs.length?'':'none'; $('errBadge').textContent=errs.length;
   for(const k of[...selected])if(!errs.some(x=>x.urlKey===k))selected.delete(k);
-  $('errTbl').querySelector('tbody').innerHTML=errs.map(x=>
+  $('errTbl').querySelector('tbody').innerHTML=errs.filter(x=>match(x,q)).map(x=>
     '<tr><td><input type="checkbox" data-sel="'+esc(x.urlKey)+'"'+(selected.has(x.urlKey)?' checked':'')+'></td>'
     +'<td><span class="stage '+esc(x.stage)+'">'+esc(x.stage)+'</span></td>'
     +'<td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.attempts||0)+'</td>'
     +'<td class="err">'+esc(x.lastError||'(no reason recorded)')+'</td>'
     +'<td class="row"><button class="ghost" data-ev="'+esc(x.urlKey)+'">Evidence</button>'
     +'<button class="primary" data-rq="'+esc(x.urlKey)+'">Requeue</button></td></tr>').join('')
-    ||'<tr><td colspan="7" class="muted">no failed or parked jobs — nice</td></tr>';
+    ||'<tr><td colspan="7" class="muted">'+(q?'no match':'no failed or parked jobs — nice')+'</td></tr>';
   $('retrySel').disabled=!selected.size;
   $('retrySel').textContent='Retry selected'+(selected.size?' ('+selected.size+')':'');
-  const evalErrs=j.filter(x=>x.stage==='discovered'&&x.lastError);
+  const evalErrs=j.filter(x=>((x.stage==='discovered'&&x.lastError)||(x.stage==='parked'&&x.score==null))&&match(x,q));
   $('evalErrWrap').style.display=evalErrs.length?'':'none';
   $('evalErrTbl').querySelector('tbody').innerHTML=evalErrs.map(x=>
-    '<tr class="job" data-key="'+esc(x.urlKey)+'"><td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.attempts||0)+'</td><td class="err">'+esc(x.lastError)+'</td></tr>').join('');
-  const skipped=j.filter(x=>x.stage==='skipped');
+    '<tr class="job" data-key="'+esc(x.urlKey)+'"><td><span class="stage '+esc(x.stage)+'">'+(x.stage==='parked'?'parked':'retrying')+'</span></td>'
+    +'<td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.evalAttempts||0)+'/3</td>'
+    +'<td class="err">'+esc(x.lastError||'(no reason recorded)')+'</td>'
+    +'<td><button class="primary" data-rr="'+esc(x.urlKey)+'">Re-rank</button></td></tr>').join('');
+  const skipped=j.filter(x=>x.stage==='skipped'&&match(x,q));
   $('skipWrap').style.display=skipped.length?'':'none';
   $('skipTbl').querySelector('tbody').innerHTML=skipped.map(x=>
     '<tr class="job" data-key="'+esc(x.urlKey)+'"><td><b>'+esc(x.company)+'</b></td><td>'+esc(x.role)+'</td><td>'+(x.score??'—')+'</td><td class="muted">'+esc(x.lastError??'below threshold')+'</td></tr>').join('');
@@ -356,13 +518,29 @@ async function refreshOperator(){
     :'Idle.';
   $('opRunFeed').textContent=(o.workers.lastLine||'');
 
+  // per-agent stop/resume state
+  const ag=o.agents||{scan:true,rank:true,apply:true};
+  document.querySelectorAll('.agbtn').forEach(b=>{
+    const on=ag[b.dataset.ag];
+    b.textContent=on?'Stop':'Resume';
+    b.classList.toggle('primary',!on);
+  });
+
+  const sc=o.workers.scan;
+  $('opScanDot').className='dot'+(!ag.scan?' pause':(running&&o.workers.activity.startsWith('scanning')?' on':''));
+  $('opScan').innerHTML=!ag.scan?'<span class="err">Stopped — the next cycle skips the scan stage.</span>'
+    :(running&&o.workers.activity.startsWith('scanning')?'<b>Scanning for new postings…</b>':'Waiting for its stage.');
+  $('opScanFeed').textContent=(sc&&sc.recent||[]).join('\n');
+
   const ev=o.workers.eval;
-  $('opEvalDot').className='dot'+(running&&ev.current?' on':'');
-  $('opEval').innerHTML=ev.current?('Ranking now: <b>'+esc(ev.current)+'</b>'):'Not ranking right now.';
+  $('opEvalDot').className='dot'+(!ag.rank?' pause':(running&&ev.current?' on':''));
+  $('opEval').innerHTML=!ag.rank?'<span class="err">Stopped — finishes the posting it is scoring, then skips the rest.</span>'
+    :(ev.current?('Ranking now: <b>'+esc(ev.current)+'</b>'):'Not ranking right now.');
   $('opEvalFeed').textContent=(ev.recent||[]).join('\n');
 
   const a=o.applying;
-  $('opApplyDot').className='dot'+(a?' on':'');
+  $('opApplyDot').className='dot'+(!ag.apply?' pause':(a?' on':''));
+  if(!ag.apply&&!a)$('opApply').innerHTML='<span class="err">Stopped — no new applications will start until resumed.</span>';
   $('opApplyFeed').textContent=(o.workers.apply.recent||[]).join('\n');
   if(a){
     $('opApply').innerHTML='Filling out: <b>'+esc(a.company)+'</b> — '+esc(a.role)
@@ -380,12 +558,95 @@ async function refreshOperator(){
     }
     if(!a.latestShot){$('liveShot').style.display='none';lastShot='';}
   }else{
-    $('opApply').textContent=running?'Between applications.':'No application in flight.';
+    if(ag.apply)$('opApply').textContent=running?'Between applications.':'No application in flight.';
     $('opFiles').textContent='';$('liveShot').style.display='none';lastShot='';
   }
 }
 
+// ---- analytics ----
+function hbars(obj,{days=14,order=null}={}){
+  let entries;
+  if(order)entries=order.map(k=>[k,obj[k]||0]);
+  else entries=Object.entries(obj).sort((a,b)=>a[0].localeCompare(b[0])).slice(-days);
+  if(!entries.length)return'<div class="muted" style="font-size:12px">no data yet</div>';
+  const max=Math.max(1,...entries.map(e=>e[1]));
+  return entries.map(([k,v])=>'<div class="hbar"><span class="lbl">'+esc(k)+'</span>'
+    +'<span class="trk"><i style="width:'+Math.round(100*v/max)+'%"></i></span><span class="n">'+v+'</span></div>').join('');
+}
+async function refreshAnalytics(){
+  const a=await api('analytics');
+  $('anStamp').textContent='— '+a.total+' jobs tracked';
+  const ORDER=['discovered','evaluated','skipped','queued','resume_ready','applying','submitted','parked','failed'];
+  $('anFunnel').innerHTML=ORDER.filter(k=>a.funnel[k]).map(k=>'<span class="chip">'+esc(k)+' <b>'+a.funnel[k]+'</b></span>').join('');
+  $('anSub').innerHTML=hbars(a.submittedByDay);
+  $('anDisc').innerHTML=hbars(a.discoveredByDay);
+  $('anScore').innerHTML=hbars(a.scoreDist,{order:['5','4','3','2','1','0']});
+  const t=a.timePerApply;
+  $('anTime').innerHTML=t.count
+    ?('<div style="font-size:22px;font-weight:600">'+t.median+'<span style="font-size:13px;color:var(--muted)"> min median</span></div>'
+      +'<div class="muted" style="font-size:12px">avg '+t.avg+' min across '+t.count+' submitted</div>'
+      +'<div style="font-size:12px;margin-top:8px">'+a.applies.slice(0,6).map(x=>esc(x.company)+' <span class="muted">'+x.minutes+'m</span>').join('<br>')+'</div>')
+    :'<div class="muted" style="font-size:12px">no completed applications yet</div>';
+  $('anReasonWrap').style.display=a.reasons.length?'':'none';
+  $('anReasonTbl').querySelector('tbody').innerHTML=a.reasons.map(r=>
+    '<tr><td><b>'+r.count+'</b></td><td><span class="stage '+esc(r.stage)+'">'+esc(r.stage)+'</span></td>'
+    +'<td class="err">'+esc(r.reason)+'</td><td class="muted">'+r.companies.map(esc).join(', ')+'</td></tr>').join('');
+}
+
+// ---- radar ----
+let radarTimer=null;
+function verdictLabel(v){return v==='rocket_ship'?'🚀 rocket ship':v==='promising'?'promising':v==='pass'?'pass':'not assessed yet';}
+async function refreshRadar(){
+  const r=await api('radar');
+  $('radarScan').disabled=r.scanning; $('radarRescan').disabled=r.scanning;
+  $('radarState').textContent=r.scanning?'scanning — the eval model is reading your pipeline…':(r.companies.length?r.companies.length+' companies on the radar':'');
+  $('radarLog').style.display=r.scanning&&r.logTail?'':'none'; $('radarLog').textContent=r.logTail||'';
+  $('radarList').innerHTML=r.companies.length?r.companies.map(c=>{
+    const a=c.assessment;
+    return '<div class="card'+(a?.verdict==='rocket_ship'?' attn':'')+'" style="border-left:3px solid '+(a?.verdict==='rocket_ship'?'hsl(160 64% 46%)':a?.verdict==='promising'?'hsl(217 91% 60%)':'var(--border)')+'">'
+      +'<div class="row"><span class="verdict '+esc(a?.verdict||'none')+'">'+verdictLabel(a?.verdict)+'</span>'
+      +'<b style="font-size:14px">'+esc(c.company)+'</b>'
+      +'<span class="muted" style="font-size:12px">best fit '+(c.bestScore??'—')+' · '+c.roles.length+' role'+(c.roles.length===1?'':'s')+'</span>'
+      +'<span class="spacer"></span>'
+      +'<select class="field" data-rst="'+esc(c.id)+'" style="font-size:12px;padding:3px 8px">'
+      +['watching','reach_out','contacted','dismissed'].map(s=>'<option value="'+s+'"'+(c.status===s?' selected':'')+'>'+s.replace('_',' ')+'</option>').join('')
+      +'</select></div>'
+      +(a?('<div style="font-size:13px;margin-top:6px">'+esc(a.reasons)+'</div>'
+        +(a.signals?.length?'<div class="row" style="margin-top:6px;gap:6px">'+a.signals.map(s=>'<span class="chip" style="font-size:11px">'+esc(s)+'</span>').join('')+'</div>':'')
+        +(a.outreach_angle?'<div style="font-size:12.5px;margin-top:6px;color:var(--brand-text)">↗ '+esc(a.outreach_angle)+'</div>':'')):'')
+      +'<div class="muted" style="font-size:12px;margin-top:6px">'+c.roles.map(x=>esc(x.role)+' ('+(x.score??'?')+')').join(' · ')+'</div>'
+      +'<textarea class="field" data-rnote="'+esc(c.id)+'" placeholder="your notes — intro paths, people you know, next step…" '
+      +'style="width:100%;margin-top:8px;font-size:12.5px;min-height:34px;resize:vertical">'+esc(c.notes||'')+'</textarea></div>';
+  }).join(''):'<div class="muted" style="margin-top:14px">Nothing yet — hit "Scan for rocket ships" to assess the companies already in your pipeline.</div>';
+  clearTimeout(radarTimer);
+  if(r.scanning&&curTab==='radar')radarTimer=setTimeout(refreshRadar,4000);
+}
+
+// ---- settings ----
+async function loadSettings(){
+  const c=await api('config');
+  $('setForm').innerHTML=c.fields.map(f=>
+    '<div class="setrow"><div><div class="k">'+esc(f.label)+'</div></div>'
+    +'<input class="field" data-cfg="'+esc(f.key)+'" value="'+esc(f.value??'')+'"'
+    +(f.kind==='string'?'':' type="number"'+(f.kind==='number'?' step="0.1"':'')+' min="'+f.min+'" max="'+f.max+'"')+'>'
+    +'<div class="h">'+esc(f.help)+(f.kind!=='string'?' ('+f.min+'–'+f.max+')':'')+'</div></div>').join('');
+  $('setNote').textContent='';
+}
+async function saveSettings(){
+  const patch={};
+  document.querySelectorAll('[data-cfg]').forEach(i=>{patch[i.dataset.cfg]=i.value;});
+  const r=await post('config',{patch});
+  $('setNote').textContent=r.errors.length?('✗ '+r.errors.join('; ')):('✓ saved '+r.changed.length+' setting'+(r.changed.length===1?'':'s')+' — '+r.note);
+  if(!r.errors.length)loadSettings();
+}
+
 // ---- events ----
+$('qSearch').addEventListener('input',renderQueue);
+$('eSearch').addEventListener('input',renderErrors);
+document.addEventListener('change',async e=>{
+  if(e.target.dataset.rst)return void await post('radar/update',{id:e.target.dataset.rst,patch:{status:e.target.value}});
+  if(e.target.dataset.rnote!==undefined&&e.target.dataset.rnote)return void await post('radar/update',{id:e.target.dataset.rnote,patch:{notes:e.target.value}});
+});
 document.addEventListener('click',async e=>{
   const tab=e.target.closest('#tabs .tab');
   if(tab)return setTab(tab.dataset.tab);
@@ -397,6 +658,30 @@ document.addEventListener('click',async e=>{
     if(!r.ok)alert('Requeue refused: '+r.error);
     return refresh();
   }
+  if(e.target.classList&&e.target.classList.contains('agbtn')){
+    const stopping=e.target.textContent==='Stop';
+    const r=await post('agent',{agent:e.target.dataset.ag,enabled:!stopping});
+    if(!r.ok)alert('Agent toggle refused: '+r.error);
+    return refreshOperator();
+  }
+  if(e.target.dataset.rr){
+    const r=await post('rerank',{key:e.target.dataset.rr});
+    if(!r.ok)alert('Re-rank refused: '+r.error);
+    return refresh();
+  }
+  if(e.target.id==='rerankAll'){
+    const keys=lastJobs.filter(x=>(x.stage==='discovered'&&x.lastError)||(x.stage==='parked'&&x.score==null)).map(x=>x.urlKey);
+    if(keys.length){const r=await post('rerank',{keys});if(!r.ok)alert('Some re-ranks refused: '+r.results.filter(x=>!x.ok).map(x=>x.error).join('; '));}
+    return refresh();
+  }
+  if(e.target.dataset.qe){
+    const r=await post('queue-edit',{key:e.target.dataset.key,action:e.target.dataset.qe});
+    if(!r.ok)alert('Queue edit refused: '+r.error);
+    return refresh();
+  }
+  if(e.target.id==='radarScan'){await post('radar/scan');return refreshRadar();}
+  if(e.target.id==='radarRescan'){await post('radar/scan',{refresh:true});return refreshRadar();}
+  if(e.target.id==='setSave')return saveSettings();
   if(e.target.dataset.sel!==undefined){
     e.target.checked?selected.add(e.target.dataset.sel):selected.delete(e.target.dataset.sel);
     $('retrySel').disabled=!selected.size;
@@ -454,4 +739,4 @@ async function showDetail(key){
 refresh(); setInterval(refresh,4000);
 setInterval(refreshOperator,3000);
 </script>
-</main></body></html>
+</main></div></body></html>

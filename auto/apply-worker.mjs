@@ -25,7 +25,7 @@ import { flagValue, hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 import { loadAutoConfig, loadStandingAnswers } from './lib/config.mjs';
-import { listJobs, loadJob, saveJob, transition } from './state.mjs';
+import { listJobs, loadJob, pickOrder, saveJob, transition } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
@@ -201,8 +201,7 @@ function pickJob(needle) {
   const candidates = listJobs(['resume_ready', 'applying']);
   const pool = needle
     ? candidates.filter(j => j.urlKey.includes(needle) || (j.company || '').includes(needle))
-    : candidates.filter(j => j.stage === 'resume_ready'
-        || (j.stage === 'applying' && (j.attempts || 0) < MAX_ATTEMPTS)); // crashed/retryable
+    : pickOrder(candidates, MAX_ATTEMPTS); // shared order: priority → score → oldest; held excluded
   if (pool.length === 0) return null;
   return loadJob(pool[0].urlKey);
 }

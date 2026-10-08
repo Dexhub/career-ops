@@ -32,6 +32,7 @@ import { fetchJdViaKnownApi } from '../browser-extract.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { validateFlags, flagValue, safeIntFlag } from '../lib/cli-flags.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
+import { agentEnabled } from './lib/agent-flags.mjs';
 import { createJob, loadJob, saveJob, transition } from './state.mjs';
 
 const ROOT = getCareerOpsRoot();
@@ -174,6 +175,10 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
   let touched = 0; // rows that cost network work (liveness / JD fetch)
   for (const row of rows) {
     if (processed >= max || touched >= gateBudget) break;
+    if (!agentEnabled('rank')) {
+      log('eval-queue: ranking agent stopped from Mission Control — ending rank stage early');
+      break;
+    }
     const urlKey = normalizeUrl(row.url);
     if (!urlKey) continue;
     const existing = loadJob(urlKey);
@@ -240,7 +245,12 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
     if (!evalRes.ok) {
       job.lastError = `eval failed: ${evalRes.error}`;
       job.evalAttempts = (job.evalAttempts || 0) + 1;
-      saveJob(job);
+      if (job.evalAttempts >= 3) {
+        // Stop burning an eval slot on it every cycle; surface it instead.
+        transition(job, 'parked', { lastError: `eval failed 3× (last: ${evalRes.error}) — re-rank from Mission Control after fixing the model` });
+      } else {
+        saveJob(job);
+      }
       outcomes.push({ ...row, outcome: 'eval-failed', reason: evalRes.error });
       continue;
     }
