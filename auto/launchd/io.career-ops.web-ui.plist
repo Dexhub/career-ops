@@ -10,7 +10,7 @@
     <string>server.mjs</string>
     <string>start</string>
     <string>-p</string>
-    <string>3001</string>
+    <string>3003</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/jarvis/AI-Playground/career-ops/career-ops/web</string>

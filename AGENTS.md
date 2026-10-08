@@ -512,17 +512,24 @@ Rules for agents working here:
   the launchd schedule is disabled by user decision (2026-10-07) — do not
   reinstall `io.career-ops.auto.plist` without explicit user approval.
 - Single UI: Mission Control (`auto/panel.mjs` + `auto/panel.html`,
-  `io.career-ops.panel`, http://127.0.0.1:3002). `/auto` is the automation
-  dashboard (start/stop, queue, failure triage with Requeue, audit evidence,
-  activity log); every other path reverse-proxies to the upstream web UI on
-  :3001 (Host/Origin rewritten for its origin-guard; a "Mission Control" link
+  `io.career-ops.panel`, **http://127.0.0.1:3001**). `/auto` is a tabbed
+  automation dashboard — Overview (start / pause-after-current / stop-now,
+  submitted-today vs limit, triage, submitted evidence), Operator (live view
+  of orchestrator/ranker/apply-agent incl. in-progress screenshots via
+  `/api/auto/operator`), Queue (worker pick order + funnel), Errors
+  (multi-select bulk retry of failed/parked, ranker failures, skipped), Log
+  (filterable). Every other path reverse-proxies to the upstream web UI on
+  :3003 (Host/Origin rewritten for its origin-guard; a "Mission Control" link
   is injected into proxied HTML). The upstream app under `web/` is never
   patched. The panel only spawns/kills `node auto/run.mjs`; it never applies
   by itself. Requeue uses the state machine's `parked→queued` / `failed→queued`
-  edges (attempts reset).
+  edges (attempts reset). Pause writes `data/auto/pause-requested`;
+  `run.mjs` checks it between applies and stops gracefully after the
+  in-flight job.
 - The upstream web UI still runs as an always-on service
-  (`io.career-ops.web-ui`, http://127.0.0.1:3001, production build) behind the
-  proxy. Serving the UI is fine; it must never trigger applies on its own.
+  (`io.career-ops.web-ui`, http://127.0.0.1:3003, production build) behind the
+  proxy (port overridable via `CAREER_OPS_WEB_PORT`). Serving the UI is fine;
+  it must never trigger applies on its own.
 - After `npm run update`, re-apply `auto/patches/apply-ethical-override.mjs`
   and re-add this section if the update overwrote AGENTS.md.
 

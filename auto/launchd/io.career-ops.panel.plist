@@ -8,6 +8,8 @@
   <array>
     <string>/opt/homebrew/bin/node</string>
     <string>auto/panel.mjs</string>
+    <string>--port</string>
+    <string>3001</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/jarvis/AI-Playground/career-ops/career-ops</string>
@@ -15,6 +17,8 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>CAREER_OPS_WEB_PORT</key>
+    <string>3003</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

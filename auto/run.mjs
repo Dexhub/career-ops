@@ -17,6 +17,7 @@
 import './lib/sanitize-env.mjs';
 
 import { spawnSync } from 'node:child_process';
+import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -32,6 +33,9 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Sentinel path for the run lock. pipeline-lock derives a .lock dir next to
 // it; this is a dedicated orchestrator lock, not the data/pipeline.md lock.
 const LOCK_SENTINEL = join(ROOT, 'data', 'auto', 'orchestrator');
+// Graceful pause: Mission Control (or `touch`) creates this flag; the apply
+// loop finishes the in-flight job and stops before picking the next one.
+const PAUSE_FLAG = join(ROOT, 'data', 'auto', 'pause-requested');
 
 /** Run one pipeline stage as a child process; a failure warns and moves on. */
 function stage(name, args, log = console.log) {
@@ -64,6 +68,7 @@ export function overridePresent() {
 
 export async function runCycle({ skipScan = false, noSubmit = false, applyOnly = false, log = console.log, apply = runApply } = {}) {
   const cfg = loadAutoConfig({ fresh: true });
+  try { unlinkSync(PAUSE_FLAG); } catch { /* a pause from a past cycle is stale */ }
 
   if (!applyOnly) {
     if (!skipScan) stage('scan', [join(ROOT, 'scan.mjs'), '--quiet'], log);
@@ -98,6 +103,11 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   const limit = cfg.daily_soft_limit ?? 100;
   const applied = new Set(); // one attempt per job per cycle
   for (;;) {
+    if (existsSync(PAUSE_FLAG)) {
+      try { unlinkSync(PAUSE_FLAG); } catch { /* already gone */ }
+      log('run: pause requested — stopping before the next apply');
+      break;
+    }
     const today = new Date().toISOString().slice(0, 10);
     const submittedToday = submittedCountOn(today);
     if (submittedToday >= limit) {

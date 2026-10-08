@@ -24,8 +24,8 @@ file has `filled_in_by_user: true`.
 | `prompts/apply-submit.md` | Prompt template for the apply agent (audit contract, ATS quirks, honesty rules). |
 | `patches/` | The sanctioned AGENTS.md ethical-override patch. Re-apply after `npm run update`; `run.mjs` skips applies and warns if it's missing. |
 | `launchd/io.career-ops.auto.plist` | Optional 6-hourly schedule — **currently disabled** (user runs cycles manually). Re-enable only on request: `cp auto/launchd/io.career-ops.auto.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
-| `launchd/io.career-ops.web-ui.plist` | Web UI as an always-on service (installed): `next start` on http://127.0.0.1:3001, KeepAlive + RunAtLoad, logs to `data/web-ui.log`. This never applies to jobs by itself. |
-| `panel.mjs` + `panel.html` | **Mission Control — the single UI** at http://127.0.0.1:3002. `/auto`: Start/Stop cycle, submitted-today vs daily limit, needs-attention triage (parked/failed with Requeue), submitted list with evidence, live queue in worker pick order, per-job drill-down (audit screenshots, verdicts, parked reasons, missing answers), filterable activity log, today's digest. Every other path reverse-proxies the upstream web UI on :3001 (Host/Origin rewritten; "Mission Control" link injected into proxied pages) so one origin serves everything. Never applies by itself. |
+| `launchd/io.career-ops.web-ui.plist` | Web UI as an always-on service (installed): `next start` on http://127.0.0.1:3003, KeepAlive + RunAtLoad, logs to `data/web-ui.log`. This never applies to jobs by itself. |
+| `panel.mjs` + `panel.html` | **Mission Control — the single UI** at http://127.0.0.1:3001. `/auto` is tabbed: **Overview** (Start / Pause after current / Stop now, submitted-today vs daily limit, needs-attention triage, submitted list with evidence, per-job drill-down, digest), **Operator** (live orchestrator/ranker/apply-agent view with in-progress screenshots, polled from `/api/auto/operator`), **Queue** (exact worker pick order + funnel counts), **Errors** (failed/parked with multi-select bulk retry, ranker failures, skipped), **Log** (filterable activity log). Every other path reverse-proxies the upstream web UI on :3003 (`CAREER_OPS_WEB_PORT`; Host/Origin rewritten; "Mission Control" link injected into proxied pages) so one origin serves everything. Never applies by itself. |
 | `launchd/io.career-ops.panel.plist` | Panel as an always-on service (installed), logs to `data/auto/panel.log`. Cycles started from the panel survive the browser/terminal closing. |
 
 Config: `config/auto.yml` (threshold, daily soft limit, jitter, attempts,
@@ -36,8 +36,14 @@ eval model, ATS allowlist, resume variants).
 `discovered → evaluated → queued → resume_ready → applying → submitted`
 with `parked` (needs a human), `failed` (exhausted attempts), `skipped`.
 `parked → queued` and `failed → queued` are the requeue edges (panel
-Requeue button; attempts reset to 0).
+Requeue button, or multi-select bulk retry on the Errors tab; attempts
+reset to 0).
 Dry runs (`--no-submit`) never mutate state.
+
+Pause: the panel's "Pause after current" writes `data/auto/pause-requested`;
+`run.mjs` checks it between applies and stops gracefully after the in-flight
+job finishes (the flag is cleared when a new cycle starts). "Stop now" kills
+the cycle process immediately.
 
 ## Running by hand
 
