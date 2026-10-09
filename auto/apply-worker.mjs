@@ -131,8 +131,13 @@ export function verifyAudit(auditDir, { submit }) {
     }
   }
   try {
+    // Agents write either an array of {label,value,source} rows or a
+    // structured object keyed by form section — both are valid evidence.
     const answers = JSON.parse(readFileSync(join(auditDir, 'answers.json'), 'utf8'));
-    if (!Array.isArray(answers) || answers.length === 0) {
+    const empty = Array.isArray(answers)
+      ? answers.length === 0
+      : !(answers && typeof answers === 'object' && Object.keys(answers).length > 0);
+    if (empty) {
       return { ok: false, status: 'failed', reason: 'audit: answers.json empty', result };
     }
   } catch {
@@ -408,6 +413,12 @@ function selfTest() {
   check('submitted with full artifacts -> ok', good.ok === true && good.status === 'submitted');
 
   check('submitted during dry run -> rejected', verifyAudit(tmp, { submit: false }).ok === false);
+
+  writeFileSync(join(tmp, 'answers.json'), JSON.stringify({ my_information: { name: 'X' }, application_questions: [] }));
+  check('object-form answers.json accepted', verifyAudit(tmp, { submit: true }).ok === true);
+  writeFileSync(join(tmp, 'answers.json'), JSON.stringify({}));
+  check('empty object answers.json rejected', verifyAudit(tmp, { submit: true }).ok === false);
+  writeFileSync(join(tmp, 'answers.json'), JSON.stringify([{ label: 'Name', value: 'X', source: 'profile' }]));
 
   writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'submitted', confirmation: { confirmation_text: 'Application Submitted' } }));
   check('nested confirmation_text accepted', verifyAudit(tmp, { submit: true }).ok === true);

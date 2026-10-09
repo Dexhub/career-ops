@@ -103,7 +103,6 @@ export function overridePresent() {
 
 export async function runCycle({ skipScan = false, noSubmit = false, applyOnly = false, log = console.log, apply = runApply } = {}) {
   const cfg = loadAutoConfig({ fresh: true });
-  try { unlinkSync(PAUSE_FLAG); } catch { /* a pause from a past cycle is stale */ }
 
   // Scan → eval runs as a background chain (scan feeds the rows eval ranks),
   // in parallel with resume-select + the apply loop, so already-queued jobs
@@ -293,6 +292,10 @@ if (isMainModule(import.meta.url)) {
       console.log('run: another orchestrator cycle is active — exiting');
       process.exit(0);
     }
+    // A pause from a past cycle is stale. Cleared here (lock held, real cycle
+    // only) — NOT in runCycle, which self-tests call as a library: a library
+    // caller must never eat a live pause request (2026-10-09 incident).
+    try { unlinkSync(PAUSE_FLAG); } catch { /* no stale pause */ }
     // Desired-state handshake with the panel watchdog: running until this
     // cycle completes cleanly. A crash/kill leaves it `running: true`, so the
     // watchdog restarts the cycle once the machine/network recovers.
