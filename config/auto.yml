@@ -45,14 +45,14 @@ ats_allowlist:
   - workable
 
 agent:
-  # Headless agent CLI driving the browser for applies. `claude` is primary;
-  # `codex` is the installed fallback if claude refuses to submit.
-  primary: claude
-  fallback: codex
-  # Model overrides (cost experiment 2026-10-09): cheapest Anthropic for the
-  # claude worker, OpenAI luna for the codex fallback. Delete a key (or leave
-  # it empty) to fall back to the CLI's own default (previously opus-4-8 /
-  # sonnet-4-6 via claude settings).
+  # Headless agent CLI driving the browser for applies. Cost experiment
+  # (2026-10-09): codex/Luna is primary; claude (pinned to Haiku 5.5) is the
+  # fallback if codex underperforms. Previous baseline: claude on opus-4-8
+  # (~$5.25 avg per attempt, $8-11 on Workday).
+  primary: codex
+  fallback: claude
+  # Model overrides. Delete a key (or leave it empty) to fall back to the
+  # CLI's own default.
   claude_model: us.anthropic.claude-haiku-5-5
   claude_small_fast_model: us.anthropic.claude-haiku-5-5
   codex_model: openai.gpt-5.6-luna

@@ -508,6 +508,11 @@ Rules for agents working here:
 
 - **Never patch core scripts** to serve `auto/` — the one sanctioned exception
   is the AGENTS.md ethical-override patch in `auto/patches/`.
+- Apply-worker models are set in `config/auto.yml` under `agent:`
+  (`claude_model`/`claude_small_fast_model` → `ANTHROPIC_MODEL` env;
+  `codex_model` → `codex -m`). Empty/missing keys fall back to each CLI's own
+  default. Current experiment (2026-10-09): `us.anthropic.claude-haiku-5-5` +
+  `openai.gpt-5.6-luna`. Restart the cycle to pick up changes.
 - Job state lives in `data/auto/jobs/` (`node auto/state.mjs --list`); audit
   trails in `output/<app>/audit/`.   Runs are **manual-only** (`node auto/run.mjs`):
   the launchd schedule is disabled by user decision (2026-10-07) — do not
