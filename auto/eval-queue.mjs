@@ -119,9 +119,14 @@ export function runOllamaEval({ jdText, url, model, baseUrl }) {
       cwd: ROOT,
       encoding: 'utf-8',
       timeout: 20 * 60 * 1000,
-      // ollama-eval's own request timeout defaults to 300s — too tight for a
-      // 32B model on this machine (observed timeout 2026-10-07).
-      env: { ...process.env, OLLAMA_TIMEOUT_MS: process.env.OLLAMA_TIMEOUT_MS || '900000' },
+      // Both runners' own request timeout defaults to 300s — too tight for a
+      // slow model on this machine (observed timeouts 2026-10-07/09). The
+      // LM Studio path reads OPENAI_TIMEOUT_MS, not OLLAMA_TIMEOUT_MS.
+      env: {
+        ...process.env,
+        OLLAMA_TIMEOUT_MS: process.env.OLLAMA_TIMEOUT_MS || '900000',
+        OPENAI_TIMEOUT_MS: process.env.OPENAI_TIMEOUT_MS || '900000',
+      },
     });
     const out = `${res.stdout || ''}\n${res.stderr || ''}`;
     if (res.status !== 0) {
