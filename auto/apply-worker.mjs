@@ -144,7 +144,15 @@ export function verifyAudit(auditDir, { submit }) {
     if (!existsSync(join(auditDir, '02-confirmation.png'))) {
       return { ok: false, status: 'failed', reason: 'audit: 02-confirmation.png missing', result };
     }
-    if (!String(result.confirmation_text ?? '').trim()) {
+    // Agents sometimes nest the confirmation under result.confirmation
+    // (observed 2026-10-09: jci/gilead real submissions marked failed).
+    const conf = result.confirmation ?? {};
+    const confText = String(
+      result.confirmation_text
+      ?? conf.confirmation_text
+      ?? (conf.confirmed === true && Array.isArray(conf.evidence) ? conf.evidence.join('; ') : ''),
+    ).trim();
+    if (!confText) {
       return { ok: false, status: 'failed', reason: 'audit: confirmation_text empty', result };
     }
   }
@@ -379,6 +387,13 @@ function selfTest() {
   check('submitted with full artifacts -> ok', good.ok === true && good.status === 'submitted');
 
   check('submitted during dry run -> rejected', verifyAudit(tmp, { submit: false }).ok === false);
+
+  writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'submitted', confirmation: { confirmation_text: 'Application Submitted' } }));
+  check('nested confirmation_text accepted', verifyAudit(tmp, { submit: true }).ok === true);
+  writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'submitted', confirmation: { confirmed: true, evidence: ['Submitted dialog shown'] } }));
+  check('confirmed+evidence accepted', verifyAudit(tmp, { submit: true }).ok === true);
+  writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'submitted', confirmation: { confirmed: false } }));
+  check('empty nested confirmation still fails', verifyAudit(tmp, { submit: true }).ok === false);
 
   writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'filled_no_submit' }));
   check('filled_no_submit ok in dry run', verifyAudit(tmp, { submit: false }).ok === true);

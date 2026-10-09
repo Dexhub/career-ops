@@ -20,7 +20,7 @@
 import './lib/sanitize-env.mjs';
 import { createServer, request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listJobs, loadJob, pickOrder, saveJob, transition, submittedCountOn, STAGES } from './state.mjs';
@@ -38,6 +38,20 @@ const PAUSE_FLAG = join(ROOT, 'data', 'auto', 'pause-requested');
 const UPSTREAM = { host: '127.0.0.1', port: Number(process.env.CAREER_OPS_WEB_PORT) || 3003 };
 
 let panelChild = null; // cycle process started by this panel
+
+// Desired-state file: records whether a cycle *should* be running (set on
+// start, cleared on explicit stop or clean completion by run.mjs). The
+// watchdog below restarts a dead cycle while this says running — e.g. after
+// a crash, system sleep, or network outage — resuming from persisted state.
+const DESIRED_FILE = join(ROOT, 'data', 'auto', 'desired-cycle.json');
+
+export function writeDesired(obj) {
+  try { writeFileSync(DESIRED_FILE, JSON.stringify({ ...obj, updated_at: new Date().toISOString() })); } catch { /* best effort */ }
+}
+
+export function readDesired() {
+  try { return JSON.parse(readFileSync(DESIRED_FILE, 'utf8')); } catch { return null; }
+}
 
 // ---------- cycle control ----------
 
@@ -71,12 +85,14 @@ export function startCycle({ skipScan = false, cmd = null } = {}) {
   child.on('exit', () => { if (panelChild === child) panelChild = null; });
   child.unref();
   panelChild = child;
+  if (!cmd) writeDesired({ running: true, skipScan }); // real cycles only, not self-test cmds
   return { ok: true, pid: child.pid };
 }
 
 export function stopCycle() {
   const state = cycleState();
   if (!state.running) return { ok: false, error: 'no cycle running' };
+  writeDesired({ running: false, reason: 'stopped' }); // before the kill: no watchdog restart
   try {
     if (state.source === 'panel') process.kill(-state.pid, 'SIGTERM'); // whole group: run.mjs + stage children
     else process.kill(state.pid, 'SIGTERM');
@@ -97,6 +113,32 @@ export function requestPause() {
 
 export function cancelPause() {
   try { unlinkSync(PAUSE_FLAG); return { ok: true }; } catch { return { ok: false, error: 'no pause requested' }; }
+}
+
+// ---------- watchdog ----------
+// A cycle that should be running but has died (crash, kill -9, reboot, system
+// sleep gone wrong) is restarted as soon as the network is reachable. Job
+// state persists in data/auto/jobs, so the restarted cycle resumes where the
+// dead one stopped (stale `applying` rows are recovered by run.mjs itself).
+
+async function probeNetwork() {
+  try {
+    await fetch('https://www.google.com/generate_204', { signal: AbortSignal.timeout(5000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function watchdogTick({ probe = probeNetwork, start = startCycle, log = console.log } = {}) {
+  const desired = readDesired();
+  if (!desired?.running) return { acted: false, why: 'not desired' };
+  if (cycleState().running) return { acted: false, why: 'already running' };
+  if (!(await probe())) return { acted: false, why: 'network down' };
+  const res = start({ skipScan: desired.skipScan !== false });
+  log(`panel: watchdog restarted cycle (${res.ok ? `pid ${res.pid}` : res.error}) — desired running, process was dead`);
+  try { appendFileSync(RUN_LOG, `panel: watchdog restarted cycle (${res.ok ? `pid ${res.pid}` : res.error})\n`); } catch { /* best effort */ }
+  return { acted: true, result: res };
 }
 
 export function pauseRequested() {
@@ -808,5 +850,6 @@ if (isMainModule(import.meta.url)) {
     createPanelServer().listen(port, '127.0.0.1', () => {
       console.log(`mission control: http://127.0.0.1:${port}/auto (loopback only; proxies ${UPSTREAM.host}:${UPSTREAM.port})`);
     });
+    setInterval(() => { watchdogTick().catch(() => {}); }, 60_000).unref();
   }
 }

@@ -51,6 +51,16 @@ Pause: the panel's "Pause after current" writes `data/auto/pause-requested`;
 job finishes (the flag is cleared when a new cycle starts). "Stop now" kills
 the cycle process immediately.
 
+Failure recovery: the apply loop probes connectivity before each pick and
+waits (60s re-check) while the network is down instead of burning attempts.
+`data/auto/desired-cycle.json` records whether a cycle should be running
+(set on start, cleared on explicit stop or clean completion); the panel's
+watchdog checks every 60s and restarts a dead-but-desired cycle as soon as
+the network is reachable. Job state persists in `data/auto/jobs/`, so a
+restarted cycle resumes where the dead one stopped. The verifier accepts
+`confirmation_text` nested under `result.confirmation` (incl.
+`confirmed: true` + `evidence[]`).
+
 ## Running by hand
 
 ```

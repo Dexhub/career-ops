@@ -21,7 +21,7 @@
 import './lib/sanitize-env.mjs';
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -75,6 +75,16 @@ function stageAsync(name, args, log = console.log) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Cheap connectivity probe; applies must not spawn a 25-min agent offline. */
+export async function networkUp(probeUrl = 'https://www.google.com/generate_204') {
+  try {
+    await fetch(probeUrl, { signal: AbortSignal.timeout(5000) });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function jitterMs(cfg, rand = Math.random) {
@@ -156,6 +166,13 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
     if (!agentEnabled('apply')) {
       log('run: submission agent stopped from Mission Control — stopping before the next apply');
       break;
+    }
+    // Network outage: wait instead of spawning a doomed 25-min agent run
+    // (burns an attempt per job). Re-loops so pause/agent-stop still work.
+    if (!(await networkUp())) {
+      log('run: network down — waiting 60s before retrying');
+      await sleep(60_000);
+      continue;
     }
     const today = new Date().toISOString().slice(0, 10);
     const submittedToday = submittedCountOn(today);
@@ -276,12 +293,23 @@ if (isMainModule(import.meta.url)) {
       console.log('run: another orchestrator cycle is active — exiting');
       process.exit(0);
     }
+    // Desired-state handshake with the panel watchdog: running until this
+    // cycle completes cleanly. A crash/kill leaves it `running: true`, so the
+    // watchdog restarts the cycle once the machine/network recovers.
+    const DESIRED_FILE = join(ROOT, 'data', 'auto', 'desired-cycle.json');
+    const skipScan = hasFlag(args, '--skip-scan');
+    try {
+      writeFileSync(DESIRED_FILE, JSON.stringify({ running: true, skipScan, updated_at: new Date().toISOString() }));
+    } catch { /* best effort */ }
     try {
       await runCycle({
-        skipScan: hasFlag(args, '--skip-scan'),
+        skipScan,
         noSubmit: hasFlag(args, '--no-submit'),
       });
       console.log('run: cycle complete');
+      try {
+        writeFileSync(DESIRED_FILE, JSON.stringify({ running: false, reason: 'cycle complete', updated_at: new Date().toISOString() }));
+      } catch { /* best effort */ }
     } finally {
       lock.release();
     }
