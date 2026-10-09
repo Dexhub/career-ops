@@ -515,6 +515,12 @@ Rules for agents working here:
   attempt 2+ auto-escalates to the fallback agent (claude/Sonnet 4.6) in
   `runApply`. Verdicts record `agent` + `model` per attempt. Restart the
   cycle to pick up changes.
+- Browser tooling gotchas (2026-10-09): the apply prompt explicitly sanctions
+  the session's Playwright MCP — Sonnet otherwise refuses it, obeying the
+  owner's global no-Playwright/CDP rule (mckesson/cnx incidents). codex may
+  use the global BrowserOS neo MCP instead; it then must export evidence as
+  `01-form-filled.pdf`/`02-confirmation.pdf` (verifyAudit accepts `.png` or
+  `.pdf`). Luna applies run ~120–200K tokens vs claude's 3–14M.
 - Job state lives in `data/auto/jobs/` (`node auto/state.mjs --list`); audit
   trails in `output/<app>/audit/`.   Runs are **manual-only** (`node auto/run.mjs`):
   the launchd schedule is disabled by user decision (2026-10-07) — do not
