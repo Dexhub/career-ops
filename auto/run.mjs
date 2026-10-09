@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // auto/run.mjs — orchestrator: one full pipeline cycle under a run lock.
 //
-//   scan -> eval/promote -> resume-select -> apply loop (jitter, soft limit)
+//   scan -> eval (background) + resume-select -> apply loop (jitter, soft limit)
+//
+// Eval runs concurrently with the apply loop: already-queued jobs apply
+// immediately; when the queue drains the loop waits for eval, re-runs
+// resume-select, and continues with newly ranked jobs.
 //
 // Designed to run unattended from launchd every 6h (see auto/README.md for
 // the plist). A second concurrent invocation exits immediately instead of
@@ -16,7 +20,7 @@
 
 import './lib/sanitize-env.mjs';
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,6 +53,26 @@ function stage(name, args, log = console.log) {
   return true;
 }
 
+/**
+ * Run a stage as a background child; resolves true on exit 0. Used for the
+ * eval stage so a slow local-model ranking run never starves the apply loop
+ * (observed 2026-10-09: one slow eval blocked 10 ready jobs for hours).
+ */
+function stageAsync(name, args, log = console.log) {
+  log(`run: [${name}] node ${args.join(' ')} (background)`);
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, { cwd: ROOT, stdio: 'inherit' });
+    child.on('error', (err) => {
+      console.warn(`run: [${name}] spawn failed: ${err.message} — continuing`);
+      resolve(false);
+    });
+    child.on('exit', (status, signal) => {
+      if (status !== 0) console.warn(`run: [${name}] exited ${status ?? signal} — continuing`);
+      resolve(status === 0);
+    });
+  });
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -71,23 +95,37 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   const cfg = loadAutoConfig({ fresh: true });
   try { unlinkSync(PAUSE_FLAG); } catch { /* a pause from a past cycle is stale */ }
 
+  // Eval runs in the background so already-queued jobs apply immediately;
+  // when the apply queue drains we wait for it, re-select, and continue.
+  let evalPending = null;
   if (!applyOnly) {
     if (!skipScan && agentEnabled('scan')) stage('scan', [join(ROOT, 'scan.mjs'), '--quiet'], log);
     else if (!skipScan) log('run: scan agent stopped from Mission Control — skipping scan stage');
-    if (agentEnabled('rank')) stage('eval', [join(ROOT, 'auto', 'eval-queue.mjs')], log);
+    if (agentEnabled('rank')) evalPending = stageAsync('eval', [join(ROOT, 'auto', 'eval-queue.mjs')], log);
     else log('run: ranking agent stopped from Mission Control — skipping rank stage');
     stage('select', [join(ROOT, 'auto', 'resume-select.mjs')], log);
   }
+  // The cycle must not end (and release its lock) while the eval child is
+  // still writing state — a next cycle could race it.
+  const awaitEval = async () => {
+    if (!evalPending) return false;
+    log('run: waiting for background eval to finish');
+    await evalPending;
+    evalPending = null;
+    return true;
+  };
 
   if (noSubmit) {
     // Testing lane: a dry run never mutates state, so looping would re-pick
     // the same job forever. Do exactly one.
     apply({ submit: false, agent: cfg.agent?.primary ?? 'claude', log });
+    await awaitEval();
     return;
   }
 
   if (!overridePresent()) {
     console.warn('run: AGENTS.md ethical override missing (re-run auto/patches/apply-ethical-override.mjs) — skipping applies this cycle');
+    await awaitEval();
     return;
   }
 
@@ -123,7 +161,16 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
     }
     const next = pickOrder(listJobs(['resume_ready', 'applying']), cfg.max_attempts ?? 2)
       .find((j) => !applied.has(j.urlKey));
-    if (!next) { log('run: apply queue drained'); break; }
+    if (!next) {
+      // Drained — but a background eval may still be queueing jobs. Wait for
+      // it once, promote the new rows, and keep applying.
+      if (await awaitEval()) {
+        stage('select', [join(ROOT, 'auto', 'resume-select.mjs')], log);
+        continue;
+      }
+      log('run: apply queue drained');
+      break;
+    }
     applied.add(next.urlKey);
 
     try {
@@ -139,6 +186,9 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
       await sleep(ms);
     }
   }
+
+  // Pause/limit/agent-stop can break the loop with eval still running.
+  await awaitEval();
 
   if (!applyOnly) {
     try { writeDigest({ log }); } catch (err) { console.warn(`run: digest failed: ${err.message}`); }
