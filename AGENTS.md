@@ -511,8 +511,10 @@ Rules for agents working here:
 - Apply-worker models are set in `config/auto.yml` under `agent:`
   (`claude_model`/`claude_small_fast_model` → `ANTHROPIC_MODEL` env;
   `codex_model` → `codex -m`). Empty/missing keys fall back to each CLI's own
-  default. Current experiment (2026-10-09): `us.anthropic.claude-haiku-5-5` +
-  `openai.gpt-5.6-luna`. Restart the cycle to pick up changes.
+  default. Cost ladder (2026-10-09): attempt 1 = primary (codex/Luna, cheap);
+  attempt 2+ auto-escalates to the fallback agent (claude/Sonnet 4.6) in
+  `runApply`. Verdicts record `agent` + `model` per attempt. Restart the
+  cycle to pick up changes.
 - Job state lives in `data/auto/jobs/` (`node auto/state.mjs --list`); audit
   trails in `output/<app>/audit/`.   Runs are **manual-only** (`node auto/run.mjs`):
   the launchd schedule is disabled by user decision (2026-10-07) — do not
