@@ -49,6 +49,13 @@ agent:
   # `codex` is the installed fallback if claude refuses to submit.
   primary: claude
   fallback: codex
+  # Model overrides (cost experiment 2026-10-09): cheapest Anthropic for the
+  # claude worker, OpenAI luna for the codex fallback. Delete a key (or leave
+  # it empty) to fall back to the CLI's own default (previously opus-4-8 /
+  # sonnet-4-6 via claude settings).
+  claude_model: us.anthropic.claude-haiku-5-5
+  claude_small_fast_model: us.anthropic.claude-haiku-5-5
+  codex_model: openai.gpt-5.6-luna
   # Hard wall-clock cap per apply attempt, minutes.
   timeout_minutes: 25
 

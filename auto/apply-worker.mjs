@@ -181,10 +181,18 @@ function mcpConfigFor(auditDir) {
   };
 }
 
-function runAgent({ agent, prompt, auditDir, timeoutMins, log }) {
+function runAgent({ agent, prompt, auditDir, timeoutMins, model, smallFastModel, log }) {
   const timeout = timeoutMins * 60 * 1000;
   const promptPath = join(auditDir, 'prompt.md');
   writeFileSync(promptPath, prompt);
+
+  // Model override from config (cost experiments): claude reads env vars,
+  // codex takes -m. Empty/missing keeps the CLI's own default.
+  const env = { ...process.env };
+  if (agent !== 'codex' && model) {
+    env.ANTHROPIC_MODEL = model;
+    if (smallFastModel) env.ANTHROPIC_SMALL_FAST_MODEL = smallFastModel;
+  }
 
   let cmd;
   let args;
@@ -193,6 +201,7 @@ function runAgent({ agent, prompt, auditDir, timeoutMins, log }) {
     cmd = 'codex';
     args = [
       'exec', '--dangerously-bypass-approvals-and-sandbox', '-C', ROOT,
+      ...(model ? ['-m', model] : []),
       '-c', `mcp_servers.playwright.command=${JSON.stringify(mcp.command)}`,
       '-c', `mcp_servers.playwright.args=${JSON.stringify(mcp.args)}`,
       prompt,
@@ -210,11 +219,11 @@ function runAgent({ agent, prompt, auditDir, timeoutMins, log }) {
     ];
   }
 
-  log(`apply-worker: spawning ${agent} (timeout ${timeoutMins}m)`);
+  log(`apply-worker: spawning ${agent} (model ${model || 'cli-default'}, timeout ${timeoutMins}m)`);
   const started = Date.now();
   const res = spawnSync(cmd, args, {
     cwd: ROOT,
-    env: process.env,
+    env,
     timeout,
     killSignal: 'SIGKILL',
     encoding: 'utf8',
@@ -289,9 +298,12 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
     saveJob(job);
   }
 
+  const agentCfg = cfg.agent || {};
   const run = runAgent({
     agent, prompt, auditDir,
     timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
+    model: agent === 'codex' ? agentCfg.codex_model : agentCfg.claude_model,
+    smallFastModel: agentCfg.claude_small_fast_model,
     log,
   });
 
