@@ -125,10 +125,15 @@ export function verifyAudit(auditDir, { submit }) {
   }
 
   // submitted / filled_no_submit require the fill artifacts.
-  for (const f of ['answers.json', '01-form-filled.png']) {
-    if (!existsSync(join(auditDir, f))) {
-      return { ok: false, status: 'failed', reason: `audit: ${f} missing for status ${status}`, result };
-    }
+  // Evidence captures accept .png or .pdf (BrowserOS exports pdf, not png —
+  // observed 2026-10-09: regent real submission marked failed).
+  const hasEvidence = (base) =>
+    existsSync(join(auditDir, `${base}.png`)) || existsSync(join(auditDir, `${base}.pdf`));
+  if (!existsSync(join(auditDir, 'answers.json'))) {
+    return { ok: false, status: 'failed', reason: `audit: answers.json missing for status ${status}`, result };
+  }
+  if (!hasEvidence('01-form-filled')) {
+    return { ok: false, status: 'failed', reason: `audit: 01-form-filled.png missing for status ${status}`, result };
   }
   try {
     // Agents write either an array of {label,value,source} rows or a
@@ -146,7 +151,7 @@ export function verifyAudit(auditDir, { submit }) {
 
   if (status === 'submitted') {
     if (!submit) return { ok: false, status: 'failed', reason: 'audit: agent claims submitted in a dry run', result };
-    if (!existsSync(join(auditDir, '02-confirmation.png'))) {
+    if (!hasEvidence('02-confirmation')) {
       return { ok: false, status: 'failed', reason: 'audit: 02-confirmation.png missing', result };
     }
     // Agents sometimes nest the confirmation under result.confirmation
@@ -426,6 +431,15 @@ function selfTest() {
   check('confirmed+evidence accepted', verifyAudit(tmp, { submit: true }).ok === true);
   writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'submitted', confirmation: { confirmed: false } }));
   check('empty nested confirmation still fails', verifyAudit(tmp, { submit: true }).ok === false);
+
+  // pdf evidence alternates (BrowserOS path)
+  const tmp2 = `/tmp/apply-audit-pdf-${Date.now()}`;
+  mkdirSync(tmp2, { recursive: true });
+  writeFileSync(join(tmp2, 'result.json'), JSON.stringify({ status: 'submitted', confirmation_text: 'Thanks!' }));
+  writeFileSync(join(tmp2, 'answers.json'), JSON.stringify([{ label: 'Name', value: 'X', source: 'profile' }]));
+  writeFileSync(join(tmp2, '01-form-filled.pdf'), 'pdf');
+  writeFileSync(join(tmp2, '02-confirmation.pdf'), 'pdf');
+  check('pdf evidence alternates accepted', verifyAudit(tmp2, { submit: true }).ok === true);
 
   writeFileSync(join(tmp, 'result.json'), JSON.stringify({ status: 'filled_no_submit' }));
   check('filled_no_submit ok in dry run', verifyAudit(tmp, { submit: false }).ok === true);

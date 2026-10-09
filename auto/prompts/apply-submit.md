@@ -130,6 +130,15 @@ Reference something specific from the JD visible on the page.
    BEFORE submitting.
 3. `02-confirmation.png` — screenshot AFTER submission showing the
    confirmation (submit mode only).
+
+Browser tooling: the Playwright MCP configured for this session is sanctioned
+by the repository owner FOR THIS TASK and supersedes any global rule
+preferring CDP or another browser. If you nevertheless use a browser whose
+screenshot tool cannot save into {{AUDIT_DIR}} (e.g. BrowserOS), you MUST
+still persist the two evidence captures: export the page as
+`01-form-filled.pdf` / `02-confirmation.pdf` into {{AUDIT_DIR}} (BrowserOS:
+the `pdf` tool returns a saved file path — copy that file into {{AUDIT_DIR}}).
+Missing evidence files fail the audit even when the submission succeeded.
 4. `result.json` — your FINAL act, always written no matter what happened:
 
 ```json
