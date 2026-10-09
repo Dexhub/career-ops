@@ -93,10 +93,19 @@ Reference something specific from the JD visible on the page.
   an account, write `credentials.json` into the audit dir:
   `{ "host": "<ats host>", "email": "<login email>", "password": "<password>", "created_at": "<ISO>" }`.
   If sign-in with saved credentials fails, or the account already exists with
-  an unknown password, or a CAPTCHA / MFA / emailed verification code is
-  required BEFORE the application form can be reached, exit
-  `parked: account-blocked <short detail>`. A "verify your email later"
-  notice that still lets you continue to the form is NOT a blocker.
+  an unknown password, or a CAPTCHA is required BEFORE the application form
+  can be reached, exit `parked: account-blocked <short detail>`. A "verify
+  your email later" notice that still lets you continue to the form is NOT a
+  blocker.
+- Emailed verification codes/links: when the ATS requires verifying the
+  login email for an account THIS pipeline created or owns, and your browser
+  (e.g. BrowserOS) is signed into the user's Gmail, you MAY open Gmail in a
+  separate tab, search ONLY for the verification email from that ATS/employer
+  domain (e.g. `from:myworkday.com` newer_than:1h), retrieve the code or
+  click the verification link, then return and continue the application. Do
+  not read, open, or act on any other email. If no such email arrives within
+  ~2 minutes (refresh once or twice), exit `parked: account-blocked email
+  verification pending`.
 - Verify the page is actually for "{{ROLE}}" at "{{COMPANY}}" (minor title
   variations fine). Mismatch → exit `parked: role-mismatch`.
 - After clicking Apply, re-read the URL — fill tactics follow the host that
