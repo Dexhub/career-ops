@@ -30,13 +30,48 @@ import { listJobs, loadJob, pickOrder, saveJob, transition } from './state.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
 const CHROME_PROFILE = join(ROOT, 'data', 'auto', 'chrome-profile');
+const ACCOUNTS_FILE = join(ROOT, 'data', 'auto', 'accounts.json'); // gitignored (data/*)
 const DEFAULT_TIMEOUT_MINS = 25;
 const MAX_ATTEMPTS = 2;
 
 // ---------------------------------------------------------------------------
 // Prompt rendering
 
-export function renderPrompt({ job, submit, auditDir, profileYaml, standingYaml, cvText, resumeSha }) {
+// ---------------------------------------------------------------------------
+// ATS credentials store — data/auto/accounts.json: { "<host>": { email, password, created_at } }.
+// The worker writes credentials.json into its audit dir when it creates an
+// account; harvestCredentials() moves that into the store for sign-in reuse.
+
+export function loadAccounts(file = ACCOUNTS_FILE) {
+  try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return {}; }
+}
+
+export function savedCredentialsFor(url, file = ACCOUNTS_FILE) {
+  try {
+    const host = new URL(url).host;
+    const acct = loadAccounts(file)[host];
+    if (!acct) return 'None on file for this employer — create the account if the form requires one.';
+    return `host: ${host}\nemail: ${acct.email}\npassword: ${acct.password}\nSign in with these instead of creating a new account.`;
+  } catch {
+    return 'None on file for this employer — create the account if the form requires one.';
+  }
+}
+
+export function harvestCredentials(auditDir, file = ACCOUNTS_FILE, log = () => {}) {
+  const src = join(auditDir, 'credentials.json');
+  if (!existsSync(src)) return false;
+  try {
+    const cred = JSON.parse(readFileSync(src, 'utf8'));
+    if (!cred.host || !cred.email || !cred.password) return false;
+    const accounts = loadAccounts(file);
+    accounts[cred.host] = { email: cred.email, password: cred.password, created_at: cred.created_at || new Date().toISOString() };
+    writeFileSync(file, JSON.stringify(accounts, null, 2), { mode: 0o600 });
+    log(`apply-worker: saved new ATS credentials for ${cred.host}`);
+    return true;
+  } catch { return false; }
+}
+
+export function renderPrompt({ job, submit, auditDir, profileYaml, standingYaml, cvText, resumeSha, savedCreds }) {
   const template = readFileSync(PROMPT_TEMPLATE, 'utf8');
   const submitInstruction = submit
     ? 'You ARE authorized to click the final Submit/Apply button for this job, unattended.'
@@ -56,6 +91,7 @@ export function renderPrompt({ job, submit, auditDir, profileYaml, standingYaml,
     CV_TEXT: cvText.trim(),
     SUBMIT_INSTRUCTION: submitInstruction,
     SUBMIT_INSTRUCTION_DETAIL: submitDetail,
+    SAVED_CREDENTIALS: savedCreds || savedCredentialsFor(job.url),
   };
   let out = template;
   for (const [k, v] of Object.entries(vars)) {
@@ -251,6 +287,8 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
     log,
   });
 
+  harvestCredentials(auditDir, undefined, log);
+
   const verdict = run.timedOut
     ? { ok: false, status: 'failed', reason: `agent timeout` }
     : verifyAudit(auditDir, { submit });
@@ -307,6 +345,20 @@ function selfTest() {
     profileYaml: 'name: X', standingYaml: 'y: 1', cvText: '# CV', resumeSha: 'abc',
   });
   check('submit prompt authorizes submit', prompt2.includes('ARE authorized to click the final Submit'));
+
+  check('prompt includes saved-credentials section', prompt.includes('Saved ATS credentials'));
+
+  // credentials store round-trip (temp file, never the real store)
+  const credTmp = `/tmp/apply-creds-${Date.now()}`;
+  mkdirSync(credTmp, { recursive: true });
+  const credFile = join(credTmp, 'accounts.json');
+  check('no credentials -> create-account hint',
+    savedCredentialsFor('https://acme.wd1.myworkdayjobs.com/x', credFile).includes('None on file'));
+  writeFileSync(join(credTmp, 'credentials.json'), JSON.stringify({ host: 'acme.wd1.myworkdayjobs.com', email: 'a@b.c', password: 'p4ss!Word123456' }));
+  check('harvest stores new credentials', harvestCredentials(credTmp, credFile) === true);
+  check('saved credentials injected for matching host',
+    savedCredentialsFor('https://acme.wd1.myworkdayjobs.com/job/1', credFile).includes('p4ss!Word123456'));
+  check('harvest ignores missing file', harvestCredentials('/tmp/nonexistent-dir-xyz', credFile) === false);
 
   // verifyAudit
   const tmp = `/tmp/apply-audit-${Date.now()}`;

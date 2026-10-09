@@ -49,6 +49,9 @@ Reference something specific from the JD visible on the page.
 {{CV_TEXT}}
 ```
 
+### Saved ATS credentials for this employer
+{{SAVED_CREDENTIALS}}
+
 ## Hard rules (violating any of these is a failed run)
 
 1. NEVER fabricate an eligibility fact, degree, certification, visa status,
@@ -78,8 +81,22 @@ Reference something specific from the JD visible on the page.
 ## Fill technique (ATS quirks — follow these exactly)
 
 - First navigate to the URL. If the posting is closed/404/removed, exit
-  `parked: posting-closed`. If the page shows a login wall or CAPTCHA before
-  the form, exit `parked: login-or-captcha`.
+  `parked: posting-closed`. If the page shows a CAPTCHA before the form, exit
+  `parked: login-or-captcha`.
+- Account walls (Workday "Create Account / Sign In" and similar) do NOT park
+  you — follow the `ats_account_policy` from the profile: sign in with the
+  saved credentials above when present; otherwise create the account with the
+  profile's preferred login email and a strong unique password you generate
+  (16+ chars, upper/lower/digit/symbol). Accept the employer terms /
+  privacy / data-processing / cross-border personal-data consent checkboxes —
+  the user explicitly accepted these (2026-10-09). Immediately after creating
+  an account, write `credentials.json` into the audit dir:
+  `{ "host": "<ats host>", "email": "<login email>", "password": "<password>", "created_at": "<ISO>" }`.
+  If sign-in with saved credentials fails, or the account already exists with
+  an unknown password, or a CAPTCHA / MFA / emailed verification code is
+  required BEFORE the application form can be reached, exit
+  `parked: account-blocked <short detail>`. A "verify your email later"
+  notice that still lets you continue to the form is NOT a blocker.
 - Verify the page is actually for "{{ROLE}}" at "{{COMPANY}}" (minor title
   variations fine). Mismatch → exit `parked: role-mismatch`.
 - After clicking Apply, re-read the URL — fill tactics follow the host that
@@ -89,10 +106,12 @@ Reference something specific from the JD visible on the page.
   selection, never cache element references across interactions.
 - Native `<select>` with huge option lists: select directly by value/label,
   never enumerate all options.
-- Lever (jobs.lever.co): fill text inputs, textareas and selects ONLY. Do
-  NOT click checkboxes or radio buttons — programmatic clicks trigger
-  hCaptcha. If a REQUIRED checkbox/radio or a visible captcha blocks
-  submission, exit `parked: captcha-or-checkbox-required`.
+- Lever (jobs.lever.co): fill text inputs, textareas and selects freely.
+  Avoid checkboxes/radio buttons when they are optional — programmatic
+  clicks can trigger hCaptcha. For a REQUIRED checkbox/radio, click its
+  LABEL text once (not the input element), with a short pause before and
+  after, and re-snapshot to confirm the state changed. If a captcha appears
+  at any point, exit `parked: captcha-or-checkbox-required`.
 - Workable: SPA re-renders invalidate elements — fresh element query before
   every field, never reuse references.
 - Ashby (jobs.ashbyhq.com): submission may be silently rejected as spam. A
@@ -117,7 +136,7 @@ Reference something specific from the JD visible on the page.
 {
   "status": "submitted | filled_no_submit | parked | failed",
   "reason": "<required for parked/failed, short>",
-  "parked_reason": "<parked only — exactly one of: missing-fact | posting-closed | login-or-captcha | role-mismatch | cover-letter-file-required | captcha-or-checkbox-required>",
+  "parked_reason": "<parked only — exactly one of: missing-fact | posting-closed | login-or-captcha | account-blocked | role-mismatch | cover-letter-file-required | captcha-or-checkbox-required>",
   "missing": [{ "label": "<field label>", "needed": "<what fact/answer was missing from the data sources>" }],
   "knockout_risk": false,
   "confirmation_text": "<visible confirmation snippet, submit mode>",
