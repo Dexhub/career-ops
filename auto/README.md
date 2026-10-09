@@ -1,8 +1,8 @@
 # auto/ — autonomous apply pipeline (local-only layer)
 
-Unattended loop: scan → eval/promote (runs in the background, concurrent with
-the apply loop; on queue drain the loop waits for it, re-selects, continues) →
-resume select → **real submissions** → daily digest. Core career-ops scripts are never patched (one sanctioned
+Unattended loop: scan → eval/promote (both run as a background chain,
+concurrent with the apply loop; on queue drain the loop waits for the chain,
+re-selects, continues) → resume select → **real submissions** → daily digest. Core career-ops scripts are never patched (one sanctioned
 exception below); `npm run update` never touches this directory.
 
 Authorized by the user 2026-10-07 (see `modes/_custom.md`, "Autonomous apply

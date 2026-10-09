@@ -95,23 +95,27 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   const cfg = loadAutoConfig({ fresh: true });
   try { unlinkSync(PAUSE_FLAG); } catch { /* a pause from a past cycle is stale */ }
 
-  // Eval runs in the background so already-queued jobs apply immediately;
-  // when the apply queue drains we wait for it, re-select, and continue.
-  let evalPending = null;
+  // Scan → eval runs as a background chain (scan feeds the rows eval ranks),
+  // in parallel with resume-select + the apply loop, so already-queued jobs
+  // apply immediately. When the apply queue drains we wait for the chain,
+  // re-select, and continue with newly ranked jobs.
+  let bgPending = null;
   if (!applyOnly) {
-    if (!skipScan && agentEnabled('scan')) stage('scan', [join(ROOT, 'scan.mjs'), '--quiet'], log);
-    else if (!skipScan) log('run: scan agent stopped from Mission Control — skipping scan stage');
-    if (agentEnabled('rank')) evalPending = stageAsync('eval', [join(ROOT, 'auto', 'eval-queue.mjs')], log);
-    else log('run: ranking agent stopped from Mission Control — skipping rank stage');
+    bgPending = (async () => {
+      if (!skipScan && agentEnabled('scan')) await stageAsync('scan', [join(ROOT, 'scan.mjs'), '--quiet'], log);
+      else if (!skipScan) log('run: scan agent stopped from Mission Control — skipping scan stage');
+      if (agentEnabled('rank')) await stageAsync('eval', [join(ROOT, 'auto', 'eval-queue.mjs')], log);
+      else log('run: ranking agent stopped from Mission Control — skipping rank stage');
+    })();
     stage('select', [join(ROOT, 'auto', 'resume-select.mjs')], log);
   }
-  // The cycle must not end (and release its lock) while the eval child is
-  // still writing state — a next cycle could race it.
+  // The cycle must not end (and release its lock) while background children
+  // are still writing state — a next cycle could race them.
   const awaitEval = async () => {
-    if (!evalPending) return false;
-    log('run: waiting for background eval to finish');
-    await evalPending;
-    evalPending = null;
+    if (!bgPending) return false;
+    log('run: waiting for background scan/eval to finish');
+    await bgPending;
+    bgPending = null;
     return true;
   };
 

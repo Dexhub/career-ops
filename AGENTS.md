@@ -501,7 +501,7 @@ Headless worker command per CLI:
 ## Local `auto/` Layer (this checkout only)
 
 `auto/` is a local, gitignored-from-upstream autonomous apply pipeline:
-scan → eval (background, concurrent with applies) → resume select →
+scan → eval (background chain, concurrent with applies) → resume select →
 unattended submissions (user-authorized, see
 "Ethical Use" exception above) → daily digest. Full docs in `auto/README.md`.
 Rules for agents working here:
