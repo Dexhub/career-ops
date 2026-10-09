@@ -299,10 +299,17 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
   }
 
   const agentCfg = cfg.agent || {};
+  // Quality escalation: a retry means the cheap primary already failed once,
+  // so attempt 2+ runs on the fallback agent/model instead of re-rolling.
+  let agentUsed = agent;
+  if (submit && attemptNo > 1 && agentCfg.fallback && agentCfg.fallback !== agent) {
+    agentUsed = agentCfg.fallback;
+    log(`apply-worker: attempt ${attemptNo} — escalating to fallback agent ${agentUsed}`);
+  }
   const run = runAgent({
-    agent, prompt, auditDir,
+    agent: agentUsed, prompt, auditDir,
     timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
-    model: agent === 'codex' ? agentCfg.codex_model : agentCfg.claude_model,
+    model: agentUsed === 'codex' ? agentCfg.codex_model : agentCfg.claude_model,
     smallFastModel: agentCfg.claude_small_fast_model,
     log,
   });
@@ -318,7 +325,9 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
   // between the two is itself a finding: the agent claimed something the
   // artifacts don't support).
   writeFileSync(join(auditDir, 'verdict.json'), JSON.stringify({
-    ...verdict, submit, attempt: attemptNo, agent, timedOut: run.timedOut === true,
+    ...verdict, submit, attempt: attemptNo, agent: agentUsed,
+    model: (agentUsed === 'codex' ? agentCfg.codex_model : agentCfg.claude_model) || 'cli-default',
+    timedOut: run.timedOut === true,
     exitCode: run.exitCode ?? null, verdictAt: new Date().toISOString(),
   }, null, 2));
 
