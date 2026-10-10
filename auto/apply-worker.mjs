@@ -15,7 +15,7 @@ import './lib/sanitize-env.mjs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  existsSync, mkdirSync, readFileSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -231,15 +231,20 @@ function runAgent({ agent, prompt, auditDir, timeoutMins, model, smallFastModel,
 
   log(`apply-worker: spawning ${agent} (model ${model || 'cli-default'}, timeout ${timeoutMins}m)`);
   const started = Date.now();
+  // Write agent output straight to a file descriptor instead of pipes:
+  // with pipes, spawnSync keeps reading until every inheriting grandchild
+  // (MCP servers, browser) closes them, so a SIGKILLed-at-timeout agent
+  // still blocked us 10-45 extra minutes (observed 2355s/4185s on a 1500s
+  // cap, 2026-10-10). A file fd needs no draining — we return at kill time.
+  const outFd = openSync(join(auditDir, `${agent}-output.txt`), 'w');
   const res = spawnSync(cmd, args, {
     cwd: ROOT,
     env,
     timeout,
     killSignal: 'SIGKILL',
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
+    stdio: ['ignore', outFd, outFd],
   });
-  writeFileSync(join(auditDir, `${agent}-output.txt`), `${res.stdout ?? ''}\n--- stderr ---\n${res.stderr ?? ''}`);
+  closeSync(outFd);
   // The MCP server dies with the agent, but a headed Chrome on the
   // persistent profile can linger (and holds the profile lock for the next
   // run). Kill anything still using our profile dir.
