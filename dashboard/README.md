@@ -1,4 +1,11 @@
-# dashboard/
+# dashboard/ (DEPRECATED)
+
+**Deprecated on the db-migration branch:** this TUI reads the retired
+markdown/TSV stores (`applications.md`, `status-log.tsv`), which were replaced
+by `data/career-ops.db` (see `core/db.mjs`). It no longer sees current data.
+Use the web app instead (`cd web && npm run dev`). The code is kept for
+reference only; the npm scripts `build:dashboard`/`serve:dashboard` now fail
+with a pointer here.
 
 Standalone Go TUI for browsing the career-ops pipeline.
 

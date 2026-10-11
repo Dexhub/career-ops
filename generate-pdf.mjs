@@ -48,7 +48,8 @@ import { randomUUID } from 'node:crypto';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { readStyleTokens, injectThemeStyle, readCvSectionOrder } from './theme-style.mjs';
 import { validateCvExperienceOrder } from './cv-experience-order.mjs';
-import { resolvePdfIndexPath, resolveTrackerPath, resolveWorkspaceRootFor } from './tracker-utils.mjs';
+import { resolveTrackerPath, resolveWorkspaceRootFor } from './tracker-utils.mjs';
+import { upsertPdfIndexEntry } from './core/db.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { stripEmptyRenderedSections } from './cv-sections-core.mjs';
 import { PAGE_CSS_SIZE, PAGE_FORMATS, normalizePageFormat, resolvePageFormat } from './lib/page-format.mjs';
@@ -1331,30 +1332,22 @@ export function applyManifestRow(existingLines, row) {
  * another machine.
  */
 function updatePDFManifest(reportNum, pdfPath, htmlPath, format, kind) {
-  const manifestPath = resolvePdfIndexPath(trackerPath);
   const toRel = (p) => relative(workspaceRoot, p).split(sep).join('/');
   const relPDF = toRel(pdfPath);
   const relHTML = workspaceRelativeManifestPath(htmlPath, workspaceRoot);
   const date = new Date().toISOString().slice(0, 10);
 
-  const existing = existsSync(manifestPath)
-    ? readFileSync(manifestPath, 'utf-8').split('\n')
-    : [];
-  const lines = applyManifestRow(existing, {
-    reportNum,
+  // The pdf_index table replaces data/pdf-index.tsv; upsertPdfIndexEntry
+  // implements the same slot semantics as applyManifestRow (kept exported
+  // above for reference/tests).
+  upsertPdfIndexEntry({
+    report: reportNum || '',
     pdf: relPDF,
     html: relHTML,
     format,
     date,
-    kind,
+    kind: kind === 'cover' ? 'cover' : 'cv',
   });
-
-  mkdirSync(dirname(manifestPath), { recursive: true });
-  writeFileSync(
-    manifestPath,
-    '# report\tpdf\thtml\tformat\tdate\tkind - written by generate-pdf.mjs, do not edit\n' +
-      lines.join('\n') + '\n'
-  );
   return relPDF;
 }
 
@@ -2047,7 +2040,7 @@ async function renderInPage(browser, html, outputPath, opts = {}) {
 
     try {
       updatePDFManifest(reportNum, outputPath, inputPath, format, artifactKind);
-      console.log(`🔗 Manifest: data/pdf-index.tsv updated${reportNum ? ` (report ${reportNum})` : ' (no --report given)'}`);
+      console.log(`🔗 Manifest: pdf_index updated${reportNum ? ` (report ${reportNum})` : ' (no --report given)'}`);
     } catch (err) {
       // The PDF itself succeeded — never fail the run over manifest bookkeeping.
       console.error(`⚠️  Manifest update failed: ${err.message}`);

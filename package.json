@@ -69,8 +69,8 @@
     "archive": "node archive-posting.mjs",
     "prepare:application": "node prepare-application.mjs",
     "application:init": "node application-artifacts.mjs --init",
-    "build:dashboard": "node build-dashboard.mjs",
-    "serve:dashboard": "cd dashboard && go run .",
+    "build:dashboard": "echo 'DEPRECATED: the Go TUI dashboard reads the retired markdown/TSV stores. Use the web app (cd web && npm run dev).' && exit 1",
+    "serve:dashboard": "echo 'DEPRECATED: the Go TUI dashboard reads the retired markdown/TSV stores. Use the web app (cd web && npm run dev).' && exit 1",
     "postinstall": "npx playwright install chromium || npx playwright install chromium",
     "manifesto": "node manifesto.mjs"
   },

@@ -21,10 +21,8 @@ The User Layer location (Data Root) is resolved dynamically using the following 
 2. **Marker File:** If no environment variable is set, a `.career-ops-data` file in the repository root containing an absolute or relative path to the user data directory is used.
 3. **Repository Default:** If neither is present, the repository root directory itself is used.
 
-**Tracker Path & Canonical Writes:**
-- **Explicit override:** `CAREER_OPS_TRACKER` environment variable overrides the applications tracker file path. Relative paths are resolved relative to the repository root directory.
-- **Reading:** If no override is set, reading resolves to `{DATA_ROOT}/data/applications.md` if it exists; otherwise falls back to `{DATA_ROOT}/applications.md`.
-- **Writing:** All write operations (first-run creation or merge operations) target the canonical location `{DATA_ROOT}/data/applications.md` (or the explicit `CAREER_OPS_TRACKER` override).
+**Single Data Store (db-migration branch — CRITICAL):**
+All tracking/state data lives in ONE SQLite database: `{DATA_ROOT}/data/career-ops.db`, accessed exclusively through `core/db.mjs` (node:sqlite, WAL). `CAREER_OPS_DB` overrides the path (tests). The former file stores are RETIRED and must not be read or written: `data/applications.md`, `data/pipeline.md`, `data/follow-ups.md`, `data/status-log.tsv`, `data/scan-history.tsv`, `data/scan-runs.tsv`, `data/portal-health.tsv`, `data/dead-boards.tsv`, `data/pdf-index.tsv`, `batch/batch-state.tsv`, `data/auto/jobs/*.json`. One-time import: `migrate-to-db.mjs`. Reports (`reports/*.md`), PDFs (`output/`), config YAMLs, audit dirs, and logs remain ordinary files. The old directory-lock protocols (tracker lock, pipeline lock) are obsolete — SQLite WAL + `db.tx()` handle concurrency. `CAREER_OPS_TRACKER` is obsolete.
 
 ## Source-of-Truth Boundary (CRITICAL)
 

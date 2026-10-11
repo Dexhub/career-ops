@@ -154,14 +154,21 @@ CREATE TABLE IF NOT EXISTS dead_boards (
   PRIMARY KEY (ats, board)
 );
 
+-- One row per generated PDF path; per report a CV row and a cover row
+-- coexist (see generate-pdf.mjs applyManifestRow). report kept verbatim
+-- ("008" vs "8"); report_norm strips leading zeros for matching.
 CREATE TABLE IF NOT EXISTS pdf_index (
-  report TEXT PRIMARY KEY,
-  pdf    TEXT NOT NULL DEFAULT '',
-  html   TEXT NOT NULL DEFAULT '',
-  format TEXT NOT NULL DEFAULT '',
-  date   TEXT NOT NULL DEFAULT '',
-  kind   TEXT NOT NULL DEFAULT ''
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  report      TEXT NOT NULL DEFAULT '',
+  report_norm TEXT NOT NULL DEFAULT '',
+  pdf         TEXT NOT NULL DEFAULT '',
+  html        TEXT NOT NULL DEFAULT '',
+  format      TEXT NOT NULL DEFAULT '',
+  date        TEXT NOT NULL DEFAULT '',
+  kind        TEXT NOT NULL DEFAULT ''
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pdf_index_pdf ON pdf_index(pdf);
+CREATE INDEX IF NOT EXISTS idx_pdf_index_report ON pdf_index(report_norm);
 
 -- Raw rows of the dormant legacy batch runner's batch-state.tsv
 -- (batch-runner.sh). Readers only check status/report_num; row keeps the
@@ -209,6 +216,24 @@ export function openDb() {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA busy_timeout = 5000;');
   db.exec('PRAGMA synchronous = NORMAL;');
+  // Dev-era shape fix: a DB created before pdf_index gained report_norm
+  // (report was PRIMARY KEY) breaks the CREATE INDEX below. Rebuild in place.
+  const pdfCols = db.prepare("SELECT name FROM pragma_table_info('pdf_index')").all().map((r) => r.name);
+  if (pdfCols.length && !pdfCols.includes('report_norm')) {
+    db.exec(`BEGIN;
+      ALTER TABLE pdf_index RENAME TO pdf_index_old;
+      CREATE TABLE pdf_index (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        report TEXT NOT NULL DEFAULT '', report_norm TEXT NOT NULL DEFAULT '',
+        pdf TEXT NOT NULL DEFAULT '', html TEXT NOT NULL DEFAULT '',
+        format TEXT NOT NULL DEFAULT '', date TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT ''
+      );
+      INSERT INTO pdf_index (report, report_norm, pdf, html, format, date, kind)
+        SELECT report, ltrim(report, '0'), pdf, html, format, date, kind FROM pdf_index_old;
+      UPDATE pdf_index SET report_norm = report WHERE report_norm = '' AND report != '';
+      DROP TABLE pdf_index_old;
+    COMMIT;`);
+  }
   db.exec(SCHEMA);
   _db = db;
   _dbPath = path;
@@ -390,13 +415,36 @@ export function upsertDeadBoard({ ats, board, misses, last_checked }) {
 export function deleteDeadBoard(ats, board) { run('DELETE FROM dead_boards WHERE ats = ? AND board = ?', [ats, board]); }
 
 // ---------- pdf index ----------
-export function getPdfIndexEntry(report) { return get('SELECT * FROM pdf_index WHERE report = ?', [report]); }
-export function listPdfIndex() { return all('SELECT * FROM pdf_index'); }
-export function upsertPdfIndexEntry({ report, pdf = '', html = '', format = '', date = '', kind = '' }) {
-  run(`INSERT INTO pdf_index (report, pdf, html, format, date, kind) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(report) DO UPDATE SET pdf=excluded.pdf, html=excluded.html,
-         format=excluded.format, date=excluded.date, kind=excluded.kind`,
-    [report, pdf, html, format, date, kind]);
+const normReportKey = (s) => String(s ?? '').trim().replace(/^0+(?=\d)/, '');
+
+/** Rows for a report (any kind). kind option narrows; 'cv' also claims legacy untagged rows. */
+export function getPdfIndexEntry(report, { kind } = {}) {
+  const rows = all('SELECT * FROM pdf_index WHERE report_norm = ? ORDER BY id DESC', [normReportKey(report)]);
+  if (!rows.length) return undefined;
+  if (kind === 'cover') return rows.find((r) => r.kind === 'cover');
+  if (kind === 'cv') return rows.find((r) => r.kind !== 'cover');
+  return rows.find((r) => r.kind !== 'cover') ?? rows[0]; // CV preferred, matching readers
+}
+export function listPdfIndex() { return all('SELECT * FROM pdf_index ORDER BY id'); }
+
+/**
+ * Merge one generated-PDF row, mirroring generate-pdf.mjs applyManifestRow:
+ * replaces any row with the same pdf path, and supersedes the same report's
+ * same-kind slot (incoming cv claims legacy untagged rows; incoming cover
+ * only replaces explicit cover rows).
+ */
+export function upsertPdfIndexEntry({ report = '', pdf = '', html = '', format = '', date = '', kind = '' }) {
+  const incomingKind = kind === 'cover' ? 'cover' : 'cv';
+  const norm = normReportKey(report);
+  tx(() => {
+    run('DELETE FROM pdf_index WHERE pdf = ?', [pdf]);
+    if (norm) {
+      if (incomingKind === 'cover') run("DELETE FROM pdf_index WHERE report_norm = ? AND kind = 'cover'", [norm]);
+      else run("DELETE FROM pdf_index WHERE report_norm = ? AND kind != 'cover'", [norm]);
+    }
+    run('INSERT INTO pdf_index (report, report_norm, pdf, html, format, date, kind) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [report, norm, pdf, html, format, date, kind]);
+  });
 }
 
 // ---------- batch state (legacy batch runner, dormant) ----------
