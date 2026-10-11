@@ -83,12 +83,14 @@ Required evidence states in `rollout.json`: `implemented`, `offline_verified`, `
 
 ## T28. Verify the complete journey under scoped authorization
 
-- [ ] First run the complete journey in a synthetic fixture panel through Neo: observe a new question, propose/approve its synthetic answer, reload, resume the same fake application, reuse it in another fixture, revoke it, and confirm reuse stops.
-- [ ] Prove a saved account-verification wait survives restart and uses only its matching fake message. Prove an uncertain fake submission cannot be retried and a tracker failure repairs without another fake submit.
-- [ ] If D06 authorizes a real case, specify its exact job/account and permitted actions. Prefer an existing eligible operation rather than inventing an extra employer application for testing. Record baseline state before acting and keep evidence job-bound.
-- [ ] Observe question capture, source-bound answer reuse, offered dropdown options and committed values, correct resume upload, account verification if needed, and the final allowed outcome. If actual submission is not authorized, stop before it and report that delivery remains unverified.
-- [ ] After any authorized real submission, verify employer-side confirmation evidence and the corresponding canonical tracker record separately. A screenshot filename or agent message alone is insufficient. If uncertain, stop and reconcile, never retry to obtain a cleaner test result.
-- [ ] Compare the actual source/memory/procedure versions consumed, capture coverage and model/action/time measurements. Do not claim a reduction in live cost/time from fixture-only measurements or a hiring improvement from one application.
+- [x] First run the complete journey in a synthetic fixture panel through Neo: observe a new question, propose/approve its synthetic answer, reload, resume the same fake application, reuse it in another fixture, revoke it, and confirm reuse stops. (2026-10-11, fixture :3014, evidence: `reports/t28-journey.md`)
+- [x] Prove a saved account-verification wait survives restart and uses only its matching fake message. Prove an uncertain fake submission cannot be retried and a tracker failure repairs without another fake submit. (Pinned by A13/A14/A15/A17 in `auto/test/learning-acceptance.test.mjs`; suite 409 pass — see `reports/t28-journey.md`)
+- [ ] (pending-authorization: D06 not approved) If D06 authorizes a real case, specify its exact job/account and permitted actions. Prefer an existing eligible operation rather than inventing an extra employer application for testing. Record baseline state before acting and keep evidence job-bound.
+- [ ] (pending-authorization: D06 not approved) Observe question capture, source-bound answer reuse, offered dropdown options and committed values, correct resume upload, account verification if needed, and the final allowed outcome. If actual submission is not authorized, stop before it and report that delivery remains unverified.
+- [ ] (pending-authorization: D06 not approved) After any authorized real submission, verify employer-side confirmation evidence and the corresponding canonical tracker record separately. A screenshot filename or agent message alone is insufficient. If uncertain, stop and reconcile, never retry to obtain a cleaner test result.
+- [ ] (pending-authorization: D06 not approved) Compare the actual source/memory/procedure versions consumed, capture coverage and model/action/time measurements. Do not claim a reduction in live cost/time from fixture-only measurements or a hiring improvement from one application.
+
+T28 synthetic status: `offline_verified: yes`, `live_journey_verified: false` (reason: D06 not approved).
 
 ## T29. Document operation, limitations and next-agent recovery
 
