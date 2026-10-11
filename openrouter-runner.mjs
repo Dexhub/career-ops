@@ -7,7 +7,7 @@
  *   node openrouter-runner.mjs scan              → Scan Greenhouse API companies for new listings
  *   node openrouter-runner.mjs evaluate <url>    → Evaluate a job by URL
  *   node openrouter-runner.mjs evaluate          → Paste job text interactively
- *   node openrouter-runner.mjs pipeline          → Process all pending URLs from pipeline.md
+ *   node openrouter-runner.mjs pipeline          → Process all pending URLs from the pipeline
  *   node openrouter-runner.mjs apply <report_no> → Generate draft application form answers
  *   node openrouter-runner.mjs models            → List available free models
  *   node openrouter-runner.mjs help              → Show this help
@@ -33,6 +33,7 @@ import { TokenAccumulator, formatBreakdown, normalizeOpenAIUsage } from './utils
 import { DEFAULT_USER_AGENT } from './user-agent.mjs';
 import { buildTitleFilter } from './title-keywords.mjs';
 import { appendToPipeline, appendToScanHistory } from './scan.mjs';
+import { listPipelineItems, updatePipelineItem, hasPipelineUrl, listScanHistory, listApplications } from './core/db.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -407,7 +408,7 @@ export function buildSystemPrompt(modeContent, ctx) {
 // ---------------------------------------------------------------------------
 // Reject unsafe fetch targets (SSRF defense-in-depth): http(s) only, never
 // loopback / link-local / private / cloud-metadata hosts. URLs come from the
-// user's own portals.yml / pipeline.md, but we still fail closed.
+// user's own portals.yml / pipeline, but we still fail closed.
 function assertSafeRemoteUrl(url) {
   let u;
   try { u = new URL(url); } catch { throw new Error(`Invalid URL: ${url}`); }
@@ -502,33 +503,31 @@ export function parsePortals(rawOverride) {
 }
 
 // ---------------------------------------------------------------------------
-// pipeline.md management
+// pipeline management (SQLite-backed via core/db.mjs)
 // ---------------------------------------------------------------------------
 function readPipeline() {
-  const content = readFile('data/pipeline.md') ?? '';
+  // Unchecked rows, like the old `- [ ]` scan of pipeline.md. `raw` preserves
+  // the original `- [ ] url | company | role` line, so parse it the same way.
   const pending = [];
-  for (const line of content.split('\n')) {
-    const m = line.match(/^- \[ \] (.+)/);
-    if (m) {
-      const parts = m[1].split(' | ');
-      pending.push({
-        url:     parts[0]?.trim() ?? '',
-        company: parts[1]?.trim() ?? 'Unknown',
-        role:    parts[2]?.trim() ?? 'Unknown',
-      });
-    }
+  for (const item of listPipelineItems({ checked: 0 })) {
+    const m = String(item.raw ?? '').match(/^- \[ \] (.+)/);
+    const parts = (m ? m[1] : item.url).split(' | ');
+    pending.push({
+      url:     parts[0]?.trim() || item.url,
+      company: parts[1]?.trim() ?? 'Unknown',
+      role:    parts[2]?.trim() ?? 'Unknown',
+    });
   }
   return pending;
 }
 
 function markPipelineDone(url) {
-  let content = readFile('data/pipeline.md') ?? '';
-  const escaped = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  content = content.replace(
-    new RegExp(`^(- \\[ \\] ${escaped}.*)$`, 'm'),
-    (ln) => ln.replace('- [ ]', '- [x]')
-  );
-  writeFile('data/pipeline.md', content);
+  const item = listPipelineItems().find((i) => i.url === url);
+  if (!item || item.checked) return;
+  updatePipelineItem(url, {
+    checked: 1,
+    raw: String(item.raw ?? '').replace('- [ ]', '- [x]'),
+  });
 }
 
 // Both writes go through the shared writers in scan.mjs rather than this
@@ -549,23 +548,15 @@ function markPipelineDone(url) {
 // It also picks up CAREER_OPS_DATA_DIR support for free: the shared paths are
 // DATA_ROOT-anchored, while the __dirname-relative paths here ignored it.
 async function addToPipeline(entries) {
-  const history = readFile('data/scan-history.tsv') ?? 'url\tfirst_seen\tportal\ttitle\tcompany\tstatus\tlocation\n';
-  const seenUrls = new Set(history.split('\n').slice(1).map(l => l.split('\t')[0]).filter(Boolean));
-
-  const existingPipeline = readFile('data/pipeline.md') ?? '# Pipeline\n\n## Pending\n';
-  const existingApps     = readFile('data/applications.md') ?? '';
-  // extract URLs already tracked in applications.md (mirrors scan.mjs dedup logic)
-  const appliedUrls = new Set(
-    existingApps.split('\n')
-      .map(l => l.match(/https?:\/\/[^\s|)]+/))
-      .filter(Boolean).map(m => m[0])
-  );
+  const seenUrls = new Set(listScanHistory().map((r) => r.url).filter(Boolean));
+  // URLs already tracked as applications (mirrors scan.mjs dedup logic).
+  const appliedUrls = new Set(listApplications().map((a) => a.url).filter(Boolean));
 
   const newEntries = entries.filter(e => {
     if (seenUrls.has(e.url)) return false;
     if (appliedUrls.has(e.url)) return false;
     // skip if already queued in pipeline
-    if (existingPipeline.includes(e.url)) return false;
+    if (hasPipelineUrl(e.url)) return false;
     return true;
   });
 
@@ -642,7 +633,7 @@ async function cmdScan() {
   }
 
   const added = await addToPipeline(found);
-  console.log(`\n✅ Scan complete. ${found.length} matches, ${added} new entries added to pipeline.md.`);
+  console.log(`\n✅ Scan complete. ${found.length} matches, ${added} new entries added to the pipeline.`);
   if (added > 0) {
     console.log('\n→  node openrouter-runner.mjs pipeline\n   to evaluate pending listings.\n');
   }
@@ -771,11 +762,11 @@ async function cmdEvaluate(input, ctx) {
 async function cmdPipeline(ctx) {
   const pending = readPipeline();
   if (pending.length === 0) {
-    console.log('No pending listings in pipeline.md.');
+    console.log('No pending listings in the pipeline.');
     return;
   }
 
-  console.log(`Processing ${pending.length} pending listing(s) from pipeline.md...\n`);
+  console.log(`Processing ${pending.length} pending listing(s) from the pipeline...\n`);
 
   for (let i = 0; i < pending.length; i++) {
     const item = pending[i];
@@ -903,7 +894,7 @@ COMMANDS:
   node openrouter-runner.mjs scan              → Scan Greenhouse APIs for new matching listings
   node openrouter-runner.mjs evaluate <url>    → Evaluate a listing by URL
   node openrouter-runner.mjs evaluate          → Paste a job description interactively
-  node openrouter-runner.mjs pipeline          → Batch-evaluate all pending entries in pipeline.md
+  node openrouter-runner.mjs pipeline          → Batch-evaluate all pending entries in the pipeline
   node openrouter-runner.mjs apply <report_no> → Generate application form answers from a report
   node openrouter-runner.mjs models            → List available free models from OpenRouter
 

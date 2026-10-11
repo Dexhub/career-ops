@@ -10,12 +10,12 @@
  *   node archive-posting.mjs <url>
  *   node archive-posting.mjs <url> --company=Anthropic --role=senior-ai-engineer
  *   node archive-posting.mjs <url> --report=042    Key the capture to report #42
- *   node archive-posting.mjs --pipeline          Archive pending URLs in data/pipeline.md
+ *   node archive-posting.mjs --pipeline          Archive pending URLs in the pipeline
  *   node archive-posting.mjs --dry-run <url>     Preview filename without saving
  *
  * Output:    jds/YYYY-MM-DD_company-slug_role-slug.pdf
  *            jds/NNN-YYYY-MM-DD_company-slug_role-slug.pdf   (with --report)
- * Reference: local:jds/{filename}  (paste into pipeline.md)
+ * Reference: local:jds/{filename}  (paste into a report header)
  *
  * Prefer --report. Without it the capture can only be found again by rebuilding
  * its filename from today's date and the scraped company and role, so it stops
@@ -23,8 +23,8 @@
  */
 
 import { chromium } from 'playwright';
-import { writeFile, readFile } from 'fs/promises';
-import { existsSync, mkdirSync } from 'fs';
+import { writeFile } from 'fs/promises';
+import { mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { getCareerOpsRoot } from './path-resolver.mjs';
@@ -34,11 +34,11 @@ import { validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { detectNonContentMarker } from './check-jd-archive.mjs';
+import { listPipelineItems } from './core/db.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
 const JDS_DIR = join(DATA_ROOT, 'jds');
-const PIPELINE_PATH = join(DATA_ROOT, 'data', 'pipeline.md');
 
 const KNOWN_FLAGS = ['--company', '--role', '--report', '--pipeline', '--dry-run', '--help', '-h'];
 const VALUE_FLAGS = ['--company', '--role', '--report'];
@@ -66,14 +66,14 @@ const HELP_TEXT = `
   USAGE
     node archive-posting.mjs <url>
     node archive-posting.mjs <url> --company=Anthropic --role=senior-ai-engineer
-    node archive-posting.mjs --pipeline     Archive all pending URLs in data/pipeline.md
+    node archive-posting.mjs --pipeline     Archive all pending URLs in the pipeline
     node archive-posting.mjs --dry-run <url>
 
   OPTIONS
     --company <name>   Override auto-detected company name
     --role <title>     Override auto-detected role title
     --report <num>     Key the capture to a report/tracker number (recommended)
-    --pipeline         Archive all pending (- [ ]) entries in data/pipeline.md
+    --pipeline         Archive all pending (- [ ]) entries in the pipeline
     --dry-run          Preview filename without saving
     --help             Show this help
 
@@ -86,7 +86,7 @@ const HELP_TEXT = `
     today's date and the scraped company and role, so it stops resolving the
     next day. outcome.mjs looks captures up by report number.
 
-  PIPELINE REFERENCE (paste into pipeline.md or reports/)
+  PIPELINE REFERENCE (paste into a report header or reports/)
     local:jds/{filename}
 
   EXAMPLES
@@ -260,32 +260,23 @@ function extractCompanyFromUrl(url) {
 // ── Pipeline URL extraction ──────────────────────────────────────────────────
 
 /**
- * Parse data/pipeline.md and return pending entries.
- * Handles both plain and annotated forms:
+ * Return pending entries from the pipeline store (SQLite).
+ * Each row's `raw` preserves the original line, in plain or annotated form:
  *   - [ ] https://example.com/job/123
  *   - [ ] https://example.com/job/456 | Acme Corp | Senior PM
  */
 async function extractPipelineEntries() {
-  if (!existsSync(PIPELINE_PATH)) {
-    console.error('data/pipeline.md not found. Add URLs there first.');
-    process.exit(1);
-  }
-
-  const content = await readFile(PIPELINE_PATH, 'utf-8');
   const entries = [];
 
-  for (const line of content.split('\n')) {
-    if (!line.startsWith('- [ ]')) continue;
+  for (const item of listPipelineItems({ checked: 0 })) {
+    const line = String(item.raw ?? '');
+    if (line && !line.startsWith('- [ ]')) continue;
 
-    const urlMatch = line.match(/https?:\/\/[^\s|)]+/);
-    if (!urlMatch) continue;
-
-    const url = urlMatch[0];
     const parts = line.split('|').map(s => s.trim());
     const company = parts[1] || null;
     const role = parts[2] || null;
 
-    entries.push({ url, company, role });
+    entries.push({ url: item.url, company, role });
   }
 
   return entries;
@@ -443,7 +434,7 @@ async function main() {
   if (pipelineMode) {
     const entries = await extractPipelineEntries();
     if (entries.length === 0) {
-      console.log('No pending (- [ ]) URLs found in data/pipeline.md.');
+      console.log('No pending (- [ ]) URLs found in the pipeline.');
       return;
     }
     targets = entries;
@@ -505,7 +496,7 @@ async function main() {
 
   const references = results.filter(r => r.reference);
   if (references.length > 0) {
-    console.log('\n  References (paste into pipeline.md or a report header):');
+    console.log('\n  References (paste into a report header):');
     for (const r of references) {
       console.log(`    ${r.reference}`);
     }

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * migrate-scan-runs.mjs — bring an existing data/scan-runs.tsv onto the current
- * schema so runs recorded under an older header keep counting (#4423).
+ * migrate-scan-runs.mjs — historically brought an existing data/scan-runs.tsv
+ * onto the current schema so runs recorded under an older header kept counting
+ * (#4423).
  *
  * appendScanRunSummary writes SCAN_RUNS_HEADER only when the file does not yet
  * exist. A release that adds a counter therefore leaves every pre-existing file
@@ -32,17 +33,14 @@
  * so stats.mjs folds it exactly as a 0 would, and the file keeps saying
  * "unrecorded" instead of asserting a measurement that was never taken.
  *
- * Usage:
- *   node migrate-scan-runs.mjs                   # dry run (default) — reports, writes nothing
- *   node migrate-scan-runs.mjs --apply           # rewrite in place, after saving <file>.bak
- *   node migrate-scan-runs.mjs --file <path>     # target a file other than the resolved default
- *   node migrate-scan-runs.mjs --json            # machine-readable summary
+ * OBSOLETE: scan runs now live in the scan_runs table of the SQLite database
+ * (data/career-ops.db), where rows always carry the full current schema. The
+ * CLI is a no-op kept so existing invocations fail soft with an explanation;
+ * the pure helpers below remain exported for their tests.
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import path from 'path';
+import { readFileSync, writeFileSync } from 'fs';
 import { isMainModule } from './lib/is-main-module.mjs';
-import { getCareerOpsRoot } from './path-resolver.mjs';
 import { SCAN_RUNS_HEADER, atomicWriteFile } from './scan.mjs';
 import { withPipelineLock } from './pipeline-lock.mjs';
 
@@ -173,47 +171,18 @@ export async function writeMigrated(target, snapshot, text, lockOptions = {}) {
   }, lockOptions);
 }
 
+// OBSOLETE as a CLI: scan runs now live in the scan_runs table of the SQLite
+// database (data/career-ops.db, see core/db.mjs), where every row carries the
+// full current schema — there is no TSV header to drift and nothing to migrate.
+// The pure helpers above are kept exported for their tests and as the reference
+// for how legacy TSV generations mapped onto the current column order.
 if (isMainModule(import.meta.url)) {
-  const argv = process.argv.slice(2);
-  const apply = argv.includes('--apply');
-  const asJson = argv.includes('--json');
-  const fileArg = argv.indexOf('--file');
-  // getCareerOpsRoot, not CAREER_OPS_ROOT directly: the data root also honours
-  // CAREER_OPS_DATA_DIR and a .career-ops-data marker file, and falls back to
-  // the REPO root rather than the cwd. Resolving it by hand here would miss the
-  // marker and would target the wrong file when run from a subdirectory.
-  const target = fileArg !== -1 && argv[fileArg + 1]
-    ? path.resolve(argv[fileArg + 1])
-    : path.join(getCareerOpsRoot(), 'data/scan-runs.tsv');
-
-  if (!existsSync(target)) {
-    console.error(`No scan-runs file at ${target} — nothing to migrate.`);
-    process.exit(1);
-  }
-
-  const before = readFileSync(target, 'utf-8');
-  const result = migrateScanRuns(before);
-
+  const asJson = process.argv.slice(2).includes('--json');
   if (asJson) {
-    console.log(JSON.stringify({ file: target, applied: apply && result.changed, ...result, text: undefined }, null, 2));
-  } else if (result.refused) {
-    console.log(`Refused: ${result.refused} (${target})`);
-  } else if (!result.changed) {
-    console.log(`Already on the current schema: ${target}`);
+    console.log(JSON.stringify({ obsolete: true, changed: false, migratedRows: 0, passedThrough: 0, refused: 'obsolete' }, null, 2));
   } else {
-    console.log(`${target}`);
-    console.log(`  header migrated: ${result.headerMigrated}`);
-    console.log(`  rows migrated:   ${result.migratedRows}`);
-    console.log(`  rows passed through (unrecognized width): ${result.passedThrough}`);
-    console.log(apply ? `  applying — original saved to ${target}.bak` : '  dry run — nothing written. Re-run with --apply to write.');
-  }
-
-  if (apply && result.changed) {
-    const { written, reason } = await writeMigrated(target, before, result.text);
-    if (!written) {
-      console.error(`Refused to write ${target}: ${reason}. A scan most likely appended a run `
-        + 'while this was migrating. Nothing was changed — re-run the command.');
-      process.exit(2);
-    }
+    console.log('migrate-scan-runs.mjs is obsolete: scan runs are stored in the scan_runs table of');
+    console.log('the SQLite database (data/career-ops.db), not in data/scan-runs.tsv.');
+    console.log('There is no TSV schema to migrate — this command is now a no-op.');
   }
 }

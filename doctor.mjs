@@ -5,7 +5,7 @@
  * Checks all prerequisites and prints a pass/fail checklist.
  */
 
-import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
@@ -19,6 +19,7 @@ import { resolveExtractorMode } from './browser-extract.mjs';
 import { parseConfigByExtension } from './jsonc-parse.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 import { geminiNodeFloor } from './lib/gemini-node-floor.mjs';
+import { listPipelineItems } from './core/db.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -609,28 +610,18 @@ async function checkPortalSlugs(root) {
   }
 }
 
-const PIPELINE_SKELETON = `# Pipeline — Pending URLs
-
-Paste job URLs below as \`- [ ] {url}\` then run \`/career-ops pipeline\`.
-
-## Pending
-
-## Processed
-`;
-
+// The pipeline now lives in the SQLite database (core/db.mjs), not
+// data/pipeline.md. Opening the DB creates and migrates it on first use, so
+// this check plays the same auto-provisioning role the old skeleton write did.
 function checkPipelineFile() {
-  const filePath = join(projectRoot, 'data', 'pipeline.md');
-  if (existsSync(filePath)) {
-    return { pass: true, label: 'data/pipeline.md ready' };
-  }
   try {
-    writeFileSync(filePath, PIPELINE_SKELETON, 'utf-8');
-    return { pass: true, label: 'data/pipeline.md ready (auto-created)' };
-  } catch {
+    const items = listPipelineItems();
+    return { pass: true, label: `pipeline store ready (${items.length} item${items.length === 1 ? '' : 's'} in data/career-ops.db)` };
+  } catch (err) {
     return {
       pass: false,
-      label: 'data/pipeline.md could not be created',
-      fix: 'Run: mkdir -p data && touch data/pipeline.md',
+      label: 'pipeline store could not be opened',
+      fix: `Check data/career-ops.db is readable and writable (${String(err.message).split('\n')[0]})`,
     };
   }
 }

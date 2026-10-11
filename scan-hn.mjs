@@ -32,7 +32,7 @@ const USAGE = `Usage:
 Fetches the newest hiring thread from Hacker News and keeps the postings that
 match hn_hiring.keywords in portals.yml (default: "Software Engineer"). With
 GEMINI_API_KEY set, Gemini extracts each posting instead of the keyword match.
-New offers are appended to data/pipeline.md and to the scan history.
+New offers are appended to the pipeline and to the scan history.
 
 Flags:
   --help, -h                        # show this help and exit`;

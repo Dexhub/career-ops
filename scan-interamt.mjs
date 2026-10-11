@@ -22,7 +22,8 @@ import { chromium } from 'playwright';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import * as yaml from 'js-yaml';
-import { appendToPipeline, appendToScanHistory, loadSeenUrls, PORTALS_PATH, SCAN_HISTORY_PATH } from './scan.mjs';
+import { appendToPipeline, appendToScanHistory, loadSeenUrls, PORTALS_PATH } from './scan.mjs';
+import { listScanHistory } from './core/db.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { printScanSummaryHeader } from './lib/scan-summary-marker.mjs';
@@ -31,13 +32,11 @@ import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
 
 // ── Config ───────────────────────────────────────────────────────────
 
-// Both imported from scan.mjs (#3510). This scanner appends through
-// scan.mjs's appendToScanHistory — anchored to the data root — while reading its
-// own bare-relative copy to work out the last scan date, so within a single run
-// it could write one history file and read another. Its portals copy also
-// ignored CAREER_OPS_PORTALS, which #2271 added so a second search lane does not
-// poison the first one's dedup history.
-const SCAN_HISTORY    = SCAN_HISTORY_PATH;
+// PORTALS_PATH imported from scan.mjs (#3510): this scanner's own portals copy
+// ignored CAREER_OPS_PORTALS, which #2271 added so a second search lane does
+// not poison the first one's dedup history. Scan history reads and writes both
+// go through the SQLite store now (listScanHistory / appendToScanHistory), so
+// a run can no longer write one history and read another.
 const DATA_ROOT       = getCareerOpsRoot();
 const INTERAMT_HOME   = 'https://interamt.de/koop/app/';
 // Direct offer URL — constructed from StellenangebotId.
@@ -61,7 +60,7 @@ const DEFAULT_KEYWORDS = [
 
 // Checked by validateFlags() in the main-module block below, before main()
 // runs (#4599). Without it, --help or a mistyped --dryrun fell through to a
-// live scan that appended to data/pipeline.md.
+// live scan that appended to the pipeline.
 const KNOWN_FLAGS = ['--dry-run', '--debug', '--all', '--keyword', '--help', '-h'];
 const VALUE_FLAGS = ['--keyword'];
 
@@ -135,14 +134,12 @@ function parseDE(str) {
 
 // Returns the most recent first_seen date for 'interamt' portal entries, or null
 function loadLastScanDate() {
-  if (!existsSync(SCAN_HISTORY)) return null;
   let latest = null;
-  readFileSync(SCAN_HISTORY, 'utf-8').split('\n').slice(1).forEach(line => {
-    const parts = line.split('\t');
-    if (parts[2] !== 'interamt') return;
-    const d = new Date((parts[1] || '') + 'T00:00:00Z');
+  for (const row of listScanHistory()) {
+    if (row.portal !== 'interamt') continue;
+    const d = new Date((row.first_seen || '') + 'T00:00:00Z');
     if (!isNaN(d) && (!latest || d > latest)) latest = d;
-  });
+  }
   return latest;
 }
 
@@ -385,7 +382,7 @@ async function main() {
     if (DRY_RUN) {
       console.log('\n(dry run — not saved)');
     } else {
-      console.log(`\nSaved to data/pipeline.md`);
+      console.log(`\nSaved to the pipeline (data/career-ops.db)`);
     }
   }
 

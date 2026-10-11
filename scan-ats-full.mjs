@@ -57,7 +57,7 @@ import ashby from './providers/ashby.mjs';
 import workday, { WORKDAY_TRUNCATED_REASON } from './providers/workday.mjs';
 import icims from './providers/icims.mjs';
 import bamboohr from './providers/bamboohr.mjs';
-import { buildTitleFilter, buildTitleFilterOverrides, buildTitleFilterWithOverrides, buildLocationFilter, buildContentFilter, matchedTitleKeywords, loadSeenUrls, normalizeUrlForDedup, appendToPipeline, appendToScanHistory, findBlacklistEntry, loadBlacklist, parseSinceDays, PORTALS_PATH, PIPELINE_PATH, SCAN_HISTORY_PATH } from './scan.mjs';
+import { buildTitleFilter, buildTitleFilterOverrides, buildTitleFilterWithOverrides, buildLocationFilter, buildContentFilter, matchedTitleKeywords, loadSeenUrls, normalizeUrlForDedup, appendToPipeline, appendToScanHistory, findBlacklistEntry, loadBlacklist, parseSinceDays, PORTALS_PATH, scanHistoryTextFromDb } from './scan.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { printScanSummaryHeader } from './lib/scan-summary-marker.mjs';
 import { SEED_SOURCES, toPortalEntry } from './seeds/vc-portfolios.mjs';
@@ -66,17 +66,17 @@ import { isMainModule } from './lib/is-main-module.mjs';
 import { boardKey, loadDeadBoards, recordBoardResult, saveDeadBoards, shouldSkipDeadBoard } from './dead-boards.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { KNOWN_ATS_VENDORS } from './ats-vendor.mjs';
-import { loadHistoryAtsSeeds } from './history-ats-seeds.mjs';
+import { loadHistoryAtsSeeds, parseScanHistoryAtsSeeds } from './history-ats-seeds.mjs';
+import { resolveDbPath } from './core/db.mjs';
 import { loadProviders } from './providers/_registry.mjs';
 
 // ── Config ──────────────────────────────────────────────────────────
 
-// PORTALS_PATH and PIPELINE_PATH are imported from scan.mjs rather than
-// re-derived here (#3510). This file appends results through scan.mjs's
-// appendToPipeline, so its own bare-relative copy meant it could create an empty
-// data/pipeline.md in the cwd and then write the actual matches somewhere else.
-// Its portals fallback had the same split: it honored CAREER_OPS_PORTALS but
-// otherwise looked in the cwd instead of the data root.
+// PORTALS_PATH is imported from scan.mjs rather than re-derived here (#3510):
+// its portals fallback honored CAREER_OPS_PORTALS but otherwise looked in the
+// cwd instead of the data root. Pipeline and scan-history writes go through
+// scan.mjs's appendToPipeline/appendToScanHistory, which persist to the SQLite
+// store (core/db.mjs).
 const DATA_ROOT = getCareerOpsRoot();
 const PROVIDERS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'providers');
 const CACHE_DIR = path.join(DATA_ROOT, 'data/cache/ats-companies');
@@ -117,7 +117,7 @@ const RESOLVER_FAILURE_LIMIT = 50;
 // mode --resume exists to prevent.
 const CHECKPOINT_PATH = path.join(DATA_ROOT, 'data/cache/ats-full-checkpoint.json');
 const CHECKPOINT_EVERY = 500;
-const DEAD_BOARDS_PATH = path.join(DATA_ROOT, 'data/dead-boards.tsv');
+
 
 export function loadCheckpoint(file = CHECKPOINT_PATH) {
   if (!existsSync(file)) return null;
@@ -176,7 +176,8 @@ function writeCheckpoint(cp) {
 // just like the main checkpoint write above.
 function saveDeadBoardsBestEffort(rows) {
   try {
-    saveDeadBoards(DEAD_BOARDS_PATH, rows);
+    // dead-boards.mjs is DB-backed; its legacy path parameter is ignored.
+    saveDeadBoards(null, rows);
     return true;
   } catch (err) {
     console.error(`\n⚠ dead-board cache write failed (${err.message}) — sweep continues`);
@@ -966,8 +967,23 @@ async function main() {
   // User-layer history is an opt-in additive board directory. It fills vendors
   // that have no public community dataset without changing the tracker schema,
   // but an ordinary reverse scan never reads the user's application history.
+  // Scan history now lives in the SQLite store, so the TSV half of
+  // loadHistoryAtsSeeds is fed from the DB (as serialized text) while the
+  // tracker half keeps its own file read. Dedup across the two sources is
+  // reproduced here with loadHistoryAtsSeeds' own key, tracker seeds first.
   const historySeeds = opts.historySeeds
-    ? loadHistoryAtsSeeds({ dataRoot: DATA_ROOT, scanHistoryPath: SCAN_HISTORY_PATH })
+    ? (() => {
+        const combined = [
+          ...loadHistoryAtsSeeds({ dataRoot: DATA_ROOT, scanHistoryPath: null }),
+          ...parseScanHistoryAtsSeeds(scanHistoryTextFromDb()),
+        ];
+        const unique = new Map();
+        for (const seed of combined) {
+          const key = `${seed.vendor}\t${seed.careersUrl}`;
+          if (!unique.has(key)) unique.set(key, seed);
+        }
+        return [...unique.values()];
+      })()
     : [];
 
   const atsSummary = opts.ats.length ? `ats: ${opts.ats.join(', ')}` : '';
@@ -976,12 +992,12 @@ async function main() {
   const sourcesSummary = [atsSummary, seedsSummary, historySummary].filter(Boolean).join(' | ');
   log(`Reverse ATS scan — ${sourcesSummary} | since ${opts.sinceDays}d${opts.limit < Infinity ? ` | limit ${opts.limit}/ats` : ''}${opts.shuffle ? ' | shuffled' : ''}${opts.includeUndated ? ' | +undated' : ''}${opts.liveness ? ' | liveness' : ''}${opts.dryRun ? ' | DRY RUN' : ''}`);
 
-  // extraTokensFor: a historical scan-history.tsv row records the URL it was
+  // extraTokensFor: a historical scan-history row records the URL it was
   // FIRST seen on, so without this a Workday requisition seen last run under
   // site A's URL wouldn't be recognized when this run only sees it under
   // site B — the plain normalizeUrlForDedup comparison never matches across
   // sites, and only fresh-run offers were reseeded with the provider key
-  // (#3439). `portal` here is scan-history.tsv's recorded `offer.source`, so
+  // (#3439). `portal` here is scan history's recorded `offer.source`, so
   // providerForSource resolves it the same way the checkpoint reseed above
   // does.
   const { seen: seenUrls } = loadSeenUrls({}, {
@@ -1009,7 +1025,7 @@ async function main() {
     locationHints: config?.location_filter,
   };
   // The LOCAL calendar day, not the UTC one. This value lands in
-  // scan-history.tsv's first_seen, which shouldDedupScanHistoryRow measures the
+  // scan history's first_seen, which shouldDedupScanHistoryRow measures the
   // recheck window against using the local day (#3070). Stamping it in UTC put
   // the two sides of that comparison on different clocks.
   const date = localToday();
@@ -1206,7 +1222,8 @@ async function main() {
 
     let errors = 0;
     let deadBoardsSkipped = 0;
-    const deadBoards = loadDeadBoards(DEAD_BOARDS_PATH);
+    // dead-boards.mjs is DB-backed; its legacy path parameter is ignored.
+    const deadBoards = loadDeadBoards();
     let consecutiveResolverFailures = 0;
     let resolverOutage = false;
     // The board whose failure tripped the breaker. `name` is only the ATS
@@ -1447,15 +1464,12 @@ async function main() {
   // Persist (unless dry-run, or nothing to save).
   let saved = false;
   if (offers.length && !opts.dryRun) {
-    // appendToPipeline assumes the file exists (onboarding creates it) — cover fresh setups.
-    if (!existsSync(PIPELINE_PATH)) {
-      mkdirSync(path.dirname(PIPELINE_PATH), { recursive: true });
-      writeFileSync(PIPELINE_PATH, '# Pipeline\n\n## Pendientes\n', 'utf-8');
-    }
+    // appendToPipeline/appendToScanHistory write the SQLite store, which
+    // core/db.mjs creates on first open — no fresh-setup skeleton needed.
     await appendToPipeline(offers);
     await appendToScanHistory(offers, date);
     saved = true;
-    log(`\nResults saved to ${PIPELINE_PATH} and data/scan-history.tsv`);
+    log(`\nResults saved to ${resolveDbPath()}`);
 
     if (opts.mdOut) {
       try {

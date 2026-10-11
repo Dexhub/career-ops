@@ -714,7 +714,7 @@ async function main() {
     if (dryRun) {
       console.log('\n(dry run — not saved)');
     } else {
-      console.log('\nSaved to data/pipeline.md');
+      console.log('\nSaved to the pipeline (data/career-ops.db)');
     }
   }
 

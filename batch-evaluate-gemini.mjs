@@ -9,7 +9,7 @@
  *  - Native Google Generative AI SDK calls (no subprocess overhead)
  *  - Strict Concurrency limit (p-limit style)
  *  - Exponential Backoff for 429/503 API limits
- *  - Inline updates of data/pipeline.md (marks [ ] as [x])
+ *  - Inline updates of the pipeline store (marks [ ] as [x])
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
@@ -33,6 +33,7 @@ try {
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { listPipelineItems, updatePipelineItem } from './core/db.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
@@ -63,7 +64,6 @@ export const PATHS = {
   // reports success, the tracker gains no rows, and the evidence sits in a
   // directory the user has no reason to open.
   trackerAdditions: join(DATA_ROOT, 'batch', 'tracker-additions'),
-  pipeline:    join(DATA_ROOT, 'data', 'pipeline.md')
 };
 
 let apiKey;
@@ -375,39 +375,35 @@ async function main() {
   let CONCURRENCY = concArg ? parseInt(concArg.split("=")[1], 10) : 2; // outdate-bot
   if (isNaN(CONCURRENCY) || CONCURRENCY < 1) CONCURRENCY = 2;
 
-  if (!existsSync(PATHS.pipeline)) {
-    console.log("No pipeline.md found.");
-    return;
-  }
-
-  const pipelineLines = readFileSync(PATHS.pipeline, 'utf-8').split('\n');
-  const pendingIndices = pipelineLines
-    .map((l, i) => l.trim().startsWith('- [ ]') ? i : -1)
-    .filter(i => i !== -1);
+  // Unchecked pipeline rows from the database. `raw` holds the original
+  // `- [ ] url | company | role` line, which processOffer still parses, so the
+  // line-level contract (and its tests) is unchanged.
+  const pendingItems = listPipelineItems({ checked: 0 })
+    .filter(item => String(item.raw ?? '').trim().startsWith('- [ ]'));
 
   if (limitCount > 0) {
-    pendingIndices.splice(limitCount);
+    pendingItems.splice(limitCount);
   }
-  if (pendingIndices.length === 0) {
-    console.log("No pending [-] offers found in pipeline.md.");
+  if (pendingItems.length === 0) {
+    console.log("No pending [-] offers found in the pipeline.");
     return;
   }
-  console.log(`Found ${pendingIndices.length} pending offers.`);
+  console.log(`Found ${pendingItems.length} pending offers.`);
   const browser = await chromium.launch({ headless: true });
-  
-  const results = await processPipelineBatch(pendingIndices, CONCURRENCY, (lineIdx, runIdx) => {
-    return processOffer(browser, pipelineLines[lineIdx], runIdx);
+
+  const results = await processPipelineBatch([...pendingItems.keys()], CONCURRENCY, (itemIdx, runIdx) => {
+    return processOffer(browser, pendingItems[itemIdx].raw, runIdx);
   });
 
   await browser.close();
 
-  // Rewrite pipeline.md inline
-  for (const [lineIdx, res] of results.entries()) {
+  // Persist the rewritten lines — the DB equivalent of the old inline
+  // pipeline.md rewrite: flip checked and store the updated raw line.
+  for (const [itemIdx, res] of results.entries()) {
     if (res.processed) {
-      pipelineLines[lineIdx] = res.line;
+      updatePipelineItem(pendingItems[itemIdx].url, { checked: 1, raw: res.line });
     }
   }
-  writeFileSync(PATHS.pipeline, pipelineLines.join('\n'), 'utf-8');
 
   console.log(`\n🎉 Batch processing complete! Merging tracker additions...`);
   try {

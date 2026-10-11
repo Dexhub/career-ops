@@ -30,12 +30,15 @@ import { loadRegistry, findInRegistry, classifySource, sourceBadge, successorFor
 import { readLock, writeLockEntry, removeLockEntry, hashPluginTree, consentSurface } from './plugins/_lock.mjs';
 import { installFromRepo, scaffoldNew, parseRepoArg } from './plugin-install.mjs';
 import { appendToPipeline } from './scan.mjs';
+import { listPipelineItems } from './core/db.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
 const APPLICATIONS_PATH = path.join(DATA_ROOT, 'data', 'applications.md');
+// Retired as a data store (pipeline rows live in the SQLite DB via core/db.mjs);
+// kept only because _testPaths exports it as a data-root anchoring probe.
 const PIPELINE_PATH = path.join(DATA_ROOT, 'data', 'pipeline.md');
 
 // A misbehaving plugin's stray rejection should be attributed and not silently
@@ -75,25 +78,18 @@ function parseMarkdownTable(md) {
   return rows;
 }
 
-/** URLs already present in data/pipeline.md, for additive de-duplication. */
+/** URLs already present in the pipeline store, for additive de-duplication. */
 function existingPipelineUrls() {
-  const urls = new Set();
-  if (!existsSync(PIPELINE_PATH)) return urls;
-  const text = readFileSync(PIPELINE_PATH, 'utf8');
-  for (const m of text.matchAll(/- \[[ xX]\]\s+(\S+)/g)) urls.add(m[1]);
-  return urls;
+  return new Set(listPipelineItems().map(item => item.url));
 }
 
 /** Frozen, read-only view of the user's tracker for `export` hooks. No file handle. */
 function buildSnapshot() {
   const applications = existsSync(APPLICATIONS_PATH)
     ? parseMarkdownTable(readFileSync(APPLICATIONS_PATH, 'utf8')) : [];
-  // pipeline.md uses a checklist format (`- [ ] url`), not a markdown table —
-  // parseMarkdownTable would always return [] here.
-  const pipeline = existsSync(PIPELINE_PATH)
-    ? [...readFileSync(PIPELINE_PATH, 'utf8').matchAll(/- \[[ xX]\]\s+(\S+)/g)]
-        .map(m => Object.freeze({ url: m[1] }))
-    : [];
+  // Pipeline rows come from the SQLite store (all sections, checked or not —
+  // the same set the old checklist regex over pipeline.md matched).
+  const pipeline = listPipelineItems().map(item => Object.freeze({ url: item.url }));
   return Object.freeze({
     applications: Object.freeze(applications),
     pipeline: Object.freeze(pipeline),
@@ -175,7 +171,7 @@ async function cmdRun(args) {
     const jobs = found.filter(j => !known.has(j.url) && !seen.has(j.url) && seen.add(j.url));
     console.log(`${id} ${hook}: ${found.length} found, ${jobs.length} new.`);
     if (dryRun) { jobs.slice(0, 20).forEach(j => console.log(`  • ${j.title} — ${j.url}`)); console.log('(--dry-run: pipeline not written)'); return; }
-    if (jobs.length) { await appendToPipeline(jobs); console.log(`→ Appended ${jobs.length} to data/pipeline.md. Run /career-ops pipeline to evaluate.`); }
+    if (jobs.length) { await appendToPipeline(jobs); console.log(`→ Appended ${jobs.length} to the pipeline. Run /career-ops pipeline to evaluate.`); }
     return;
   }
 
