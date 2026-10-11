@@ -3,12 +3,13 @@
 /**
  * mark-pdf-ready.mjs — canonical CLI to flip a tracker row's PDF column ❌→✅ (#2172).
  *
- * data/applications.md is a shared surface with multiple readers and writers.
- * Before this script, the PDF column had NO canonical writer at all — every
- * caller (the web dashboard's "pdf" mode) hand-edited the markdown table via
- * an LLM prompt instruction. This gives it the same one-canonical-write-path
- * treatment set-status.mjs already gives the Status column: same lock, same
- * atomic write, same shared tracker-parse/tracker-utils primitives.
+ * The applications table in data/career-ops.db (core/db.mjs) is a shared
+ * surface with multiple readers and writers. Before this script, the PDF
+ * column had NO canonical writer at all — every caller (the web dashboard's
+ * "pdf" mode) hand-edited the tracker via an LLM prompt instruction. This
+ * gives it the same one-canonical-write-path treatment set-status.mjs already
+ * gives the Status column: same db.tx() write path, same shared
+ * tracker-parse/tracker-utils primitives.
  *
  * Usage:
  *   node mark-pdf-ready.mjs <report#> [--dry-run] [--json]
@@ -23,30 +24,21 @@
  * Idempotent: a row whose PDF cell is already ✅ is a no-op success (changed:
  * false), so a retried render never fails this step.
  *
- * The read-modify-write runs under the shared tracker lock (tracker-utils.mjs,
- * same lock as merge-tracker.mjs / set-status.mjs) and the file is replaced
- * atomically. Only the PDF cell of the matched row changes; every other byte
- * of the tracker round-trips untouched.
+ * The read-modify-write runs inside one db.tx() transaction (SQLite serializes
+ * writers; the old shared tracker directory lock is retired). Only the PDF
+ * column of the matched row changes; every other column is untouched.
  *
- * Exit codes: 0 success (including no-op re-runs) · 1 usage error, no PDF
- * column, or non-retryable lock/write failure · 2 row not found, missing
- * tracker, or unreadable tracker · 3 ambiguous match (2+ rows link the same
- * report number) · 4 tracker lock timeout (busy — retry later).
+ * Exit codes: 0 success (including no-op re-runs) · 1 usage error or
+ * non-retryable write failure · 2 row not found or missing tracker DB ·
+ * 3 ambiguous match (2+ rows link the same report number) ·
+ * 4 reserved (was tracker lock timeout — the DB needs no lock).
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { extractTrackerReportNumbers, resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import {
-  rebuildRow, resolveTrackerPath, writeFileAtomic, CLI_EXIT, makeCliFailWith, acquireTrackerLockForCli,
-} from './tracker-utils.mjs';
-import { getCareerOpsRoot } from './path-resolver.mjs';
+import { existsSync } from 'fs';
+import { extractTrackerReportNumbers } from './tracker-parse.mjs';
+import { CLI_EXIT, makeCliFailWith } from './tracker-utils.mjs';
+import * as db from './core/db.mjs';
 
-// The USER's data root, not this file's directory — same defect, same fix as
-// set-status.mjs above it in this change.
-const DATA_ROOT = getCareerOpsRoot();
-
-// LOCK_TIMEOUT is not destructured here — that exit path is raised inside
-// acquireTrackerLockForCli() itself (tracker-utils.mjs), via CLI_EXIT.LOCK_TIMEOUT.
 const { OK: EXIT_OK, USAGE: EXIT_USAGE, NOT_FOUND: EXIT_NOT_FOUND, AMBIGUOUS: EXIT_AMBIGUOUS } = CLI_EXIT;
 
 const USAGE = `Usage: node mark-pdf-ready.mjs <report#> [--dry-run] [--json]
@@ -103,35 +95,14 @@ const targetReportNum = parseInt(reportSelector, 10);
 
 // ── tracker access ───────────────────────────────────────────────
 
-const APPS_FILE = resolveTrackerPath(DATA_ROOT);
-if (!existsSync(APPS_FILE)) {
-  failWith(EXIT_NOT_FOUND, 'no-tracker', `No tracker found at ${APPS_FILE}`);
+const DB_FILE = db.resolveDbPath();
+if (!existsSync(DB_FILE)) {
+  failWith(EXIT_NOT_FOUND, 'no-tracker', `No tracker found at ${DB_FILE}`);
 }
 
-// Shared with set-status.mjs (tracker-utils.mjs): dry-run never writes, so it
-// must not hold the exclusive lock — a read-only preview should not block
-// (or be blocked by) merge-tracker or another writer.
-const lock = await acquireTrackerLockForCli(APPS_FILE, { dryRun: flags.dryRun, failWith });
-
-let content;
-try {
-  content = readFileSync(APPS_FILE, 'utf-8');
-} catch (err) {
-  failWith(EXIT_NOT_FOUND, 'read-failure', `Cannot read tracker at ${APPS_FILE}: ${err.message}`);
-}
-const lines = content.split('\n');
-const colmap = resolveColumns(lines);
-if (colmap.pdf == null) {
-  failWith(EXIT_USAGE, 'no-pdf-column', 'Tracker has no PDF column — cannot mark a PDF ready');
-}
-
-const rows = [];
-for (let i = 0; i < lines.length; i++) {
-  const row = parseTrackerRow(lines[i], colmap);
-  if (row) rows.push({ ...row, lineIdx: i });
-}
+const rows = db.listApplications();
 if (rows.length === 0) {
-  failWith(EXIT_NOT_FOUND, 'empty-tracker', `Tracker at ${APPS_FILE} has no data rows`);
+  failWith(EXIT_NOT_FOUND, 'empty-tracker', `Tracker at ${DB_FILE} has no data rows`);
 }
 
 const matches = rows.filter(r => extractTrackerReportNumbers(r.report).includes(targetReportNum));
@@ -151,26 +122,23 @@ if (matches.length > 1) {
 }
 const target = matches[0];
 
-// ── locked read-modify-write ─────────────────────────────────────
+// ── read-modify-write (SQLite serializes writers; db.tx below) ───
 
-const alreadyReady = target.pdf.trim() === '✅';
+const alreadyReady = (target.pdf ?? '').trim() === '✅';
 // Matches set-status.mjs's contract: `changed` reflects whether a write WOULD
 // happen, computed independent of --dry-run, so a preview call can tell "would
 // mark" apart from "already ✅" without actually writing.
 const changed = !alreadyReady;
 
 if (changed && !flags.dryRun) {
-  const parts = lines[target.lineIdx].split('|').map(s => s.trim());
-  while (parts.length <= colmap.pdf) parts.push('');
-  parts[colmap.pdf] = '✅';
-  lines[target.lineIdx] = rebuildRow(parts);
   try {
-    writeFileAtomic(APPS_FILE, lines.join('\n'));
+    db.tx(() => {
+      db.updateApplication(target.num, { pdf: '✅' });
+    });
   } catch (err) {
-    failWith(EXIT_USAGE, 'write-failure', `Cannot write tracker at ${APPS_FILE}: ${err.message}`);
+    failWith(EXIT_USAGE, 'write-failure', `Cannot write tracker at ${DB_FILE}: ${err.message}`);
   }
 }
-lock?.release();
 
 // ── report ───────────────────────────────────────────────────────
 
@@ -181,7 +149,7 @@ const result = {
   role: target.role,
   reportNum: targetReportNum,
   ...(flags.dryRun ? { dryRun: true } : {}),
-  tracker: APPS_FILE,
+  tracker: DB_FILE,
 };
 
 if (flags.json) {

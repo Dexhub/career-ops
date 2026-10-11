@@ -4,14 +4,18 @@
  *
  * verify-pipeline.mjs (Check 3) reports `Report not found: ...` for every row
  * whose Report cell links to a file that is not on disk, but it is read-only.
- * This script is the explicit, previewed, backed-up repair: it rewrites ONLY
- * that one cell to `—` (the tracker's existing "no report" value). Every other
- * cell, the row order, the cell padding and the file's line endings (LF/CRLF)
- * are left byte-for-byte as they were; nothing is re-sorted or re-formatted.
+ * This script is the explicit, previewed repair: it rewrites ONLY that one
+ * column to `—` (the tracker's existing "no report" value) in the applications
+ * table of data/career-ops.db (core/db.mjs). Every other column of the row is
+ * left exactly as it was; nothing is re-sorted or re-formatted. All rewrites
+ * commit in one db.tx() transaction, which replaces the old backup-then-
+ * atomic-replace dance over data/applications.md (retired store).
  *
  * "Broken" is decided by findDeadReportLink() in tracker-utils.mjs, the same
  * function verify-pipeline and merge-tracker use, so the tools always agree on
  * which rows are broken. It does not guess WHY a report is missing (#4748).
+ * Links are inspected from the DB's directory (data/, where markdown links
+ * were anchored, #760) and from the data root, same as merge-tracker.mjs.
  *
  * A Report cell that is anything other than exactly one markdown link (two
  * links, link plus text) is never rewritten: it is listed under "skipped,
@@ -20,11 +24,11 @@
  * Run: node fix-report-links.mjs [--dry-run]
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { dirname } from 'path';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
-import { openTrackerTransaction, findDeadReportLink } from './tracker-utils.mjs';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
+import { existsSync } from 'fs';
+import { dirname, basename } from 'path';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { findDeadReportLink } from './tracker-utils.mjs';
+import * as db from './core/db.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -34,76 +38,62 @@ const NO_REPORT = '—';
 const SINGLE_LINK_RE = /^\[[^\]]*\]\([^)]+\)$/;
 
 /**
- * Scan tracker lines and rewrite dead single-link Report cells to `—`.
- * Pure: touches no files. Exported so tests can call it directly.
+ * Scan application rows and collect dead single-link Report cells to rewrite.
+ * Pure: touches neither files nor the DB. Exported so tests can call it
+ * directly (it used to take tracker lines; it now takes application rows).
  *
- * @param {string[]} lines - Tracker content split on '\n' (a CR stays on its line).
- * @param {string} trackerDir - Directory containing the tracker file.
+ * @param {object[]} apps - Application rows (db.listApplications() shape).
+ * @param {string} trackerDir - Directory report links resolve from (data/).
  * @param {string} dataRoot - Data root.
  * @param {{stat?: Function}} [options] - Test seam for filesystem inspection.
- * @returns {{lines: string[], changed: object[], skipped: object[], inspectionErrors: object[], hasReportColumn: boolean}}
+ * @returns {{changed: object[], skipped: object[], inspectionErrors: object[]}}
  */
-export function fixReportLinks(lines, trackerDir, dataRoot, options = {}) {
-  const COLS = resolveColumns(lines);
-  if (COLS.report == null) return { lines, changed: [], skipped: [], inspectionErrors: [], hasReportColumn: false };
-
-  const out = lines.slice();
+export function fixReportLinks(apps, trackerDir, dataRoot, options = {}) {
   const changed = [];
   const skipped = [];
   const inspectionErrors = [];
-  for (let i = 0; i < lines.length; i++) {
-    const row = parseTrackerRow(lines[i], COLS);
-    if (!row) continue; // header, separator, non-row, or a row missing cells
+  for (const app of apps) {
+    const reportCell = String(app.report ?? '');
 
-    const firstLink = String(row.report).match(/\]\(([^)]+)\)/)?.[1] ?? null;
+    const firstLink = reportCell.match(/\]\(([^)]+)\)/)?.[1] ?? null;
     // Any Report cell that contains a link but is not exactly one bare link is
     // ambiguous by contract. Surface it for manual review before inspecting the
     // first target: otherwise a live first link hides a dead later link.
-    if (firstLink !== null && !SINGLE_LINK_RE.test(row.report)) {
+    if (firstLink !== null && !SINGLE_LINK_RE.test(reportCell)) {
       skipped.push({
-        num: row.num, company: row.company, role: row.role,
-        link: firstLink, cell: row.report, line: i + 1,
+        num: app.num, company: app.company, role: app.role,
+        link: firstLink, cell: reportCell,
       });
       continue;
     }
 
     let inspectionFailure = null;
-    const link = findDeadReportLink(row.report, trackerDir, dataRoot, {
+    const link = findDeadReportLink(reportCell, trackerDir, dataRoot, {
       stat: options.stat,
       onInspectionError: (failure) => { inspectionFailure = failure; },
     });
     if (inspectionFailure) {
       inspectionErrors.push({
-        num: row.num, company: row.company, role: row.role, cell: row.report,
-        line: i + 1, ...inspectionFailure,
+        num: app.num, company: app.company, role: app.role, cell: reportCell,
+        ...inspectionFailure,
       });
       continue;
     }
     if (link === null) continue; // no link (—, N/A, empty) or it resolves
 
-    const info = { num: row.num, company: row.company, role: row.role, link, cell: row.report, line: i + 1 };
-
-    // Replace just this cell in the raw (untrimmed) split, keeping its padding,
-    // so no other byte of the line moves. parseTrackerRow trims the same split.
-    const parts = lines[i].split('|');
-    const raw = parts[COLS.report];
-    const lead = raw.match(/^\s*/)[0];
-    const trail = raw.match(/\s*$/)[0];
-    parts[COLS.report] = `${lead}${NO_REPORT}${trail}`;
-    out[i] = parts.join('|');
-    changed.push(info);
+    changed.push({ num: app.num, company: app.company, role: app.role, link, cell: reportCell });
   }
-  return { lines: out, changed, skipped, inspectionErrors, hasReportColumn: true };
+  return { changed, skipped, inspectionErrors };
 }
 
 const KNOWN_FLAGS = ['--help', '-h', '--dry-run'];
 const USAGE = `Usage: node fix-report-links.mjs [options]
 
   Rewrites the Report cell of tracker rows whose markdown link points at a
-  missing file to "${NO_REPORT}". Nothing else in the file changes.
+  missing file to "${NO_REPORT}". Nothing else in the row changes.
 
   Options:
-  --dry-run        List the rows that would change without writing applications.md
+  --dry-run        List the rows that would change without writing the tracker DB
   -h, --help       Show this help and exit
   `;
 
@@ -121,33 +111,17 @@ validateFlags(args, KNOWN_FLAGS, USAGE);
 
 const DRY_RUN = args.includes('--dry-run');
 const CAREER_OPS = getCareerOpsRoot();
-const APPS_FILE = resolveTrackerPath(CAREER_OPS);
+const DB_FILE = db.resolveDbPath();
+// Report links were markdown links relative to data/applications.md, i.e. the
+// data/ directory the DB also lives in. Same anchoring as merge-tracker.mjs.
+const TRACKER_DIR = dirname(DB_FILE);
 
-if (!existsSync(APPS_FILE)) {
-  console.log('No applications.md found. Nothing to fix.');
+if (!existsSync(DB_FILE)) {
+  console.log('No tracker database found. Nothing to fix.');
   process.exit(0);
 }
 
-let trackerTransaction = null;
-if (!DRY_RUN) {
-  try {
-    trackerTransaction = await openTrackerTransaction(APPS_FILE);
-  } catch (err) {
-    console.error(`Cannot acquire tracker lock: ${err.message}`);
-    process.exit(1);
-  }
-  process.once('exit', () => {
-    try { trackerTransaction.close(); } catch {}
-  });
-}
-try {
-const content = trackerTransaction ? trackerTransaction.read() : readFileSync(APPS_FILE, 'utf-8');
-const result = fixReportLinks(content.split('\n'), dirname(APPS_FILE), CAREER_OPS);
-
-if (!result.hasReportColumn) {
-  console.log('The tracker has no Report column. Nothing to fix.');
-  process.exit(0);
-}
+const result = fixReportLinks(db.listApplications(), TRACKER_DIR, CAREER_OPS);
 
 for (const c of result.changed) {
   console.log(`${DRY_RUN ? 'Would rewrite' : 'Rewrote'} ${describe(c)}`);
@@ -156,7 +130,7 @@ for (const c of result.changed) {
 if (result.skipped.length > 0) {
   console.log(`\n⚠️  ${result.skipped.length} row(s) skipped, please check by hand (Report cell is not a single link):`);
   for (const s of result.skipped) {
-    console.log(`  #${s.num} (line ${s.line}) ${s.company} — ${s.role}: "${s.cell}"`);
+    console.log(`  #${s.num} ${s.company} — ${s.role}: "${s.cell}"`);
   }
 }
 
@@ -164,7 +138,7 @@ if (result.inspectionErrors.length > 0) {
   console.log(`\n⚠️  ${result.inspectionErrors.length} row(s) preserved because the report target could not be inspected:`);
   for (const item of result.inspectionErrors) {
     const details = item.errors.map(({ path, error }) => `${path} (${error.code ?? error.message})`).join('; ');
-    console.log(`  #${item.num} (line ${item.line}) ${item.company} — ${item.role}: ${details}`);
+    console.log(`  #${item.num} ${item.company} — ${item.role}: ${details}`);
   }
 }
 
@@ -173,18 +147,15 @@ console.log(`\n📊 ${result.changed.length} dead report link(s) ${DRY_RUN ? 'fo
 if (DRY_RUN) {
   console.log('(dry-run — no changes written)');
 } else if (result.changed.length > 0) {
-  // Backup first. Written from the bytes this run parsed (read inside the
-  // lock), next to the transaction's canonical path: copying APPS_FILE again
-  // would follow a CAREER_OPS_TRACKER symlink and put the .bak beside the
-  // link, or capture an edit made by a writer that bypasses the lock.
-  const backupPath = `${trackerTransaction.path}.bak`;
-  writeFileSync(backupPath, content);
-  trackerTransaction.replace(result.lines.join('\n'));
-  console.log(`✅ Written to ${trackerTransaction.path} (backup: ${backupPath})`);
+  // One transaction for all rewrites: either every dead link listed above is
+  // fixed or none is. SQLite's atomicity replaces the old .bak backup.
+  db.tx(() => {
+    for (const c of result.changed) {
+      db.updateApplication(c.num, { report: NO_REPORT });
+    }
+  });
+  console.log(`✅ Written to ${basename(DB_FILE)}`);
 } else {
   console.log('✅ No changes needed');
-}
-} finally {
-  trackerTransaction?.close();
 }
 } // end IS_CLI

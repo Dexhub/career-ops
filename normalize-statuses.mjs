@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * normalize-statuses.mjs — Clean non-canonical states in applications.md
+ * normalize-statuses.mjs — Clean non-canonical states in the applications table
  *
  * Maps all non-canonical statuses to canonical ones per states.yml:
  *   Evaluada, Aplicado, Respondido, Entrevista, Oferta, Rechazado, Descartado, NO APLICAR
@@ -8,18 +8,20 @@
  * Also strips markdown bold (**) and dates from the status field,
  * moving DUPLICADO info to the notes column.
  *
+ * Statuses live in the applications table of data/career-ops.db (core/db.mjs);
+ * the retired data/applications.md store is no longer read or written. All
+ * updates commit in one db.tx() transaction, which replaces the old
+ * backup-then-atomic-replace dance (and the tracker directory lock).
+ *
  * Run: node career-ops/normalize-statuses.mjs [--dry-run]
  */
 
-import { readFileSync, copyFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync } from 'fs';
+import { join, dirname, basename } from 'path';
 import { fileURLToPath } from 'url';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
-import {
-  openTrackerTransaction, rebuildRow,
-  loadCanonicalStates, resolveCanonicalState,
-} from './tracker-utils.mjs';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { loadCanonicalStates, resolveCanonicalState } from './tracker-utils.mjs';
+import * as db from './core/db.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -30,10 +32,6 @@ import { isMainModule } from './lib/is-main-module.mjs';
 // turned that into a silent "everything is unknown" (#3500).
 const CODEBASE_ROOT = dirname(fileURLToPath(import.meta.url));
 const CAREER_OPS = getCareerOpsRoot();
-const APPS_FILE = resolveTrackerPath(CAREER_OPS);
-
-// Ensure required directories exist (fresh setup)
-mkdirSync(join(CAREER_OPS, 'data'), { recursive: true });
 
 // Canonical status mapping
 let statesCache = null;
@@ -125,7 +123,7 @@ const KNOWN_FLAGS = ['--help', '-h', '--dry-run'];
 const USAGE = `Usage: node normalize-statuses.mjs [options]
 
   Options:
-  --dry-run        Report what would change without writing applications.md
+  --dry-run        Report what would change without writing the tracker DB
   -h, --help       Show this help and exit
   `;
 
@@ -141,51 +139,26 @@ const args = process.argv.slice(2);
 // Unrecognized flags exit 1 naming the flag; --help/-h print USAGE and exit 0.
 validateFlags(args, KNOWN_FLAGS, USAGE);
 
-// Read applications.md
-if (!existsSync(APPS_FILE)) {
-  console.log('No applications.md found. Nothing to normalize.');
+// Read the applications table
+const DB_FILE = db.resolveDbPath();
+if (!existsSync(DB_FILE)) {
+  console.log('No tracker database found. Nothing to normalize.');
   process.exit(0);
 }
 
 const DRY_RUN = process.argv.includes('--dry-run');
-let trackerTransaction = null;
-if (!DRY_RUN) {
-  try {
-    trackerTransaction = await openTrackerTransaction(APPS_FILE);
-  } catch (err) {
-    console.error(`Cannot acquire tracker lock: ${err.message}`);
-    process.exit(1);
-  }
-  process.once('exit', () => {
-    try { trackerTransaction.close(); } catch {}
-  });
-}
-try {
-const content = trackerTransaction ? trackerTransaction.read() : readFileSync(APPS_FILE, 'utf-8');
-const lines = content.split('\n');
 
 let changes = 0;
 let unknowns = [];
+const patches = []; // [{ num, patch }] applied in one tx after the scan
 
-// Map columns by header name (tracker-parse.mjs, #954/#1596). Fixed indices
-// assumed the original 9-column layout, so a customized tracker — an inserted
-// Location or Via column — shifted every field one to the left: the Score cell
-// was normalized as if it were the status and overwritten, while the real
-// status was left alone and reported as unknown (#1955).
-const COLS = resolveColumns(lines);
-
-for (let i = 0; i < lines.length; i++) {
-  const line = lines[i];
-  const row = parseTrackerRow(line, COLS);
-  if (!row) continue; // header, separator, non-row, or a row missing cells
-
-  const parts = line.split('|').map(s => s.trim());
-  const num = row.num;
-  const rawStatus = row.status;
+for (const app of db.listApplications()) {
+  const num = app.num;
+  const rawStatus = app.status;
   const result = normalizeStatus(rawStatus);
 
   if (result.unknown) {
-    unknowns.push({ num, rawStatus, line: i + 1 });
+    unknowns.push({ num, rawStatus });
     continue;
   }
 
@@ -193,26 +166,22 @@ for (let i = 0; i < lines.length; i++) {
 
   // Apply change
   const oldStatus = rawStatus;
-  parts[COLS.status] = result.status;
+  const patch = { status: result.status };
 
-  // Move DUPLICADO info to notes if needed. A layout without a Notes column
-  // has nowhere to put it — dropping the provenance beats appending a cell the
-  // table has no header for.
-  if (result.moveToNotes && COLS.notes != null) {
-    const existing = parts[COLS.notes] || '';
+  // Move DUPLICADO info to notes if needed.
+  if (result.moveToNotes) {
+    const existing = app.notes || '';
     if (!existing.includes(result.moveToNotes)) {
-      parts[COLS.notes] = result.moveToNotes + (existing ? '. ' + existing : '');
+      patch.notes = result.moveToNotes + (existing ? '. ' + existing : '');
     }
   }
 
   // Also strip bold from score field
-  if (parts[COLS.score]) {
-    parts[COLS.score] = parts[COLS.score].replace(/\*\*/g, '');
+  if (app.score && app.score.includes('**')) {
+    patch.score = app.score.replace(/\*\*/g, '');
   }
 
-  // Reconstruct line
-  const newLine = rebuildRow(parts);
-  lines[i] = newLine;
+  patches.push({ num, patch });
   changes++;
 
   console.log(`#${num}: "${oldStatus}" → "${result.status}"`);
@@ -221,24 +190,21 @@ for (let i = 0; i < lines.length; i++) {
 if (unknowns.length > 0) {
   console.log(`\n⚠️  ${unknowns.length} unknown statuses:`);
   for (const u of unknowns) {
-    console.log(`  #${u.num} (line ${u.line}): "${u.rawStatus}"`);
+    console.log(`  #${u.num}: "${u.rawStatus}"`);
   }
 }
 
 console.log(`\n📊 ${changes} statuses normalized`);
 
 if (!DRY_RUN && changes > 0) {
-  // Backup first
-  const backupPath = `${APPS_FILE}.bak`;
-  copyFileSync(APPS_FILE, backupPath);
-  trackerTransaction.replace(lines.join('\n'));
-  console.log(`✅ Written to ${APPS_FILE} (backup: ${backupPath})`);
+  // One transaction for every row: all statuses normalize or none do.
+  db.tx(() => {
+    for (const { num, patch } of patches) db.updateApplication(num, patch);
+  });
+  console.log(`✅ Written to ${basename(DB_FILE)}`);
 } else if (DRY_RUN) {
   console.log('(dry-run — no changes written)');
 } else {
   console.log('✅ No changes needed');
-}
-} finally {
-  trackerTransaction?.close();
 }
 } // end IS_CLI

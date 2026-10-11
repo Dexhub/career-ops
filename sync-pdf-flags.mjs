@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 
 /**
- * sync-pdf-flags.mjs — Reconciles the tracker PDF column against data/pdf-index.tsv.
+ * sync-pdf-flags.mjs — Reconciles the tracker PDF column against the pdf_index table.
  *
  * When a PDF is generated AFTER the initial evaluation, the tracker's PDF column
- * might still show ❌ (or '—'). This script reads the canonical pdf manifest and
- * upgrades matching tracker rows to ✅ using reportNum as the join key.
+ * might still show ❌ (or '—'). This script reads the canonical pdf manifest
+ * (the pdf_index table in data/career-ops.db) and upgrades matching tracker
+ * rows to ✅ using reportNum as the join key. Cover-letter rows and rows with
+ * no pdf path never mark a report ready — same reading of the manifest as
+ * merge-tracker.mjs, so the two tools always agree on what counts.
  *
- * Normal sync runs under the shared tracker lock and replaces the file atomically.
+ * Normal sync commits all flag updates in one db.tx() transaction, which
+ * replaces the old tracker lock + atomic file replace over the retired
+ * data/applications.md and data/pdf-index.tsv stores.
  *
  * Prune mode (--prune) drops manifest rows whose PDF file is no longer on disk.
  * A deleted artifact otherwise keeps the manifest row alive, which causes the next
@@ -20,17 +25,13 @@
  *   node sync-pdf-flags.mjs --prune [--write] [--json]
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { join, resolve, dirname } from 'path';
-import { extractTrackerReportNumbers, resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import { rebuildRow, resolveTrackerPath, resolvePdfIndexPath, openTrackerTransaction, writeFileAtomic, resolveWorkspaceRoot, pathIsInsideCanonical } from './tracker-utils.mjs';
-import { getCareerOpsRoot } from './path-resolver.mjs';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
+import { extractTrackerReportNumbers } from './tracker-parse.mjs';
+import { resolveWorkspaceRoot, pathIsInsideCanonical } from './tracker-utils.mjs';
+import * as db from './core/db.mjs';
 
-const DATA_ROOT = getCareerOpsRoot();
-const APPS_FILE = resolveTrackerPath(DATA_ROOT);
-// Derived from the TRACKER, not from this script's location, so a redirected
-// CAREER_OPS_TRACKER moves the whole workspace together (#2471).
-const PDF_MANIFEST = resolvePdfIndexPath(APPS_FILE);
+const DB_FILE = db.resolveDbPath();
 
 const flags = { dryRun: false, json: false, prune: false, write: false };
 const unknownOptions = [];
@@ -59,9 +60,9 @@ if (unknownOptions.length > 0) {
   process.exit(1);
 }
 
-if (!existsSync(APPS_FILE)) {
-  if (flags.json) console.log(JSON.stringify({ error: `No tracker found at ${APPS_FILE}`, code: 'no-tracker' }));
-  else console.error(`❌ No tracker found at ${APPS_FILE}`);
+if (!existsSync(DB_FILE)) {
+  if (flags.json) console.log(JSON.stringify({ error: `No tracker found at ${DB_FILE}`, code: 'no-tracker' }));
+  else console.error(`❌ No tracker found at ${DB_FILE}`);
   process.exit(2);
 }
 
@@ -72,81 +73,55 @@ if (!existsSync(APPS_FILE)) {
 // #3887 introduces kind-awareness; this half is scoped to the manifest only.
 // ---------------------------------------------------------------------------
 if (flags.prune) {
-  if (!existsSync(PDF_MANIFEST)) {
-    const result = { pruned: 0, kept: 0, dryRun: !flags.write };
-    if (flags.json) console.log(JSON.stringify(result));
-    else console.log('\n📊 Summary: manifest does not exist — nothing to prune');
-    process.exit(0);
-  }
-
-  let rawContent;
-  try {
-    rawContent = readFileSync(PDF_MANIFEST, 'utf-8');
-  } catch (err) {
-    if (flags.json) {
-      console.log(JSON.stringify({ error: `Cannot read PDF manifest: ${err.message}`, code: 'manifest-read-error' }));
-    } else {
-      console.error(`❌ Cannot read PDF manifest: ${err.message}`);
-    }
-    process.exit(2);
-  }
+  const entries = db.listPdfIndex();
 
   // The workspace root is needed to resolve the workspace-relative pdf paths
   // stored in the manifest (e.g. "output/042-acme-cv.pdf").
-  const workspaceRoot = resolveWorkspaceRoot(APPS_FILE);
+  const workspaceRoot = resolveWorkspaceRoot(DB_FILE);
   const outputDir = resolve(workspaceRoot, 'output');
 
-  const inputLines = rawContent.split('\n');
-  const keptLines = [];
   const prunedRows = [];
 
-  for (const line of inputLines) {
-    // Preserve comment lines and blank lines verbatim.
-    if (!line.trim() || line.startsWith('#')) {
-      keptLines.push(line);
-      continue;
-    }
-
-    const parts = line.split('\t');
-    const relPdf = parts[1]?.trim();
+  for (const entry of entries) {
+    const relPdf = (entry.pdf ?? '').trim();
 
     if (!relPdf) {
       // Malformed row (no pdf column) — keep it; not our business to remove it.
-      keptLines.push(line);
       continue;
     }
 
     const absPath = resolve(workspaceRoot, relPdf);
     if (!pathIsInsideCanonical(absPath, outputDir)) {
-      prunedRows.push({ line, relPdf, report: parts[0]?.trim() || '' });
+      prunedRows.push({ id: entry.id, relPdf, report: entry.report || '' });
       if (!flags.json) {
         const marker = flags.write ? '🗑️ ' : '🔎';
         const action = flags.write ? 'pruned' : 'would prune';
-        console.log(`${marker} ${action}: ${relPdf} (report ${parts[0]?.trim() || '?'}) — outside output directory`);
+        console.log(`${marker} ${action}: ${relPdf} (report ${entry.report || '?'}) — outside output directory`);
       }
       continue;
     }
 
-    if (existsSync(absPath)) {
-      keptLines.push(line);
-    } else {
-      prunedRows.push({ line, relPdf, report: parts[0]?.trim() || '' });
+    if (!existsSync(absPath)) {
+      prunedRows.push({ id: entry.id, relPdf, report: entry.report || '' });
       if (!flags.json) {
         const marker = flags.write ? '🗑️ ' : '🔎';
         const action = flags.write ? 'pruned' : 'would prune';
-        console.log(`${marker} ${action}: ${relPdf} (report ${parts[0]?.trim() || '?'}) — file not found`);
+        console.log(`${marker} ${action}: ${relPdf} (report ${entry.report || '?'}) — file not found`);
       }
     }
   }
 
   const pruned = prunedRows.length;
-  const kept = inputLines.filter(l => l.trim() && !l.startsWith('#')).length - pruned;
+  const kept = entries.length - pruned;
 
   if (pruned > 0 && flags.write) {
-    // Trim trailing blank lines added during the split, then restore exactly one.
-    const content = keptLines.join('\n').replace(/\n+$/, '') + '\n';
     try {
-      writeFileAtomic(PDF_MANIFEST, content);
+      // One transaction: every stale row drops or none does.
+      db.tx(() => {
+        for (const row of prunedRows) {
+          db.run('DELETE FROM pdf_index WHERE id = ?', [row.id]);
+        }
+      });
     } catch (err) {
       if (flags.json) {
         console.log(JSON.stringify({ error: `Cannot write manifest: ${err.message}`, code: 'write-failure' }));
@@ -174,79 +149,35 @@ if (flags.prune) {
 // Normal sync mode: set tracker PDF cell to ✅ for rows present in the manifest.
 // ---------------------------------------------------------------------------
 
+// Same manifest reading as merge-tracker.mjs: cover letters and rows without a
+// pdf path never mark a report ready. Only purely numeric report keys count —
+// draft keys like "4-draft" are ignored, exactly as the retired TSV reader did.
 const manifestReports = new Set();
-if (existsSync(PDF_MANIFEST)) {
-  let content;
-  try {
-    content = readFileSync(PDF_MANIFEST, 'utf-8');
-  } catch (err) {
-    if (flags.json) {
-      console.log(JSON.stringify({ error: `Cannot read PDF manifest: ${err.message}`, code: 'manifest-read-error' }));
-    } else {
-      console.error(`❌ Cannot read PDF manifest: ${err.message}`);
-    }
-    process.exit(2);
-  }
-  for (const line of content.split('\n')) {
-    if (!line.trim() || line.startsWith('#')) continue;
-    const parts = line.split('\t');
-    const reportVal = parts[0]?.trim();
-    if (reportVal && /^\d+$/.test(reportVal)) {
-      const norm = parseInt(reportVal, 10);
-      if (norm > 0) manifestReports.add(norm);
-    }
+for (const entry of db.listPdfIndex()) {
+  if (entry.kind === 'cover' || !entry.pdf) continue;
+  const norm = entry.report_norm;
+  if (norm && /^\d+$/.test(norm)) {
+    const n = parseInt(norm, 10);
+    if (n > 0) manifestReports.add(n);
   }
 }
-
-let transaction;
-try {
-  transaction = await openTrackerTransaction(APPS_FILE);
-} catch (err) {
-  if (err?.code === 'LOCK_TIMEOUT') {
-    if (flags.json) console.log(JSON.stringify({ error: err.message, code: 'lock-timeout' }));
-    else console.error(`❌ ${err.message}`);
-    process.exit(4);
-  }
-  if (flags.json) console.log(JSON.stringify({ error: `Cannot acquire tracker lock: ${err.message}`, code: 'lock-error' }));
-  else console.error(`❌ Cannot acquire tracker lock: ${err.message}`);
-  process.exit(1);
-}
-
-let content;
-try {
-  content = transaction.read();
-} catch (err) {
-  transaction.close();
-  if (flags.json) console.log(JSON.stringify({ error: `Cannot read tracker: ${err.message}`, code: 'read-failure' }));
-  else console.error(`❌ Cannot read tracker: ${err.message}`);
-  process.exit(2);
-}
-
-const lines = content.split('\n');
-const colmap = resolveColumns(lines);
 
 let updated = 0;
 let unchanged = 0;
+const patches = []; // app nums to flip, written in one tx after the scan
 
-for (let i = 0; i < lines.length; i++) {
-  const row = parseTrackerRow(lines[i], colmap);
-  if (!row) continue;
-  
-  const reportNums = extractTrackerReportNumbers(row.report);
+for (const app of db.listApplications()) {
+  const reportNums = extractTrackerReportNumbers(app.report);
   const hasPdf = reportNums.some(num => manifestReports.has(num));
-  
+
   if (hasPdf) {
-    if (row.pdf !== '✅') {
-      const parts = lines[i].split('|').map(s => s.trim());
-      // parts includes leading empty string, so its length is at least colmap max + 1
-      while (parts.length <= colmap.pdf) parts.push('');
-      parts[colmap.pdf] = '✅';
-      lines[i] = rebuildRow(parts);
+    if (app.pdf !== '✅') {
+      patches.push(app.num);
       updated++;
       if (!flags.json && !flags.dryRun) {
-        console.log(`✅ #${row.num} ${row.company} — ${row.role}: PDF flag updated to ✅`);
+        console.log(`✅ #${app.num} ${app.company} — ${app.role}: PDF flag updated to ✅`);
       } else if (!flags.json && flags.dryRun) {
-        console.log(`🔎 #${row.num} ${row.company} — ${row.role}: would update PDF flag to ✅`);
+        console.log(`🔎 #${app.num} ${app.company} — ${app.role}: would update PDF flag to ✅`);
       }
     } else {
       unchanged++;
@@ -256,16 +187,16 @@ for (let i = 0; i < lines.length; i++) {
 
 if (updated > 0 && !flags.dryRun) {
   try {
-    transaction.replace(lines.join('\n'));
+    // One transaction for every flag: all flip or none does.
+    db.tx(() => {
+      for (const num of patches) db.updateApplication(num, { pdf: '✅' });
+    });
   } catch (err) {
-    transaction.close();
     if (flags.json) console.log(JSON.stringify({ error: `Cannot write tracker: ${err.message}`, code: 'write-failure' }));
     else console.error(`❌ Cannot write tracker: ${err.message}`);
     process.exit(1);
   }
 }
-
-transaction.close();
 
 const result = { updated, unchanged, dryRun: flags.dryRun };
 if (flags.json) {

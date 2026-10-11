@@ -5,8 +5,12 @@
  *
  * The CLI and every evaluator use the exported API below. Reservations account
  * for report files, reservation sentinels, tracker row IDs, and report links in
- * the tracker. The tracker scan and sentinel creation run under the same lock
- * as tracker writers, while O_CREAT|O_EXCL keeps claims atomic across processes.
+ * the applications table of data/career-ops.db (core/db.mjs — the retired
+ * data/applications.md store is no longer read). O_CREAT|O_EXCL sentinel files
+ * in reports/ keep claims atomic across processes: the sentinel IS the claim,
+ * so no tracker lock is needed — a lost race surfaces as EEXIST and the
+ * allocator retries past it. The old shared tracker directory lock only ever
+ * guarded the occupancy scan, which SQLite now serializes by itself.
  *
  * Usage:
  *   node reserve-report-num.mjs
@@ -17,19 +21,14 @@
  */
 
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, realpathSync,
+  existsSync, mkdirSync, readFileSync, readdirSync,
   statSync, unlinkSync, writeFileSync,
 } from 'fs';
 import { randomUUID } from 'crypto';
-import { dirname, join, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { join, resolve } from 'path';
 import { getCareerOpsRoot } from './path-resolver.mjs';
-import {
-  extractTrackerReportNumbers, parseTrackerRow, resolveColumns,
-} from './tracker-parse.mjs';
-import {
-  acquireTrackerLock, canonicalizeTrackerPath, resolveTrackerPath, trackerLockDirFor,
-} from './tracker-utils.mjs';
+import { extractTrackerReportNumbers } from './tracker-parse.mjs';
+import * as db from './core/db.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const ROOT = getCareerOpsRoot();
@@ -52,10 +51,14 @@ function reportsDirFor(options = {}) {
     || join(options.rootDir || ROOT, 'reports'));
 }
 
-function trackerPathFor(options = {}) {
-  return options.trackerPath
-    ? canonicalizeTrackerPath(options.trackerPath)
-    : resolveTrackerPath(options.rootDir || ROOT);
+// The tracker DB for a reservation. `CAREER_OPS_DB` wins (same contract as
+// core/db.mjs resolveDbPath); otherwise the DB lives in the caller's data root
+// so an options.rootDir override keeps pointing the whole set — reports dir,
+// batch state, and tracker — at one workspace, as the old trackerPath did.
+function dbFileFor(options = {}) {
+  if (options.dbFile) return resolve(options.dbFile);
+  if (process.env.CAREER_OPS_DB) return resolve(process.env.CAREER_OPS_DB);
+  return resolve(join(options.rootDir || ROOT, 'data', 'career-ops.db'));
 }
 
 function batchStateFileFor(options = {}) {
@@ -68,22 +71,35 @@ function batchStateFileFor(options = {}) {
 // batch runner itself recorded as "failed" must not be handed out again, or
 // the two scripts disagree by construction — this script re-issues the
 // number, then merge-tracker.mjs refuses to merge a tracker line for it.
-function occupiedFromFailedBatchState(batchStateFile) {
+//
+// Failed numbers are read from BOTH the legacy batch/batch-state.tsv (which
+// merge-tracker.mjs still reads) AND the DB's batch_state table, so the
+// invariant holds through the store migration: a number either store marks
+// "failed" is never re-issued.
+function occupiedFromFailedBatchState(batchStateFile, dbFile) {
   const failed = new Set();
-  if (!existsSync(batchStateFile)) return failed;
-  for (const line of readFileSync(batchStateFile, 'utf-8').split(/\r?\n/)) {
-    if (!line.trim() || line.startsWith('id\t')) continue;
-    const cols = line.split('\t');
-    if (cols.length < 6) continue;
-    const status = cols[2];
-    const reportNum = cols[5];
-    if (status === 'failed' && reportNum && reportNum !== '-') {
-      // Digits only, positive, safe: parseInt would accept "12abc" and
-      // 9007199254740992, and an unsafe number in the occupied set makes
-      // reserveReportNumbers throw "No safe report-number range remains".
-      const n = /^\d+$/.test(reportNum) ? Number(reportNum) : NaN;
-      if (Number.isSafeInteger(n) && n > 0) failed.add(n);
+  // Digits only, positive, safe: parseInt would accept "12abc" and
+  // 9007199254740992, and an unsafe number in the occupied set makes
+  // reserveReportNumbers throw "No safe report-number range remains".
+  const add = (reportNum) => {
+    if (!reportNum || reportNum === '-') return;
+    const n = /^\d+$/.test(reportNum) ? Number(reportNum) : NaN;
+    if (Number.isSafeInteger(n) && n > 0) failed.add(n);
+  };
+  if (existsSync(batchStateFile)) {
+    for (const line of readFileSync(batchStateFile, 'utf-8').split(/\r?\n/)) {
+      if (!line.trim() || line.startsWith('id\t')) continue;
+      const cols = line.split('\t');
+      if (cols.length < 6) continue;
+      if (cols[2] === 'failed') add(cols[5]);
     }
+  }
+  if (existsSync(dbFile)) {
+    withDbAt(dbFile, () => {
+      for (const row of db.listBatchState()) {
+        if (row.status === 'failed') add(String(row.report_num ?? ''));
+      }
+    });
   }
   return failed;
 }
@@ -112,27 +128,39 @@ function occupiedFromReports(reportsDir) {
   return occupied;
 }
 
-function occupiedFromTracker(trackerPath) {
-  const occupied = new Set();
-  if (!existsSync(trackerPath)) return occupied;
-
-  const lines = readFileSync(trackerPath, 'utf-8').split(/\r?\n/);
-  const colmap = resolveColumns(lines);
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
-    if (row.num > 0) occupied.add(row.num);
-    for (const reportNum of extractTrackerReportNumbers(row.report)) {
-      if (reportNum > 0) occupied.add(reportNum);
-    }
+// core/db.mjs resolves its connection from CAREER_OPS_DB / the data root on
+// every call. Pointing it at this reservation's dbFile for the duration of a
+// read keeps an options.rootDir/dbFile override honest instead of silently
+// reading the default workspace's occupancy.
+function withDbAt(dbFile, fn) {
+  const prev = process.env.CAREER_OPS_DB;
+  process.env.CAREER_OPS_DB = dbFile;
+  try {
+    return fn();
+  } finally {
+    if (prev === undefined) delete process.env.CAREER_OPS_DB;
+    else process.env.CAREER_OPS_DB = prev;
   }
+}
+
+function occupiedFromTracker(dbFile) {
+  const occupied = new Set();
+  if (!existsSync(dbFile)) return occupied;
+  withDbAt(dbFile, () => {
+    for (const app of db.listApplications()) {
+      if (app.num > 0) occupied.add(app.num);
+      for (const reportNum of extractTrackerReportNumbers(app.report)) {
+        if (reportNum > 0) occupied.add(reportNum);
+      }
+    }
+  });
   return occupied;
 }
 
-function collectOccupied(reportsDir, trackerPath, batchStateFile) {
+function collectOccupied(reportsDir, dbFile, batchStateFile) {
   const occupied = occupiedFromReports(reportsDir);
-  for (const num of occupiedFromTracker(trackerPath)) occupied.add(num);
-  for (const num of occupiedFromFailedBatchState(batchStateFile)) occupied.add(num);
+  for (const num of occupiedFromTracker(dbFile)) occupied.add(num);
+  for (const num of occupiedFromFailedBatchState(batchStateFile, dbFile)) occupied.add(num);
   return occupied;
 }
 
@@ -195,7 +223,7 @@ function processIsAlive(pid) {
  * Reserve one or more contiguous report IDs.
  *
  * @param {number} [count=1] Number of IDs to reserve (1-50).
- * @param {object} [options] Path and lock overrides.
+ * @param {object} [options] Path overrides (rootDir, reportsDir, dbFile, batchStateFile).
  * @returns {Promise<number[]>} Reserved numeric IDs.
  */
 export async function reserveReportNumbers(count = 1, options = {}) {
@@ -204,49 +232,39 @@ export async function reserveReportNumbers(count = 1, options = {}) {
   }
 
   const reportsDir = reportsDirFor(options);
-  const trackerPath = trackerPathFor(options);
+  const dbFile = dbFileFor(options);
   const batchStateFile = batchStateFileFor(options);
   mkdirSync(reportsDir, { recursive: true });
 
-  const lock = await acquireTrackerLock(trackerLockDirFor(trackerPath), {
-    timeoutMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_TIMEOUT_MS) || 60_000,
-    retryMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_RETRY_MS) || 75,
-    staleMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_STALE_MS) || 10 * 60_000,
-    tracker: trackerPath,
-    ...options.lockOptions,
-  });
+  let occupied = collectOccupied(reportsDir, dbFile, batchStateFile);
+  let base = highestNumber(occupied) + 1;
+  const token = randomUUID();
 
-  try {
-    let occupied = collectOccupied(reportsDir, trackerPath, batchStateFile);
-    let base = highestNumber(occupied) + 1;
-    const token = randomUUID();
-
-    for (let tries = 0; tries < MAX_RETRIES; tries++) {
-      const end = base + (count - 1);
-      if (!Number.isSafeInteger(base) || !Number.isSafeInteger(end)) {
-        throw new RangeError('No safe report-number range remains');
-      }
-      const claimed = [];
-      let failedAt = null;
-      for (let num = base; num <= end; num++) {
-        if (claimSlot(reportsDir, num, occupied, token)) {
-          claimed.push(num);
-        } else {
-          failedAt = num;
-          break;
-        }
-      }
-      if (failedAt == null) {
-        Object.defineProperty(claimed, RESERVATION_TOKEN, { value: token });
-        return claimed;
-      }
-
-      for (const num of claimed) releaseSlot(reportsDir, num, { token });
-      occupied = collectOccupied(reportsDir, trackerPath, batchStateFile);
-      base = Math.max(failedAt + 1, highestNumber(occupied) + 1);
+  for (let tries = 0; tries < MAX_RETRIES; tries++) {
+    const end = base + (count - 1);
+    if (!Number.isSafeInteger(base) || !Number.isSafeInteger(end)) {
+      throw new RangeError('No safe report-number range remains');
     }
-  } finally {
-    lock.release();
+    const claimed = [];
+    let failedAt = null;
+    for (let num = base; num <= end; num++) {
+      if (claimSlot(reportsDir, num, occupied, token)) {
+        claimed.push(num);
+      } else {
+        failedAt = num;
+        break;
+      }
+    }
+    if (failedAt == null) {
+      Object.defineProperty(claimed, RESERVATION_TOKEN, { value: token });
+      return claimed;
+    }
+
+    // A racing reserver claimed a slot in our range first. Its sentinel is on
+    // disk now, so a fresh occupancy scan sees it; back off past the collision.
+    for (const num of claimed) releaseSlot(reportsDir, num, { token });
+    occupied = collectOccupied(reportsDir, dbFile, batchStateFile);
+    base = Math.max(failedAt + 1, highestNumber(occupied) + 1);
   }
 
   throw new Error(`Could not claim ${count} report slot(s) after ${MAX_RETRIES} retries`);
@@ -270,22 +288,12 @@ export async function releaseReportNumbers(numbers, options = {}) {
   if (!force && !token) throw new Error('Reservation ownership token is required for release');
   if (!existsSync(reportsDir)) return 0;
 
-  const trackerPath = trackerPathFor(options);
-  const lock = await acquireTrackerLock(trackerLockDirFor(trackerPath), {
-    timeoutMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_TIMEOUT_MS) || 60_000,
-    retryMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_RETRY_MS) || 75,
-    staleMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_STALE_MS) || 10 * 60_000,
-    tracker: trackerPath,
-    ...options.lockOptions,
-  });
-  try {
-    return values.reduce(
-      (removed, num) => removed + Number(releaseSlot(reportsDir, num, { token, force })),
-      0,
-    );
-  } finally {
-    lock.release();
-  }
+  // Unlinking a sentinel is atomic on its own; releaseSlot's token check keeps
+  // a release scoped to its own reservation, so no cross-process lock is needed.
+  return values.reduce(
+    (removed, num) => removed + Number(releaseSlot(reportsDir, num, { token, force })),
+    0,
+  );
 }
 
 /** Remove reservation sentinels older than the configured TTL. */
@@ -293,35 +301,23 @@ export async function gcStaleReportReservations(options = {}) {
   const reportsDir = reportsDirFor(options);
   if (!existsSync(reportsDir)) return 0;
 
-  const trackerPath = trackerPathFor(options);
-  const lock = await acquireTrackerLock(trackerLockDirFor(trackerPath), {
-    timeoutMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_TIMEOUT_MS) || 60_000,
-    retryMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_RETRY_MS) || 75,
-    staleMs: Number(process.env.CAREER_OPS_TRACKER_LOCK_STALE_MS) || 10 * 60_000,
-    tracker: trackerPath,
-    ...options.lockOptions,
-  });
   const maxAgeMs = options.maxAgeMs ?? MAX_SENTINEL_AGE_MS;
   const now = Date.now();
   let removed = 0;
-  try {
-    for (const name of readdirSync(reportsDir)) {
-      if (!/^\d+-RESERVED\.md$/.test(name)) continue;
-      const fullPath = join(reportsDir, name);
-      try {
-        if (now - statSync(fullPath).mtimeMs > maxAgeMs) {
-          const owner = readSentinelOwner(fullPath);
-          if (owner?.pid && processIsAlive(owner.pid)) continue;
-          unlinkSync(fullPath);
-          removed++;
-          process.stderr.write(`reserve-report-num: GC stale sentinel ${name}\n`);
-        }
-      } catch (err) {
-        if (err?.code !== 'ENOENT') throw err;
+  for (const name of readdirSync(reportsDir)) {
+    if (!/^\d+-RESERVED\.md$/.test(name)) continue;
+    const fullPath = join(reportsDir, name);
+    try {
+      if (now - statSync(fullPath).mtimeMs > maxAgeMs) {
+        const owner = readSentinelOwner(fullPath);
+        if (owner?.pid && processIsAlive(owner.pid)) continue;
+        unlinkSync(fullPath);
+        removed++;
+        process.stderr.write(`reserve-report-num: GC stale sentinel ${name}\n`);
       }
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
     }
-  } finally {
-    lock.release();
   }
   if (removed > 0) {
     process.stderr.write(`reserve-report-num: removed ${removed} stale sentinel(s)\n`);
