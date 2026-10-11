@@ -243,18 +243,26 @@ function archiveOldFiles() {
   console.log(`\nArchived old stores to ${dest}`);
 }
 
-importApplications();
-importStatusLog();
-importFollowUps();
-importPipeline();
-importScanHistory();
-importScanRuns();
-importPortalHealth();
-importDeadBoards();
-importPdfIndex();
-importBatchState();
-importAutoJobs();
-const ok = verify();
+// --archive alone (after a prior import) must NOT re-import: append-only
+// tables (status_events, scan_runs, portal_health) would double.
+const archiveOnly = process.argv.includes('--archive') && db.get('SELECT COUNT(*) AS c FROM applications').c > 0;
+let ok = true;
+if (archiveOnly) {
+  console.log('DB already populated — skipping import, archiving only.');
+} else {
+  importApplications();
+  importStatusLog();
+  importFollowUps();
+  importPipeline();
+  importScanHistory();
+  importScanRuns();
+  importPortalHealth();
+  importDeadBoards();
+  importPdfIndex();
+  importBatchState();
+  importAutoJobs();
+  ok = verify();
+}
 if (ok && process.argv.includes('--archive')) archiveOldFiles();
 db.closeDb();
 process.exit(ok ? 0 : 1);
