@@ -1,0 +1,14 @@
+{
+  "name": "career-ops-learning-cloud",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated Lambda/Bedrock analysis backend for the learning layer (T17, CONTRACTS H). Deployment is gated by T27/D03.",
+  "type": "module",
+  "main": "index.mjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "3.1130.0"
+  }
+}

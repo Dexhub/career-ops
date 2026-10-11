@@ -1,0 +1,76 @@
+# auto/learning/cloud/template.yaml — least-privilege SAM template for the
+# optional learning analysis backend (T17). DEPLOYMENT IS GATED BY T27/D03:
+# nothing here is deployed automatically, and every account-specific value
+# (model ARN, artifact bucket) is a required parameter with NO default —
+# account IDs, ARNs and bucket names are supplied at the gated deployment,
+# never invented here.
+#
+# Verified 2026-10-11 (CONTRACTS I): nodejs22.x is a supported Lambda runtime
+# (deprecation Apr 2027); direct RequestResponse invocations are never retried
+# by Lambda itself.
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  career-ops learning cloud analysis backend. One function, one alias, no
+  public Function URL, Bedrock-only data permissions, payload-free logs.
+
+Parameters:
+  ApprovedModelId:
+    Type: String
+    Description: Bedrock model id approved under D03. Never taken from request input.
+  ApprovedModelArn:
+    Type: String
+    Description: >
+      Full foundation-model ARN in us-east-1 for the approved model (supplied
+      at the T27-gated deployment). No cross-region inference profile ARNs
+      without explicit approval.
+  MaxOutputTokens:
+    Type: Number
+    Default: 1200
+    MinValue: 1
+    MaxValue: 4096
+
+Resources:
+  AnalysisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/career-ops-learning-analysis
+      RetentionInDays: 14
+
+  AnalysisFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: career-ops-learning-analysis
+      Handler: index.handler
+      Runtime: nodejs22.x
+      CodeUri: .
+      MemorySize: 256
+      Timeout: 60
+      ReservedConcurrentExecutions: 1
+      AutoPublishAlias: live
+      LoggingConfig:
+        LogGroup: !Ref AnalysisLogGroup
+      Environment:
+        Variables:
+          APPROVED_MODEL_ID: !Ref ApprovedModelId
+          MAX_OUTPUT_TOKENS: !Ref MaxOutputTokens
+      # Least privilege: Bedrock inference + token counting on the single
+      # approved model only. No S3, no SES/mailbox, no browser, no application
+      # data, no network egress beyond AWS APIs. Logs are payload-free by
+      # handler construction.
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:CountTokens
+              Resource: !Ref ApprovedModelArn
+      # No FunctionUrlConfig: the function is invokable only through
+      # lambda:InvokeFunction by the local operator profile (hk_dev), whose
+      # IAM policy is restricted at deployment to this function's live alias.
+
+Outputs:
+  AnalysisFunctionAliasArn:
+    Description: Alias ARN the local caller is restricted to.
+    Value: !Ref AnalysisFunction.Alias

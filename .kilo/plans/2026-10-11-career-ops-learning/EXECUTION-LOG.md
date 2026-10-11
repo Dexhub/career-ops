@@ -601,3 +601,49 @@ returns draft D6-validated insight objects; persistence is the separate async
 snippet passes verbatim: distinctJobs 5, distinctCompanies 3,
 rawOccurrences 104, sourceIds nonempty. 15 new tests; full learning suite
 228/228 pass (213 prior intact). No live files touched; no cycles run.
+
+## T17 complete (2026-10-11T14:12Z)
+Created the optional Lambda/Bedrock analysis backend (CONTRACTS H), additive
+only: `auto/learning/cloud/index.mjs` (strict request/response schemas,
+redaction-before-transport, four enumerated task types only, injectable
+`createHandler` — real SDK loaded lazily on first invocation, never at import;
+env-only model, temperature 0, explicit maxTokens, JSON parsed/validated never
+executed, payload-free logs), `auto/learning/cloud/template.yaml` (nodejs22.x,
+no Function URL, alias, ReservedConcurrentExecutions 1, 14d log retention,
+Bedrock-only policy on a required ApprovedModelArn parameter — NO invented
+account IDs/ARNs/buckets; deployment stays T27/D03-gated),
+`auto/learning/cloud/package.json` + npm-generated `package-lock.json`
+(sole dep `@aws-sdk/client-bedrock-runtime` pinned 3.1130.0), and
+`auto/learning/cloud-client.mjs` (pricing-versioned reservation BEFORE
+transport via reviewRuns commitRecord, CountTokens-preferred else 1-token/char
+conservative ceiling else refuse, unknown pricing = disabled, daily USD +
+calls/day caps, ONE in-flight, AWS_MAX_ATTEMPTS=1, timeout -> reservation kept
+unknown + CLOUD_IN_FLIGHT blocks reissue, reconcile-or-mark-unknown never
+auto-reissues, local rejection of unknown source IDs and unsupported quoted
+claims, spawn argument-array CLI transport with private 0700/0600 temp files).
+
+Doc verification (webfetch 2026-10-11): Lambda Node runtimes nodejs22.x/24.x/
+26.x confirmed; RequestResponse invocations never retried by Lambda; CountTokens
+free but not supported by all models. UNVERIFIED: Bedrock dollar prices in
+MODEL_PRICING are planning-time values; pricing version pin + refuse-on-unknown
+is the enforced mechanism; D03/T27 must confirm prices before deployment.
+Registry note: npm resolves 3.1130.0 as latest while HTTPS metadata shows
+3.1149.0 — local npm view is stale/intercepted; pinned to what npm can resolve.
+
+`npm ci --ignore-scripts --prefix auto/learning/cloud` FAILED on tarball
+download (UNABLE_TO_GET_ISSUER_CERT_LOCALLY, known local cert issue); lockfile
+itself is npm-generated with integrity hashes. node_modules removed; npm ci
+recorded as DEFERRED TO T27 (deployment packaging). Root package.json untouched.
+
+Deviation (documented): ledger FORBIDDEN_KEY_RE rejects any key containing
+"token", so persisted reservations use estInput/maxOutput and usage
+{input,output,total}; in-process APIs keep SDK names (inputTokens etc).
+
+Tests: 12 handler tests (injected Bedrock client, no AWS) + 18 client tests
+(fixture-isolation first, zero budget, unapproved model, oversized/private
+payload, prompt injection, malformed JSON, unknown source citation,
+unsupported quote, provider error, client timeout + reconcile, no transport
+call when disabled, no implicit second invocation, CLI arg-array/spawn
+contract). Full suite 258/258 pass (228 prior intact). No live pipeline files
+touched; no cycles or browsers run; no deployment attempted.
+Commit: (pending — coordinator commits)
