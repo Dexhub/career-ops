@@ -561,3 +561,26 @@ sentinel). Plan: T15 boxes ticked + Phase 3 gate item "tracker repair cannot
 produce another employer action or regress a later outcome".
 `data/auto/pause-requested` intact.
 Commit: (pending — coordinator commits)
+
+## Phase 3 review gate — PASSED (coordinator, 2026-10-11T13:40Z)
+- Queue/date settings reach execution w/ honest unknown-date policy (T11:
+  shared comparator, unknown bucket retained, panel/worker parity). ✓
+- Saved answers + verification waits resume the same operation after restart
+  (T13: sweep + same-applicationId assertions). ✓
+- Unknown submissions cannot enter ordinary retry queue (T14: unconditional
+  SUBMISSION_OUTCOME_UNKNOWN guard in state.mjs, keyed on submissionPossible
+  so legacy jobs unaffected). ✓
+- Tracker repair cannot start employer actions or regress later outcomes
+  (T15: no worker refs, Interview preserved as reconciled). ✓
+- Policy changes + newly blocked backlog visible before activation (T12
+  preview endpoint; coordinator reconciled ats_allowlist w/ workday, logged
+  above). ✓  No live submission was used in fixture tests.
+
+## Checkpoint 16 (2026-10-11T13:40Z)
+Cycle stopped under coordinator pause for T13-T15. During the 11:30 cycle:
+edwards SUBMITTED (tracker 2474), carrier confirmed submitted, riotgames
+attempt 1 failed no-confirmation (retry w/ Sonnet next cycle), rula parked
+(snack question -> user backlog). resume-select promoted 22 jobs (resume_ready
+31). breakthru/bmo/ngc requeues not yet reached. hpe stale applying will be
+reconciled by T14 recovery at next cycle start. No crash loops; learning
+branch did not disturb the pipeline. Pipeline resumed after Phase 3 commits.
