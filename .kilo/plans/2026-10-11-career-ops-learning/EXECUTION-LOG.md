@@ -647,3 +647,41 @@ call when disabled, no implicit second invocation, CLI arg-array/spawn
 contract). Full suite 258/258 pass (228 prior intact). No live pipeline files
 touched; no cycles or browsers run; no deployment attempted.
 Commit: (pending — coordinator commits)
+
+## T18 — Learn scoped procedures and evaluate them before promotion (2026-10-11T14:30Z)
+
+Created `auto/learning/procedures.mjs`, `auto/test/learning-procedures.test.mjs`,
+`auto/test/fixtures/learning/procedure-evaluation.json`. Branch `learning-system`;
+additive only — no live pipeline files touched, no cycles/browsers/model calls.
+
+- Episodes extracted from attempts+blockers carry starting condition, allowed
+  action, observed result, wait/active time, failures, source/policy versions
+  and verified outcome; failures and contradictions included.
+- Candidates are tenant/employer-scoped with the fixed step allowlist
+  (`open_existing_application`, `inspect_fields`, `wait_for_verification`,
+  `recheck_session`, `resolve_known_question`, `request_human_help`); step
+  validation rejects code/shell/secrets/new permissions/generic final submit.
+- Frozen evaluation set (fixture JSON) separates derivation from held-out
+  source IDs and covers tenant mismatch, stale verification, changed options,
+  unavailable tools. Fixed trusted driver only; executable-shaped fixture
+  cases rejected (`INVALID_FIXTURE`) — model-generated test code never runs.
+- `evaluateProcedure` is read-only; `persistEvaluation` commits via
+  `commitRecord` into `reviewRuns` (procedure version/digest, fixture digest,
+  held-out IDs) and moves a passing candidate to `tested` only (D04 gate).
+  Persist is idempotent on the deterministic evaluation id.
+- `promoteProcedure` reloads+verifies the persisted record; missing/stale IDs
+  and caller-supplied `passed:true` never authorize. Approval is a
+  WeakSet-minted token (T08 pattern). `SCOPE_TOO_BROAD` blocks a single
+  tenant's success from promoting a global rule. Auto-promotion off by
+  default; when `review.auto_promote_procedures: true`, only data-only
+  allowlisted steps qualify.
+- Versioning: active version + lastVerifiedAt + evaluationVersion tracked;
+  contradictions recorded; stale/revoke supported; rollback (approval-gated)
+  restores the prior digest-distinct revision as a new revision while pinned
+  in-flight attempts keep their `procedureVersion` untouched (T12 pattern).
+
+Tests: 15/15 new (`node --test auto/test/learning-procedures.test.mjs`),
+fixture isolation is the first assertion; plan's verbatim acceptance snippet
+included. Full learning suite 261/261 pass (246 prior intact; earlier handoff
+figure of 248 was a miscount — zero failures before or after).
+Commit: (pending — coordinator commits)

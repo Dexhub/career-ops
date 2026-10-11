@@ -1,0 +1,71 @@
+{
+  "kind": "procedure-evaluation-fixture",
+  "schemaVersion": 1,
+  "comment": "Frozen synthetic evaluation set for T18. derivationSourceIds lists the episodes that produced the candidate; heldOutCases never overlap them. All identifiers and values are synthetic.",
+  "derivationSourceIds": ["ep-derive-0001", "ep-derive-0002", "ep-derive-0003"],
+  "heldOutCases": [
+    {
+      "id": "case-success-plain",
+      "sourceId": "ep-held-0001",
+      "kind": "success",
+      "tenant": "acme-wd",
+      "employerId": "acme",
+      "conditions": {},
+      "baseline": { "actions": 6, "outcome": "completed", "truthful": true }
+    },
+    {
+      "id": "case-success-second",
+      "sourceId": "ep-held-0002",
+      "kind": "success",
+      "tenant": "acme-wd",
+      "employerId": "acme",
+      "conditions": { "sessionValid": false },
+      "baseline": { "actions": 7, "outcome": "completed", "truthful": true }
+    },
+    {
+      "id": "case-tenant-mismatch",
+      "sourceId": "ep-held-0003",
+      "kind": "tenant_mismatch",
+      "tenant": "globex-wd",
+      "employerId": "globex",
+      "conditions": {},
+      "baseline": { "actions": 4, "outcome": "escalated", "truthful": true }
+    },
+    {
+      "id": "case-stale-verification",
+      "sourceId": "ep-held-0004",
+      "kind": "stale_verification",
+      "tenant": "acme-wd",
+      "employerId": "acme",
+      "conditions": { "verificationFresh": false },
+      "baseline": { "actions": 5, "outcome": "completed", "truthful": true }
+    },
+    {
+      "id": "case-changed-options",
+      "sourceId": "ep-held-0005",
+      "kind": "changed_options",
+      "tenant": "acme-wd",
+      "employerId": "acme",
+      "conditions": { "optionsChanged": true },
+      "baseline": { "actions": 5, "outcome": "escalated", "truthful": true }
+    },
+    {
+      "id": "case-tool-unavailable",
+      "sourceId": "ep-held-0006",
+      "kind": "tool_unavailable",
+      "tenant": "acme-wd",
+      "employerId": "acme",
+      "conditions": { "toolAvailable": false },
+      "baseline": { "actions": 3, "outcome": "escalated", "truthful": true }
+    },
+    {
+      "id": "case-near-miss-unknown-answer",
+      "sourceId": "ep-held-0007",
+      "kind": "near_miss",
+      "tenant": "acme-wd",
+      "employerId": "acme",
+      "conditions": { "knownAnswer": false },
+      "baseline": { "actions": 4, "outcome": "escalated", "truthful": true }
+    }
+  ]
+}
