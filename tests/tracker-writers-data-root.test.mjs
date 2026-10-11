@@ -1,3 +1,12 @@
+
+// DB-era safety guard: these file-era fixtures (CAREER_OPS_TRACKER etc.) do not
+// isolate the SQLite store, so without this the spawned tools would read and
+// WRITE the real data/career-ops.db. Point every child at a throwaway DB.
+import { mkdtempSync as __mkdtempSync } from 'fs';
+import { tmpdir as __tmpdir } from 'os';
+import { join as __join } from 'path';
+process.env.CAREER_OPS_DB = __join(__mkdtempSync(__join(__tmpdir(), 'db-guard-')), 'guard.db');
+
 // tests/tracker-writers-data-root.test.mjs — the tracker WRITERS resolve the
 // tracker against the user's data root (#3510's family, completing #3715).
 //

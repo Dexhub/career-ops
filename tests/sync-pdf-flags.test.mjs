@@ -1,3 +1,12 @@
+
+// DB-era safety guard: these file-era fixtures (CAREER_OPS_TRACKER etc.) do not
+// isolate the SQLite store, so without this the spawned tools would read and
+// WRITE the real data/career-ops.db. Point every child at a throwaway DB.
+import { mkdtempSync as __mkdtempSync } from 'fs';
+import { tmpdir as __tmpdir } from 'os';
+import { join as __join } from 'path';
+process.env.CAREER_OPS_DB = __join(__mkdtempSync(__join(__tmpdir(), 'db-guard-')), 'guard.db');
+
 // tests/sync-pdf-flags.test.mjs — regression coverage for syncing tracker PDF flags.
 
 import { pass, fail, NODE, ROOT } from './helpers.mjs';
