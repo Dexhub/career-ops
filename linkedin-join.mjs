@@ -79,6 +79,7 @@ import { asciiFold } from './lib/ascii-fold.mjs';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { resolveDbPath, listApplications } from './core/db.mjs';
 
 const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
@@ -408,11 +409,20 @@ export function parseConnections(text) {
 export function parseTrackerTargets(content) {
   const lines = String(content || '').split('\n');
   const colmap = resolveColumns(lines);
+  const rows = [];
+  for (const line of lines) {
+    const row = parseTrackerRow(line, colmap);
+    if (row) rows.push(row);
+  }
+  return trackerTargetsFromRows(rows);
+}
+
+/** The same target extraction over already-parsed rows (applications table shape). */
+function trackerTargetsFromRows(rows) {
   const targets = [];
   const skipped = [];
 
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
+  for (const row of Array.isArray(rows) ? rows : []) {
     if (!row || !row.company) continue;
 
     const tokens = companyTokens(row.company);
@@ -862,9 +872,10 @@ function main() {
 
   const skippedTargets = [];
   let targetList = [];
-  const trackerText = portalsOnly ? null : readOrNull(TRACKER_PATH);
-  if (trackerText !== null) {
-    const t = parseTrackerTargets(trackerText);
+  // Tracker targets come from the applications table; a missing DB is the same
+  // answer a missing tracker file used to be — "no input from this source".
+  if (!portalsOnly && existsSync(resolveDbPath())) {
+    const t = trackerTargetsFromRows(listApplications());
     targetList = targetList.concat(t.targets);
     skippedTargets.push(...t.skipped);
   }

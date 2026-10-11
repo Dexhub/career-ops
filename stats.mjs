@@ -25,22 +25,20 @@ import { fileURLToPath } from 'url';
 import * as yaml from 'js-yaml';
 import { localToday } from './lib/local-today.mjs';
 import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import { normalizeStatus, analyzeFromContent } from './followup-cadence.mjs';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { normalizeStatus, analyzeFromContent, analyzeFromData } from './followup-cadence.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { parseStatusLogStages, recoverFunnelStages } from './funnel-stages.mjs';
 export { parseStatusLogStages } from './funnel-stages.mjs';
-import { parseScanHistoryLine } from './lib/scan-history-columns.mjs';
+import { parseScanHistoryLine, SCAN_HISTORY_COLUMNS } from './lib/scan-history-columns.mjs';
+import {
+  resolveDbPath, listApplications, listFollowUps, listFollowUpNext, listFollowUpCleared,
+  listStatusEvents, listScanHistory, listScanRuns, listPortalHealth,
+} from './core/db.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
-const APPS_FILE = resolveTrackerPath(DATA_ROOT);
-const SCAN_HISTORY_FILE = join(DATA_ROOT, 'data', 'scan-history.tsv');
-const FOLLOWUPS_FILE = join(DATA_ROOT, 'data', 'follow-ups.md');
-const SCAN_RUNS_FILE = join(DATA_ROOT, 'data', 'scan-runs.tsv');
-const STATUS_LOG_FILE = join(DATA_ROOT, 'data', 'status-log.tsv');
 const PORTALS_FILE = join(DATA_ROOT, 'portals.yml');
-const PORTAL_HEALTH_FILE = join(DATA_ROOT, 'data', 'portal-health.tsv');
 
 const CANONICAL_STATUSES = ['Evaluated', 'Applied', 'Responded', 'Interview', 'Offer', 'Hired', 'Rejected', 'Discarded', 'SKIP'];
 
@@ -76,14 +74,27 @@ function canonicalStatus(raw) {
  * @param {string} content - Raw applications.md text.
  */
 export function computeTrackerStats(content) {
+  return trackerStatsFromRows(trackerRowsFromContent(content));
+}
+
+/** Parse raw applications.md text into tracker row objects (header-aware, CRLF-safe). */
+function trackerRowsFromContent(content) {
   const lines = String(content ?? '').replace(/\r/g, '').split('\n');
   const colmap = resolveColumns(lines);
+  const rows = [];
+  for (const line of lines) {
+    const row = parseTrackerRow(line, colmap);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+/** Same roll-up over already-parsed rows (the applications table shape). */
+export function trackerStatsFromRows(rows) {
   const byStatus = Object.fromEntries(CANONICAL_STATUSES.map((s) => [s, 0]));
   let total = 0, scoreSum = 0, scoreCount = 0, topScore = 0, withPdf = 0, withReport = 0, activeApps = 0;
   let pursuedSum = 0, pursuedCount = 0;
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
+  for (const row of rows) {
     total++;
     const status = canonicalStatus(row.status);
     byStatus[status] = (byStatus[status] || 0) + 1;
@@ -112,13 +123,13 @@ export function computeTrackerStats(content) {
 
 /** Map of tracker number → canonical status (for follow-up compliance). */
 export function trackerStatusByNum(content) {
-  const lines = String(content ?? '').replace(/\r/g, '').split('\n');
-  const colmap = resolveColumns(lines);
+  return statusByNumFromRows(trackerRowsFromContent(content));
+}
+
+/** Same map over already-parsed rows. */
+export function statusByNumFromRows(rows) {
   const byNum = new Map();
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) byNum.set(row.num, canonicalStatus(row.status));
-  }
+  for (const row of rows) byNum.set(row.num, canonicalStatus(row.status));
   return byNum;
 }
 
@@ -453,8 +464,7 @@ export function computePortalRecommendations(portalsContent, scanContent, health
  * @param {Map<number,string>} trackerByNum - From trackerStatusByNum().
  */
 export function computeFollowupStats(followupsContent, trackerByNum) {
-  const byApp = new Map();
-  let totalFollowups = 0;
+  const appNums = [];
   for (const line of String(followupsContent ?? '').replace(/\r/g, '').split('\n')) {
     if (!line.startsWith('|')) continue;
     const parts = line.split('|').map((s) => s.trim());
@@ -462,6 +472,16 @@ export function computeFollowupStats(followupsContent, trackerByNum) {
     const num = parseInt(parts[1], 10);
     const appNum = parseInt(parts[2], 10);
     if (Number.isNaN(num) || Number.isNaN(appNum)) continue; // header/separator
+    appNums.push(appNum);
+  }
+  return followupStatsFromAppNums(appNums, trackerByNum);
+}
+
+/** Same compliance roll-up over one appNum per logged follow-up. */
+function followupStatsFromAppNums(appNums, trackerByNum) {
+  const byApp = new Map();
+  let totalFollowups = 0;
+  for (const appNum of appNums) {
     totalFollowups++;
     byApp.set(appNum, (byApp.get(appNum) || 0) + 1);
   }
@@ -607,44 +627,57 @@ export function computeRunStats(content) {
 
 // ── Assembler + CLI ─────────────────────────────────────────────────
 
+// The scan-history/scan-runs/portal-health DB tables carry exactly the columns
+// of their retired TSV files, so their rows re-join losslessly into the text
+// the content-based compute functions (and their tests) already understand.
+const SCAN_RUNS_COLUMNS = [
+  'timestamp', 'status', 'companies', 'boards', 'found', 'filtered_title', 'filtered_tier',
+  'filtered_location', 'filtered_posting_age', 'filtered_salary', 'filtered_content',
+  'filtered_cooldown', 'dupes', 'new_added', 'errors', 'filtered_blacklist', 'filtered_visa',
+  'filtered_posted_date', 'filtered_country_eligibility',
+];
+const tsv = (rows, columns, header = true) => {
+  if (!rows.length) return null;
+  const body = rows.map((r) => columns.map((c) => String(r[c] ?? '')).join('\t'));
+  return (header ? [columns.join('\t'), ...body] : body).join('\n');
+};
+
 /**
- * Assemble the full stats contract. Every section is null when its source
- * file is missing; metadata.sources records what was found.
+ * Assemble the full stats contract from data/career-ops.db (plus portals.yml,
+ * which stays a config file). Every section is null when its source table is
+ * empty or the DB is missing; metadata.sources records what was found.
  */
-export function computeAllStats({
-  appsFile = APPS_FILE,
-  scanHistoryFile = SCAN_HISTORY_FILE,
-  followupsFile = FOLLOWUPS_FILE,
-  scanRunsFile = SCAN_RUNS_FILE,
-  portalsFile = PORTALS_FILE,
-  portalHealthFile = PORTAL_HEALTH_FILE,
-  statusLogFile = STATUS_LOG_FILE,
-  prune = false,
-} = {}) {
-  const read = (f) => (existsSync(f) ? readFileSync(f, 'utf-8') : null);
-  const apps = read(appsFile);
-  const scanHist = read(scanHistoryFile);
-  const fups = read(followupsFile);
-  const portals = read(portalsFile);
-  const runs = read(scanRunsFile);
-  const portalHealth = read(portalHealthFile);
-  const statusLog = read(statusLogFile);
-  const trackerBase = apps ? computeTrackerStats(apps) : null;
+export function computeAllStats({ portalsFile = PORTALS_FILE, prune = false } = {}) {
+  const dbExists = existsSync(resolveDbPath());
+  const appRows = dbExists ? listApplications() : [];
+  const fupRows = dbExists ? listFollowUps() : [];
+  const statusEvents = dbExists ? listStatusEvents() : [];
+  const scanHist = dbExists ? tsv(listScanHistory(), SCAN_HISTORY_COLUMNS, false) : null;
+  const runs = dbExists ? tsv(listScanRuns(), SCAN_RUNS_COLUMNS) : null;
+  const portalHealth = dbExists ? tsv(listPortalHealth(), ['timestamp', 'company', 'status']) : null;
+  const portals = existsSync(portalsFile) ? readFileSync(portalsFile, 'utf-8') : null;
+
+  const trackerBase = appRows.length ? trackerStatsFromRows(appRows) : null;
   const scan = scanHist ? computeScanStats(scanHist) : null;
+  // Same {num, from, to} ledger shape parseStatusLogStages() builds from TSV,
+  // with the same malformed-row guard (missing date/from/to is skipped).
+  const ledger = statusEvents
+    .filter((ev) => Number.isInteger(ev.app_num) && ev.event_date && ev.from_status && ev.to_status)
+    .map((ev) => ({ num: ev.app_num, from: ev.from_status, to: ev.to_status }));
 
   // Cold-classification wiring (#2123): activeApps is purely status-based and
   // stays untouched for backward compatibility. activeAppsLive subtracts rows
   // followup-cadence.mjs's own cadence math independently classifies 'cold'
   // (Applied, zero response after applied_max_followups follow-ups) — the more
   // honest "still worth expecting a reply from" figure. No follow-up data
-  // (`fups` null) means no cold rows can be identified, so activeAppsLive
-  // simply equals activeApps.
+  // means no cold rows can be identified, so activeAppsLive simply equals
+  // activeApps.
   let tracker = trackerBase;
   if (trackerBase) {
-    const coldNums = computeColdAppNums(apps, fups);
+    const coldNums = coldAppNumsFromDb(appRows, fupRows);
     let activeAppsCold = 0;
     if (coldNums.size > 0) {
-      const byNum = trackerStatusByNum(apps);
+      const byNum = statusByNumFromRows(appRows);
       for (const [num, status] of byNum) {
         if (ACTIVE_STATUSES.has(status) && coldNums.has(num)) activeAppsCold++;
       }
@@ -660,13 +693,13 @@ export function computeAllStats({
     metadata: {
       generatedAt: localToday(),
       sources: {
-        tracker: !!apps,
+        tracker: appRows.length > 0,
         scanHistory: !!scanHist,
-        followups: !!fups,
+        followups: fupRows.length > 0,
         portals: !!portals,
         scanRuns: !!runs,
         portalHealth: !!portalHealth,
-        statusLog: !!statusLog,
+        statusLog: ledger.length > 0,
       },
     },
     tracker,
@@ -674,15 +707,38 @@ export function computeAllStats({
     // back to the pure status snapshot when it does not, so nothing regresses.
     funnel: !tracker
       ? null
-      : statusLog
-        ? computeFunnelWithHistory(trackerStatusByNum(apps), parseStatusLogStages(statusLog))
+      : ledger.length
+        ? computeFunnelWithHistory(statusByNumFromRows(appRows), ledger)
         : computeFunnel(tracker.byStatus),
     scan,
     portals: portals ? computePortalStats(portals, scan, scanHist ? scanCompanyNames(scanHist) : [], portalHealth) : null,
     ...(prune ? { portalRecommendations: portals ? computePortalRecommendations(portals, scanHist, portalHealth) : null } : {}),
-    followups: fups && apps ? computeFollowupStats(fups, trackerStatusByNum(apps)) : null,
+    followups: fupRows.length && appRows.length
+      ? followupStatsFromAppNums(fupRows.map((f) => f.app_num), statusByNumFromRows(appRows))
+      : null,
     runs: runs ? computeRunStats(runs) : null,
   };
+}
+
+/**
+ * Cold tracker numbers from the live DB rows, through the same
+ * followup-cadence.mjs math as computeColdAppNums — analyzeFromData with the
+ * full picture (pins and retire directives included, matching its own CLI).
+ */
+function coldAppNumsFromDb(apps, fupRows) {
+  const followups = fupRows.map((f) => ({
+    num: f.num, appNum: f.app_num, date: f.date, company: f.company,
+    role: f.role, channel: f.channel, contact: f.contact, notes: f.notes,
+  }));
+  const overrides = new Map(listFollowUpNext().map((r) => [
+    r.app_num, { appNum: r.app_num, date: r.next_date, setDate: r.set_date || r.next_date },
+  ]));
+  const cleared = new Map(listFollowUpCleared().map((r) => [
+    r.app_num, { appNum: r.app_num, setDate: r.set_date },
+  ]));
+  const result = analyzeFromData(apps, followups, overrides, cleared);
+  if (result.error) return new Set();
+  return new Set(result.entries.filter((e) => e.urgency === 'cold').map((e) => e.num));
 }
 
 /** Human-readable table. pdfPct/reportPct are JSON-only by design — no job-search decision follows from them. */
@@ -704,7 +760,7 @@ function printSummary(stats) {
     const statusLine = Object.entries(t.byStatus).filter(([, c]) => c > 0).map(([s, c]) => `${s} ${c}`).join(' · ');
     if (statusLine) console.log(`Status:     ${statusLine}`);
   } else {
-    console.log('Tracker:    — no data (data/applications.md missing)');
+    console.log('Tracker:    — no data (applications table empty)');
   }
   const f = stats.funnel;
   if (f) {
@@ -717,7 +773,7 @@ function printSummary(stats) {
     const portalsLine = Object.entries(s.byPortal).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p, c]) => `${p} ${c}`).join(' · ');
     console.log(`Scanner:    ${s.totalRecorded} jobs recorded${s.firstSeen ? ` since ${s.firstSeen}` : ''} | ${s.added} added | ${s.distinctCompanies} companies${portalsLine ? ` | ${portalsLine}` : ''}`);
   } else {
-    console.log('Scanner:    — no data (data/scan-history.tsv missing)');
+    console.log('Scanner:    — no data (scan_history table empty)');
   }
   const p = stats.portals;
   if (p) {
@@ -730,7 +786,7 @@ function printSummary(stats) {
   if (fu) {
     console.log(`Follow-ups: ${fu.totalFollowups} sent across ${fu.appsWithFollowups} apps | ${fu.appliedWithoutFollowup} Applied apps with none | avg ${fu.avgPerApp}/app`);
   } else {
-    console.log('Follow-ups: — no data (data/follow-ups.md missing)');
+    console.log('Follow-ups: — no data (follow_ups table empty)');
   }
   const r = stats.runs;
   if (r && r.totalRuns === 0 && r.driftedRows > 0) {
@@ -748,7 +804,7 @@ function printSummary(stats) {
       console.log(`            ${r.driftedRows} row(s) excluded — wider than scan-runs.tsv's header, so their columns cannot be read by name. Move the file aside to start a fresh one.`);
     }
   } else {
-    console.log('Runs:       — no data (data/scan-runs.tsv missing; created by the next scan)');
+    console.log('Runs:       — no data (scan_runs table empty; filled by the next scan)');
   }
   console.log('');
   if (stats.portalRecommendations) {

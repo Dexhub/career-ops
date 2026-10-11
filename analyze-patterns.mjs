@@ -18,16 +18,18 @@ import { join, dirname, relative, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { load as yamlLoad } from 'js-yaml';
-import { resolveColumns, parseTrackerRow, normalizeVia } from './tracker-parse.mjs';
+import { normalizeVia } from './tracker-parse.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
+import { resolveDbPath, listApplications } from './core/db.mjs';
 import { atsVendorOf } from './ats-vendor.mjs';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
 import { localToday } from './lib/local-today.mjs';
 
 const CAREER_OPS = getCareerOpsRoot();
-const APPS_FILE = existsSync(join(CAREER_OPS, 'data/applications.md'))
-  ? join(CAREER_OPS, 'data/applications.md')
-  : join(CAREER_OPS, 'applications.md');
+// Tracker report links were written relative to the retired tracker file in
+// data/ (`[001](../reports/001-....md)`); the rows now come from the DB but the
+// link cells keep that convention, so resolution still anchors on data/.
+const TRACKER_LINK_BASE = join(CAREER_OPS, 'data');
 const REPORTS_DIR = join(CAREER_OPS, 'reports');
 
 const MACHINE_SUMMARY_FIELDS = new Set([
@@ -844,18 +846,11 @@ requirement_importance:
   process.exit(0);
 }
 
-// --- Parse applications.md ---
+// --- Load tracker rows (applications table) ---
 function parseTracker() {
-  if (!existsSync(APPS_FILE)) return [];
-  const content = readFileSync(APPS_FILE, 'utf-8');
-  const lines = content.split('\n');
-  const colmap = resolveColumns(lines);
-  const entries = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) entries.push(row);
-  }
-  return entries;
+  const dbPath = resolveDbPath();
+  if (!existsSync(dbPath)) return [];
+  return listApplications();
 }
 
 // Canonical reports-root containment. A tracker link resolves to a candidate
@@ -1296,7 +1291,7 @@ export function analyze(entries = parseTracker()) {
     let reportData = null;
     if (reportMatch) {
       const candidates = new Set([
-        join(dirname(APPS_FILE), reportMatch[1]),
+        join(TRACKER_LINK_BASE, reportMatch[1]),
         join(CAREER_OPS, reportMatch[1]),
       ]);
       for (const candidate of candidates) {

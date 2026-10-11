@@ -58,6 +58,7 @@ import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { resolveDbPath, listApplications } from './core/db.mjs';
 
 const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
@@ -238,12 +239,25 @@ export function loadProfile(profilePath = PROFILE_FILE) {
 // (case-insensitive, markdown bold stripped) grouped by company key.
 export function parseTrackerInterviewRows(content) {
   if (typeof content !== 'string' || !content.trim()) return new Map();
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  return interviewRowsFromRows(trackerRowsFrom(content));
+}
+
+/** Parse tracker markdown into row objects (same shape as the applications table). */
+function trackerRowsFrom(content) {
+  const lines = String(content ?? '').replace(/\r\n/g, '\n').split('\n');
   const colmap = resolveColumns(lines);
-  const byCompany = new Map();
+  const rows = [];
   for (const line of lines) {
     const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+/** Interview-state rows grouped by company identity — shared by both sources. */
+function interviewRowsFromRows(rows) {
+  const byCompany = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
     const status = String(row.status || '').replace(/\*\*/g, '').trim().toLowerCase();
     if (status !== 'interview') continue;
     // A placeholder employer that names its channel groups under that channel;
@@ -287,12 +301,13 @@ export function parseTrackerInterviewRows(content) {
  */
 export function placeholderInterviewRows(content) {
   if (typeof content !== 'string' || !content.trim()) return [];
-  const lines = content.replace(/\r\n/g, '\n').split('\n');
-  const colmap = resolveColumns(lines);
+  return placeholderRowsFromRows(trackerRowsFrom(content));
+}
+
+/** The same exclusion over already-parsed rows — shared by both sources. */
+function placeholderRowsFromRows(rows) {
   const excluded = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
+  for (const row of Array.isArray(rows) ? rows : []) {
     const status = String(row.status || '').replace(/\*\*/g, '').trim().toLowerCase();
     if (status !== 'interview') continue;
     // Only rows that identify NOTHING. A placeholder employer with a via=
@@ -714,11 +729,20 @@ if (isMainModule(import.meta.url)) {
   }
 
   const interviewRows = parseActiveInterviews(readNormalized(ACTIVE_INTERVIEWS_PATH));
-  const trackerMd = readNormalized(TRACKER_PATH);
-  const trackerByCompany = parseTrackerInterviewRows(trackerMd);
+  // Tracker source: an explicit --tracker path or a CAREER_OPS_TRACKER override
+  // still reads that markdown file; otherwise rows come from the applications
+  // table in the SQLite data layer.
+  let trackerRows;
+  if (argValue('--tracker') || process.env.CAREER_OPS_TRACKER?.trim()) {
+    trackerRows = trackerRowsFrom(readNormalized(TRACKER_PATH));
+  } else {
+    const dbPath = resolveDbPath();
+    trackerRows = existsSync(dbPath) ? listApplications() : [];
+  }
+  const trackerByCompany = interviewRowsFromRows(trackerRows);
   // Applications this signal cannot see. Reported, not dropped: see
   // placeholderInterviewRows for why counting beats inventing an identity.
-  const excluded = placeholderInterviewRows(trackerMd);
+  const excluded = placeholderRowsFromRows(trackerRows);
 
   const result = computeRejectionLatency(interviewRows, trackerByCompany, {
     today, courtesyDays,

@@ -30,8 +30,9 @@
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
-import { resolveColumns, parseTrackerRow, extractTrackerReportLinks, extractTrackerReportNumbers } from './tracker-parse.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { extractTrackerReportLinks, extractTrackerReportNumbers } from './tracker-parse.mjs';
+import { resolveDbPath, listApplications } from './core/db.mjs';
 import * as yaml from 'js-yaml';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -967,18 +968,14 @@ function readReportsByNum() {
 }
 
 function readTrackerRows() {
-  let trackerPath;
-  try { trackerPath = resolveTrackerPath(CAREER_OPS); } catch { return null; }
-  if (!trackerPath || !existsSync(trackerPath)) return null;
-  let lines;
-  try { lines = readFileSync(trackerPath, 'utf-8').split('\n'); } catch { return null; }
-  const colmap = resolveColumns(lines);
-  const rows = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) rows.push(row);
-  }
-  return rows;
+  // Rows come from the applications table; `null` keeps the report-filename
+  // fallback below working for an install without a database, same as a
+  // missing applications.md did before.
+  try {
+    const dbPath = resolveDbPath();
+    if (!existsSync(dbPath)) return null;
+    return listApplications();
+  } catch { return null; }
 }
 
 function collectSources() {

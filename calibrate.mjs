@@ -37,8 +37,8 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { parseTrackerRow, resolveColumns, isSeparatorRow, isHeaderRow } from './tracker-parse.mjs';
-import { resolveTrackerPath, resolveWorkspaceRoot } from './tracker-utils.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
+import { resolveDbPath, listApplications, listStatusEvents } from './core/db.mjs';
 import { canonicalOutcome } from './lib/outcome-types.mjs';
 import { outcomeDirsFor } from './lib/outcome-dir.mjs';
 
@@ -277,30 +277,23 @@ function loadJournals(workspaceRoot) {
 }
 
 /**
- * Per-row stage-reached evidence from the transition ledger data/status-log.tsv
- * ({num}\t{date}\t{from}\t{to}\t{source}\t{note}). A row reached interview if any
+ * Per-row stage-reached evidence from the transition ledger (status_events
+ * table, formerly data/status-log.tsv). A row reached interview if any
  * transition entered OR left Interview/Offer/Hired; reached offer if it entered
- * OR left Offer/Hired. Offer implies interview. Missing file → empty Map (the
+ * OR left Offer/Hired. Offer implies interview. Empty ledger → empty Map (the
  * calibration falls back to journals + current status, exactly as before).
  * @returns {Map<number, {reachedInterview:boolean, reachedOffer:boolean}>}
  */
-export function loadLedgerReached(workspaceRoot) {
+export function loadLedgerReached() {
   const reached = new Map();
-  const logPath = join(workspaceRoot, 'data', 'status-log.tsv');
-  if (!existsSync(logPath)) return reached;
   const INTERVIEW_PLUS = new Set(['interview', 'offer', 'hired']);
   const OFFER_PLUS = new Set(['offer', 'hired']);
-  for (const line of readFileSync(logPath, 'utf-8').split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    const c = line.split('\t');
-    const rawNum = String(c[0] || '').trim();
-    const date = String(c[1] || '').trim();
-    const rawFrom = String(c[2] || '').trim();
-    const rawTo = String(c[3] || '').trim();
-    if (!/^\d+$/.test(rawNum) || !date || !rawFrom || !rawTo) continue;
-    const num = Number(rawNum);
-    const from = rawFrom.toLowerCase();
-    const to = rawTo.toLowerCase();
+  for (const ev of listStatusEvents()) {
+    const num = ev.app_num;
+    const date = String(ev.event_date || '').trim();
+    const from = String(ev.from_status || '').trim().toLowerCase();
+    const to = String(ev.to_status || '').trim().toLowerCase();
+    if (!Number.isInteger(num) || !date || !from || !to) continue;
     const cur = reached.get(num) || { reachedInterview: false, reachedOffer: false };
     if (INTERVIEW_PLUS.has(from) || INTERVIEW_PLUS.has(to)) cur.reachedInterview = true;
     if (OFFER_PLUS.has(from) || OFFER_PLUS.has(to)) { cur.reachedOffer = true; cur.reachedInterview = true; }
@@ -446,15 +439,19 @@ if (isMainModule(import.meta.url)) {
     console.error('--min-band-n must be a positive integer');
     process.exit(2);
   }
-  const appsFile = resolveTrackerPath(DATA_ROOT);
-  if (!existsSync(appsFile)) {
-    console.error(`No tracker found at ${appsFile} — nothing to calibrate yet.`);
+  const dbPath = resolveDbPath();
+  if (!existsSync(dbPath)) {
+    console.error(`No tracker found at ${dbPath} — nothing to calibrate yet.`);
     process.exit(1);
   }
-  const workspaceRoot = resolveWorkspaceRoot(appsFile);
-  const rows = loadTrackerRows(appsFile);
-  const journals = loadJournals(workspaceRoot);
-  const reached = loadLedgerReached(workspaceRoot);
+  // Same {num, company, score, status} projection loadTrackerRows() builds
+  // from table text, fed from the applications table.
+  const rows = listApplications().map((row) => {
+    const score = parseFloat(String(row.score ?? ''));
+    return { num: row.num, company: row.company || '', score: Number.isFinite(score) ? score : null, status: row.status || '' };
+  });
+  const journals = loadJournals(DATA_ROOT);
+  const reached = loadLedgerReached();
   const result = computeCalibration(rows, journals, { minBandN, reached });
   if (argv.includes('--json')) console.log(JSON.stringify(result, null, 2));
   else console.log(renderHuman(result));

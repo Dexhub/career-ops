@@ -37,8 +37,8 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { resolveDbPath, listApplications } from './core/db.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -49,7 +49,6 @@ const CAREER_OPS = getCareerOpsRoot();
 // root made --apply die with `Cannot find module <data-root>/set-status.mjs`.
 // Same split, and the same constant name, as merge-tracker.mjs (#3761).
 const CAREER_OPS_CODE_ROOT = dirname(fileURLToPath(import.meta.url));
-const APPS_FILE = resolveTrackerPath(CAREER_OPS);
 
 // --- CLI args ---
 const args = process.argv.slice(2);
@@ -665,17 +664,10 @@ export function classifyEmail(text) {
 }
 
 // --- Tracker loading ---
-function loadTracker(appsFile = APPS_FILE) {
-  if (!existsSync(appsFile)) return [];
-  const content = readFileSync(appsFile, 'utf-8');
-  const lines = content.split('\n');
-  const colmap = resolveColumns(lines);
-  const entries = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) entries.push(row);
-  }
-  return entries;
+function loadTracker() {
+  const dbPath = resolveDbPath();
+  if (!existsSync(dbPath)) return [];
+  return listApplications();
 }
 
 /**

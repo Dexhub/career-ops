@@ -32,8 +32,8 @@ import { execFileSync } from 'child_process';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { parseTrackerRow, resolveColumns, isSeparatorRow, isHeaderRow } from './tracker-parse.mjs';
-import { resolveTrackerPath, resolveWorkspaceRoot } from './tracker-utils.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
+import { listApplications, listScanHistory } from './core/db.mjs';
 
 const REPO_URL = 'https://github.com/career-ops-hq/career-ops';
 const TEMPLATE = 'i-got-hired.yml';
@@ -148,10 +148,19 @@ async function main() {
   // Default to the configured data root (CAREER_OPS_ROOT / CAREER_OPS_DATA_DIR /
   // .career-ops-data marker), not process.cwd(): with the user layer outside the
   // checkout, the cwd-derived root found no tracker and reported no hires.
-  const root = flagValue(args, '--root') || resolveWorkspaceRoot(resolveTrackerPath(getCareerOpsRoot()));
-  const trackerPath = resolveTrackerPath(root);
-  const tracker = existsSync(trackerPath) ? readFileSync(trackerPath, 'utf8') : '';
-  const hires = hiredRows(tracker);
+  // --root only moves the state file; application rows come from the DB.
+  const root = flagValue(args, '--root') || getCareerOpsRoot();
+  const hires = listApplications()
+    .filter((row) => /hired/i.test(row.status ?? ''))
+    .map((row) => ({
+      // The Report cell is a markdown link ("[12](reports/12.md)"): the report
+      // number is its FIRST run of digits, never a digit-strip of the whole cell.
+      report: (String(row.report ?? '').match(/\d+/) || [''])[0],
+      role: row.role ?? '',
+      company: row.company ?? '',
+      location: row.location ?? '',
+      date: row.date ?? '',
+    }));
   const state = loadState(root);
 
   if (hasFlag(args, '--status')) {
@@ -189,8 +198,13 @@ async function main() {
 
   let weeks = flagValue(args, '--weeks');
   if (!weeks) {
-    const shPath = join(root, 'data', 'scan-history.tsv');
-    weeks = weeksFromScanHistory(existsSync(shPath) ? readFileSync(shPath, 'utf8') : '', hire.date) ?? '';
+    // Same derivation as weeksFromScanHistory, fed from the scan_history table:
+    // weeks from the earliest first_seen date to the hire date.
+    const dates = listScanHistory()
+      .map((r) => (String(r.first_seen ?? '').match(/^\d{4}-\d{2}-\d{2}/) || [null])[0])
+      .filter(Boolean)
+      .sort();
+    weeks = weeksFromScanHistory(dates.length ? `${dates[0]}\t` : '', hire.date) ?? '';
   }
 
   const story = flagValue(args, '--story') || '';

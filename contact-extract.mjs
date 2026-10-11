@@ -59,20 +59,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import { resolveTrackerPath, writeFileAtomic } from './tracker-utils.mjs';
+import { writeFileAtomic } from './tracker-utils.mjs';
 import { withPipelineLock } from './pipeline-lock.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { validateFlags, hasFlag, flagValue } from './lib/cli-flags.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { parseFileInput, collectInteractive } from './paste-reply.mjs';
 import { matchCandidates, classifyReply } from './reply-matcher.mjs';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import { escapeFormulaCell, unescapeFormulaCell } from './contacts.mjs';
+import { listApplications, listFollowUps } from './core/db.mjs';
 
 const DATA_ROOT = getCareerOpsRoot();
 const CONTACTS_PATH = path.join(DATA_ROOT, 'data', 'contacts.tsv');
-const APPS_FILE = resolveTrackerPath(DATA_ROOT);
-const FOLLOWUPS_FILE = path.join(DATA_ROOT, 'data', 'follow-ups.md');
 
 // Kept in sync by hand with contacts.mjs's own VALID_TYPES — both are small,
 // stable enums describing the same TSV column, and contacts.mjs does not
@@ -190,37 +188,16 @@ export async function appendContact(contact, contactsPath = CONTACTS_PATH) {
   });
 }
 
-function loadTrackerApps(appsFile = APPS_FILE) {
-  if (!fs.existsSync(appsFile)) return [];
-  const content = fs.readFileSync(appsFile, 'utf-8');
-  const lines = content.split('\n');
-  const colmap = resolveColumns(lines);
-  const apps = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) apps.push(row);
-  }
-  return apps;
+function loadTrackerApps() {
+  return listApplications();
 }
 
-function loadFollowups(followupsFile = FOLLOWUPS_FILE) {
-  if (!fs.existsSync(followupsFile)) return [];
-  const content = fs.readFileSync(followupsFile, 'utf-8');
-  const lines = content.split('\n');
-  const followups = [];
-  for (const line of lines) {
-    if (!line.startsWith('|')) continue;
-    const parts = line.split('|').map((s) => s.trim());
-    if (parts.length < 8) continue;
-    const num = parseInt(parts[1], 10);
-    const appNum = parseInt(parts[2], 10);
-    if (Number.isNaN(num) || Number.isNaN(appNum)) continue;
-    followups.push({
-      num, appNum, date: parts[3], company: parts[4], role: parts[5],
-      channel: parts[6], contact: parts[7], notes: parts[8] || '',
-    });
-  }
-  return followups;
+function loadFollowups() {
+  // Same row shape the follow-ups.md table parser produced (appNum camelCase).
+  return listFollowUps().map((f) => ({
+    num: f.num, appNum: f.app_num, date: f.date, company: f.company,
+    role: f.role, channel: f.channel, contact: f.contact, notes: f.notes || '',
+  }));
 }
 
 function askYesNo(query) {

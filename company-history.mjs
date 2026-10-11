@@ -2,10 +2,10 @@
 /**
  * company-history.mjs — Per-Company Evidence-Card Aggregator for career-ops
  *
- * READ-ONLY. Never writes a file. Joins the tracker (data/applications.md),
- * follow-ups (data/follow-ups.md), and scan-history (data/scan-history.tsv)
- * per company, and renders an evidence card per company covering two
- * independent axes:
+ * READ-ONLY. Never writes a file. Joins the tracker (applications table),
+ * follow-ups (follow_ups table), and scan-history (scan_history table) from
+ * data/career-ops.db per company, and renders an evidence card per company
+ * covering two independent axes:
  *
  *   - responsiveness: has THIS company ever responded to you, or gone silent
  *     on an Applied row past the silence window? A rejection counts as a
@@ -24,10 +24,12 @@
  * responses all produce the same raw signals as genuine silence, so the
  * card lists evidence and lets the human judge it.
  *
- * Sources (each optional; a missing file degrades gracefully, never crashes):
- *   - tracker:       resolveTrackerPath() -> data/applications.md
- *   - follow-ups:    data/follow-ups.md
- *   - scan-history:  data/scan-history.tsv (-> detectReposts clusters)
+ * Sources (each optional; a missing DB/file degrades gracefully, never crashes):
+ *   - tracker:       data/career-ops.db applications table
+ *   - follow-ups:    data/career-ops.db follow_ups table (--followups still
+ *                     reads a sandbox file)
+ *   - scan-history:  data/career-ops.db scan_history table (-> detectReposts
+ *                     clusters; --scan-history still reads a sandbox TSV)
  *   - status-log:    ./funnel-velocity.mjs, loaded ONLY via a dynamic
  *                     `await import(...)` in try/catch. The module ships on
  *                     main, but the optional applied-date/median helpers this
@@ -55,8 +57,9 @@ import * as yaml from 'js-yaml';
 
 import { parseScanHistory, detectReposts, loadAggregatorCompanies, isKeyLookup } from './detect-reposts.mjs';
 import { normalizeCompanyName } from './invite-match.mjs';
-import { normalizeCompany, resolveTrackerPath } from './tracker-utils.mjs';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
+import { normalizeCompany } from './tracker-utils.mjs';
+import { resolveDbPath, listApplications, listFollowUps, listScanHistory } from './core/db.mjs';
+import { SCAN_HISTORY_COLUMNS } from './lib/scan-history-columns.mjs';
 import { localToday } from './lib/local-today.mjs';
 import {
   parseFollowups,
@@ -268,26 +271,40 @@ function resolveNow(now) {
   return today();
 }
 
-// --- Source loaders (each returns {rows|clusters, loaded}; missing file -> empty + loaded:false) ---
+// --- Source loaders (each returns {rows|clusters, loaded}; missing DB/file -> empty + loaded:false) ---
+// Rows now come from data/career-ops.db (the retired markdown/TSV stores are
+// gone). The default root reads through core/db.mjs path resolution (which
+// honors CAREER_OPS_DB/CAREER_OPS_ROOT); an explicit non-default rootDir only
+// supports the graceful-degrade contract (missing DB -> loaded:false).
+
+function dbPathFor(rootDir) {
+  return rootDir === CAREER_OPS ? resolveDbPath() : join(rootDir, 'data', 'career-ops.db');
+}
 
 export function loadTrackerRows(rootDir = CAREER_OPS) {
-  const path = resolveTrackerPath(rootDir);
-  if (!existsSync(path)) return { rows: [], loaded: false };
-  const content = readFileSync(path, 'utf-8');
-  const lines = content.split('\n');
-  const colmap = resolveColumns(lines);
-  const rows = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) rows.push(row);
-  }
-  return { rows, loaded: true };
+  if (!existsSync(dbPathFor(rootDir))) return { rows: [], loaded: false };
+  return { rows: listApplications(), loaded: true };
 }
 
 export function loadFollowupRows(rootDir = CAREER_OPS, overridePath) {
-  const path = overridePath || join(rootDir, 'data/follow-ups.md');
-  if (!existsSync(path)) return { rows: [], loaded: false };
-  return { rows: parseFollowups(readFileSync(path, 'utf-8')), loaded: true };
+  // --followups keeps pointing at a sandbox FILE in the parseFollowups format;
+  // without it the rows come from the follow_ups table, mapped to that shape.
+  if (overridePath) {
+    if (!existsSync(overridePath)) return { rows: [], loaded: false };
+    return { rows: parseFollowups(readFileSync(overridePath, 'utf-8')), loaded: true };
+  }
+  if (!existsSync(dbPathFor(rootDir))) return { rows: [], loaded: false };
+  const rows = listFollowUps().map((f) => ({
+    num: f.num,
+    appNum: f.app_num,
+    date: f.date,
+    company: f.company,
+    role: f.role,
+    channel: f.channel,
+    contact: f.contact,
+    notes: f.notes || '',
+  }));
+  return { rows, loaded: true };
 }
 
 // Returns the clusters plus the aggregator key Set, because the card needs both:
@@ -295,14 +312,25 @@ export function loadFollowupRows(rootDir = CAREER_OPS, overridePath) {
 // Without the Set an aggregator would render as `none-detected`, which claims a
 // negative result from a check that never ran.
 export function loadRepostClusters(rootDir = CAREER_OPS, overridePath, portalsPath) {
-  const path = overridePath || join(rootDir, 'data/scan-history.tsv');
   // Same override scan.mjs and detect-reposts.mjs honour, so a sandboxed run
   // points all three at one config instead of silently reading the real one.
   const aggregators = loadAggregatorCompanies(
     portalsPath || process.env.CAREER_OPS_PORTALS || join(rootDir, 'portals.yml'),
   );
-  if (!existsSync(path)) return { clusters: [], aggregators, loaded: false };
-  const rows = parseScanHistory(readFileSync(path, 'utf-8'));
+  // --scan-history keeps pointing at a sandbox TSV file; without it the rows
+  // come from the scan_history table, re-joined losslessly to the TSV lines
+  // parseScanHistory validates (same synthesis stats.mjs uses).
+  let content;
+  if (overridePath) {
+    if (!existsSync(overridePath)) return { clusters: [], aggregators, loaded: false };
+    content = readFileSync(overridePath, 'utf-8');
+  } else {
+    if (!existsSync(dbPathFor(rootDir))) return { clusters: [], aggregators, loaded: false };
+    content = listScanHistory()
+      .map((r) => SCAN_HISTORY_COLUMNS.map((c) => String(r[c] ?? '')).join('\t'))
+      .join('\n');
+  }
+  const rows = parseScanHistory(content);
   return { clusters: detectReposts(rows, undefined, undefined, aggregators), aggregators, loaded: true };
 }
 

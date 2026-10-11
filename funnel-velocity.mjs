@@ -40,9 +40,10 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import * as yaml from 'js-yaml';
-import { computeFunnel, computeFunnelWithHistory, parseStatusLogStages, trackerStatusByNum, computeTrackerStats } from './stats.mjs';
+import { computeFunnel, computeFunnelWithHistory, parseStatusLogStages, trackerStatsFromRows, statusByNumFromRows } from './stats.mjs';
 import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import { resolveTrackerPath, loadCanonicalStates, resolveCanonicalState } from './tracker-utils.mjs';
+import { loadCanonicalStates, resolveCanonicalState } from './tracker-utils.mjs';
+import { resolveDbPath, listApplications, listStatusEvents } from './core/db.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { parseAppliedDate, normalizeStatus } from './followup-cadence.mjs';
 import { flagValue, validateFlags } from './lib/cli-flags.mjs';
@@ -349,9 +350,9 @@ export function parseTrackerRows(content) {
 }
 
 // --- Assembly ---
-export function analyze({ trackerContent, logContent, benchmarks, states, todayStr }) {
-  const rows = parseTrackerRows(trackerContent);
-  const stats = computeTrackerStats(trackerContent);
+export function analyze({ trackerContent, trackerRows, logContent, benchmarks, states, todayStr }) {
+  const rows = trackerRows ?? parseTrackerRows(trackerContent);
+  const stats = trackerStatsFromRows(rows);
   // Ledger-aware funnel when the transition log carries usable history: a row now
   // sitting in a terminal snapshot (Rejected/Discarded) still counts for the
   // middle stages it passed through, so interviewRate/responseRate stop
@@ -362,7 +363,7 @@ export function analyze({ trackerContent, logContent, benchmarks, states, todayS
   // funnel identical to the snapshot and print the "rates fold history" note.
   const ledgerStages = parseStatusLogStages(logContent);
   const funnel = ledgerStages.length > 0
-    ? computeFunnelWithHistory(trackerStatusByNum(trackerContent), ledgerStages)
+    ? computeFunnelWithHistory(statusByNumFromRows(rows), ledgerStages)
     : computeFunnel(stats.byStatus);
   const { observations, unparseable, unknownSources } = parseStatusLog(logContent, states);
   const timelines = foldObservations(observations);
@@ -821,21 +822,28 @@ function main() {
     process.exit(1);
   }
   const states = loadCanonicalStates(STATES_FILE);
-  const trackerPath = resolveTrackerPath(DATA_ROOT);
-  const logPath = join(dirname(trackerPath), 'status-log.tsv');
-  const trackerContent = existsSync(trackerPath) ? readFileSync(trackerPath, 'utf-8') : '';
-  const logContent = existsSync(logPath) ? readFileSync(logPath, 'utf-8') : '';
+  const dbPath = resolveDbPath();
+  const trackerRows = existsSync(dbPath) ? listApplications() : [];
+  // The ledger lives in status_events now; re-join the rows into the TSV line
+  // shape so parseStatusLog's per-line validation (canonical states, sources,
+  // unparseable tracking) keeps applying unchanged. The columns match the
+  // retired data/status-log.tsv one-for-one, so the join is lossless.
+  const logContent = existsSync(dbPath)
+    ? listStatusEvents()
+        .map(e => [e.app_num, e.event_date, e.from_status, e.to_status, e.source, e.note ?? ''].join('\t'))
+        .join('\n')
+    : '';
   // LOCAL day: the UTC day is tomorrow for a west-of-Greenwich evening run, so
   // every "waiting" figure read one day high (#3070).
   const todayStr = localToday();
 
-  if (!trackerContent) {
-    if (summaryMode) console.log(`No tracker found at ${trackerPath} — nothing to calibrate yet.`);
-    else console.log(JSON.stringify({ calibration: null, waiting: null, velocity: null, dataQuality: { trackerRows: 0, note: `no tracker at ${trackerPath}` } }, null, 2));
+  if (trackerRows.length === 0) {
+    if (summaryMode) console.log(`No tracker found at ${dbPath} — nothing to calibrate yet.`);
+    else console.log(JSON.stringify({ calibration: null, waiting: null, velocity: null, dataQuality: { trackerRows: 0, note: `no tracker at ${dbPath}` } }, null, 2));
     return;
   }
 
-  const result = analyze({ trackerContent, logContent, benchmarks, states, todayStr });
+  const result = analyze({ trackerRows, logContent, benchmarks, states, todayStr });
   if (summaryMode) console.log(renderSummary(result, todayStr));
   else console.log(JSON.stringify({ ...result, generatedAt: todayStr }, null, 2));
 }

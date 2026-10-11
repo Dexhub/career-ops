@@ -23,7 +23,7 @@ import { join, dirname, resolve, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { parseTrackerRow, resolveColumns, extractTrackerReportNumbers } from './tracker-parse.mjs';
+import { extractTrackerReportNumbers } from './tracker-parse.mjs';
 // The vocabulary this CLI accepts is also READ by calibrate.mjs, which cannot
 // import this file (top-level CLI, exits on load). Shared so the two cannot
 // drift — they already had (#3315 shipped a 7-entry copy of these 14).
@@ -32,15 +32,12 @@ import { roleFuzzyMatch } from './role-matcher.mjs';
 import {
   normalizeCompany,
   pathIsInsideCanonical,
-  resolvePdfIndexPath,
-  resolveTrackerPath,
-  resolveWorkspaceRoot,
 } from './tracker-utils.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { resolveOutcomeDir } from './lib/outcome-dir.mjs';
-import { parsePdfIndex } from './find.mjs';
 import { findCaptureForReport } from './jd-capture.mjs';
+import { resolveDbPath, listApplications, getPdfIndexEntry, listPdfIndex } from './core/db.mjs';
 
 // Two roots. CODE_ROOT locates the sibling scripts this file shells out to and
 // is the cwd it runs them from; DATA_ROOT is where the user's tracker and
@@ -160,23 +157,15 @@ if (!outcomeConfig) {
   failExit(`Invalid outcome_type "${rawOutcomeType}". Valid types: ${validTypes}`, 'invalid-outcome', EXIT_USAGE);
 }
 
-const appsFile = resolveTrackerPath(DATA_ROOT);
-if (!existsSync(appsFile)) {
-  failExit(`Tracker not found at ${appsFile}`, 'tracker-not-found', EXIT_NOT_FOUND);
+const dbPath = resolveDbPath();
+if (!existsSync(dbPath)) {
+  failExit(`Tracker not found at ${dbPath}`, 'tracker-not-found', EXIT_NOT_FOUND);
 }
 
-const content = readFileSync(appsFile, 'utf-8');
-const lines = content.split('\n');
-const colmap = resolveColumns(lines);
-const rows = [];
-
-for (let i = 0; i < lines.length; i++) {
-  const r = parseTrackerRow(lines[i], colmap);
-  if (r) rows.push(r);
-}
+const rows = listApplications();
 
 if (rows.length === 0) {
-  failExit(`Tracker at ${appsFile} is empty`, 'tracker-empty', EXIT_NOT_FOUND);
+  failExit(`Tracker at ${dbPath} is empty`, 'tracker-empty', EXIT_NOT_FOUND);
 }
 
 let matchedRow = null;
@@ -216,7 +205,7 @@ matchedRow = candidates[0];
 
 const companySlug = slugify(matchedRow.company);
 const roleSlug = slugify(matchedRow.role);
-const repoRoot = resolveWorkspaceRoot(appsFile);
+const repoRoot = DATA_ROOT;
 // Reuse this row's existing journal directory when it has one. The name used to
 // be rebuilt from the tracker's CURRENT text every time, so editing the Role
 // cell between two recordings sent the second entry to a different directory
@@ -261,28 +250,25 @@ if (flags.cv) {
     }
   }
 
-  // Case C: Lookup data/pdf-index.tsv to find PDF mapping for the linked report number.
+  // Case C: Lookup the pdf_index table (formerly data/pdf-index.tsv) to find
+  // the PDF mapping for the linked report number.
   if (!cvResolvedPath) {
-    const manifestPath = resolvePdfIndexPath(appsFile);
-    if (existsSync(manifestPath)) {
-      try {
-        const manifestText = readFileSync(manifestPath, 'utf-8');
-        const pdfMap = parsePdfIndex(manifestText);
-        const reportNums = extractTrackerReportNumbers(matchedRow.report);
-        for (const num of reportNums) {
-          const mappedPdf = pdfMap.get(String(num).padStart(3, '0')) || pdfMap.get(String(num));
-          if (mappedPdf) {
-            const fullPdfPath = join(repoRoot, mappedPdf.replace(/^local:/, ''));
-            if (existsSync(fullPdfPath)) {
-              cvResolvedPath = fullPdfPath;
-              isPdf = true;
-              break;
-            }
+    try {
+      const reportNums = extractTrackerReportNumbers(matchedRow.report);
+      for (const num of reportNums) {
+        const entry = getPdfIndexEntry(num, { kind: 'cv' });
+        const mappedPdf = entry && entry.pdf;
+        if (mappedPdf) {
+          const fullPdfPath = join(repoRoot, mappedPdf.replace(/^local:/, ''));
+          if (existsSync(fullPdfPath)) {
+            cvResolvedPath = fullPdfPath;
+            isPdf = true;
+            break;
           }
         }
-      } catch (err) {
-        // Fallback gracefully on parsing issues
       }
+    } catch (err) {
+      // Fallback gracefully on lookup issues
     }
   }
 }
@@ -307,26 +293,20 @@ const outputDir = resolve(repoRoot, 'output');
 const resolvedCvAbs = cvResolvedPath ? resolve(cvResolvedPath) : null;
 if (isPdf && resolvedCvAbs && pathIsInsideCanonical(resolvedCvAbs, outputDir)) {
   cvFromOutputDir = true;
-  const manifestPath = resolvePdfIndexPath(appsFile);
-  if (existsSync(manifestPath)) {
-    try {
-      const manifestText = readFileSync(manifestPath, 'utf-8');
-      for (const line of manifestText.split('\n')) {
-        if (!line.trim() || line.startsWith('#')) continue;
-        const fields = line.split('\t');
-        if (!fields[1]) continue;
-        const rowPdfPath = resolve(join(repoRoot, fields[1].replace(/^local:/, '')));
-        if (rowPdfPath === resolvedCvAbs && fields[2]) {
-          const htmlFull = join(repoRoot, fields[2].replace(/^local:/, ''));
-          if (existsSync(htmlFull) && pathIsInsideCanonical(htmlFull, outputDir)) {
-            htmlResolvedPath = htmlFull;
-          }
-          break;
+  try {
+    for (const row of listPdfIndex()) {
+      if (!row.pdf) continue;
+      const rowPdfPath = resolve(join(repoRoot, String(row.pdf).replace(/^local:/, '')));
+      if (rowPdfPath === resolvedCvAbs && row.html) {
+        const htmlFull = join(repoRoot, String(row.html).replace(/^local:/, ''));
+        if (existsSync(htmlFull) && pathIsInsideCanonical(htmlFull, outputDir)) {
+          htmlResolvedPath = htmlFull;
         }
+        break;
       }
-    } catch (err) {
-      // Fallback gracefully on parsing issues
     }
+  } catch (err) {
+    // Fallback gracefully on lookup issues
   }
 }
 

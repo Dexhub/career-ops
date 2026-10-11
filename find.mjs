@@ -19,22 +19,16 @@
  * the shared fuzzy matcher (role-matcher.mjs) as fallback for multi-word
  * phrases.
  *
- * Zero dependencies and strictly read-only: parses data/applications.md via
- * the shared header-aware column mapping (tracker-parse.mjs) and the PDF
- * manifest data/pdf-index.tsv (written by generate-pdf.mjs).
+ * Zero dependencies and strictly read-only: reads the applications table and
+ * the pdf_index manifest from the SQLite data layer (core/db.mjs). The
+ * exported string parsers remain for callers holding legacy table text.
  */
 
-import { readFileSync, existsSync } from 'fs';
-import { dirname, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
 import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import { resolvePdfIndexPath } from './tracker-utils.mjs';
 import { roleFuzzyMatch } from './role-matcher.mjs';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
-
-const ROOT = dirname(fileURLToPath(import.meta.url));
-const DATA_ROOT = getCareerOpsRoot();
+import { resolveDbPath, listApplications, listPdfIndex } from './core/db.mjs';
 
 // "008" and "8" are the same report — zero-padded report-link form vs unpadded
 // tracker-# form (same normalization as the manifest writer in generate-pdf.mjs).
@@ -63,19 +57,24 @@ export function parseTrackerRows(text) {
   for (const line of lines) {
     const row = parseTrackerRow(line, colmap);
     if (!row) continue;
-    const link = row.report.match(/\[(\d+)\]\(([^)]+)\)/);
-    rows.push({
-      trackerNum: row.num,
-      date: row.date,
-      company: row.company,
-      role: row.role,
-      score: row.score,
-      status: cleanStatus(row.status),
-      reportNum: link ? normNum(link[1]) : null,
-      reportPath: link ? link[2].replace(/^(\.\.\/)+/, '') : null,
-    });
+    rows.push(toLookupRow(row));
   }
   return rows;
+}
+
+/** One tracker row (parseTrackerRow shape / applications table row) → lookup row. */
+function toLookupRow(row) {
+  const link = String(row.report ?? '').match(/\[(\d+)\]\(([^)]+)\)/);
+  return {
+    trackerNum: row.num,
+    date: row.date,
+    company: row.company,
+    role: row.role,
+    score: row.score,
+    status: cleanStatus(row.status),
+    reportNum: link ? normNum(link[1]) : null,
+    reportPath: link ? link[2].replace(/^(\.\.\/)+/, '') : null,
+  };
 }
 
 /**
@@ -171,20 +170,22 @@ function main() {
     return;
   }
 
-  const trackerPath = resolveTrackerPath(DATA_ROOT);
-  if (!existsSync(trackerPath)) {
-    console.error(`Error: ${trackerPath} not found — nothing to search.`);
+  const dbPath = resolveDbPath();
+  if (!existsSync(dbPath)) {
+    console.error(`Error: ${dbPath} not found — nothing to search.`);
     process.exitCode = 1;
     return;
   }
-  const rows = parseTrackerRows(readFileSync(trackerPath, 'utf-8'));
+  const rows = listApplications().map(toLookupRow);
 
-  // Derived from the tracker resolved just above, not from ROOT: a redirected
-  // CAREER_OPS_TRACKER must not be searched against this install's manifest (#2471).
-  const manifestPath = resolvePdfIndexPath(trackerPath);
-  const pdfIndex = existsSync(manifestPath)
-    ? parsePdfIndex(readFileSync(manifestPath, 'utf-8'))
-    : new Map();
+  // Same source of truth as the tracker rows: a redirected CAREER_OPS_DB
+  // carries its own pdf_index, so tracker and manifest can never diverge (#2471).
+  // Last non-cover row per report wins, matching parsePdfIndex().
+  const pdfIndex = new Map();
+  for (const r of listPdfIndex()) {
+    if (!r.report_norm || !r.pdf || r.kind === 'cover') continue;
+    pdfIndex.set(r.report_norm, r.pdf);
+  }
 
   const matches = findMatches(rows, query, pdfIndex);
   if (json) {
