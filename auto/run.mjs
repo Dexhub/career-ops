@@ -32,7 +32,7 @@ import { loadAutoConfig, resolveExecutionPolicy } from './lib/config.mjs';
 import { listJobs, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 import { learningRuntime, runApply, syncTrackerApplied } from './apply-worker.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
-import { reconcileAttempt } from './learning/workflow.mjs';
+import { reconcileAttempt, trackerSyncTaskId } from './learning/workflow.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { writeDigest } from './digest.mjs';
 
@@ -191,8 +191,11 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
       }
       let job;
       if (staleOutcome?.status === 'confirmed') {
-        job = await updateJob(stale.urlKey, { transitionTo: 'submitted', patch: { lastError: null } });
-        syncTrackerApplied(job, stale.auditDir, log);
+        job = await updateJob(stale.urlKey, {
+          transitionTo: 'submitted',
+          patch: { lastError: null, trackerSync: { status: 'pending', taskId: trackerSyncTaskId(stale) } },
+        });
+        await syncTrackerApplied(job, stale.auditDir, log, learning);
         log(`run: recovered stale applying job ${job.company} -> submitted (reconciled)`);
       } else if (staleOutcome?.status === 'unknown') {
         job = await updateJob(stale.urlKey, {
@@ -237,6 +240,19 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
       }
     } catch (err) {
       log(`run: blocker sweep failed (continuing): ${err.message}`);
+    }
+    // T15: retry due tracker-sync tasks independently of any application
+    // attempt — a submitted job whose canonical tracker write failed is
+    // synced here, never by re-invoking the application worker.
+    try {
+      const { syncSubmittedJobs } = await import('./learning/workflow.mjs');
+      const synced = await syncSubmittedJobs(learning.ctx, { log });
+      if (synced.scanned > 0) {
+        log(`run: tracker sync sweep — ${synced.completed} completed, ${synced.reconciled} reconciled, `
+          + `${synced.failed} failed (retained), ${synced.blocked} blocked`);
+      }
+    } catch (err) {
+      log(`run: tracker sync sweep failed (continuing): ${err.message}`);
     }
   }
 

@@ -512,3 +512,52 @@ Full suite: 196/196 (`node --test auto/test/learning-*.test.mjs`). Self-tests
 green: run.mjs, state.mjs, apply-worker.mjs (panel self-test NOT run — it
 consumes the pause sentinel). `data/auto/pause-requested` intact.
 Commit: (pending — coordinator commits)
+
+## 2026-10-11 — T15: canonical tracker sync as an independently retryable task
+
+Files: auto/learning/workflow.mjs (extended: trackerSyncTaskId, reportNumFromJob,
+executeTrackerSync, ensureSyncTask, syncSubmittedJobs, defaultTrackerExecutor,
+TRACKER_SYNC_BACKOFF_{BASE,CAP}_MS); auto/apply-worker.mjs (syncTrackerApplied
+rewritten async over the retryable core; submitted/reconciled finalization
+commits trackerSync 'pending' + deterministic taskId in the SAME updateJob
+patch); auto/run.mjs (stale-confirmed recovery same patch + awaited sync;
+learning-gated syncSubmittedJobs sweep next to the T13 blocker sweep);
+auto/test/learning-tracker-sync.test.mjs (NEW, 17 tests, injected fake tracker
+reader + status executor).
+
+Semantics: report identity resolved from the report BASENAME (never the first
+number in an absolute path); candidate rows matched via
+extractTrackerReportNumbers, identity confirmed by URL (employer slug only as
+a tiebreak with a matching link, alone it blocks); missing row recreated only
+through batch/tracker-additions + merge-tracker.mjs and re-verified; ambiguity
+/ remapped report / unrecognized status -> source_conflict blocker +
+trackerSync 'blocked', no write; row already past Applied -> 'reconciled',
+canonical outcome untouched; success requires a canonical reread showing
+Applied on the verified row/link. Failure keeps the job submitted +
+trackerSync 'pending', task failed with lastError, attempts and exponential
+nextAttemptAt (5m base, 6h cap); the run-cycle sweep retries due tasks with
+no application worker involvement (asserted: workflow.mjs never references
+apply-worker/runApply). Task id sync-sha40(applicationId) is reconstructable
+from the committed job after a crash (sweep recreates missing records).
+
+Flag-off delta (strict superset, no behavior lost): sync still happens
+immediately at finalization through the same core — differences from legacy:
+basename-anchored report resolution instead of first-number-anywhere,
+requisition identity verified before writing, post-write canonical reread,
+later outcomes preserved as reconciled instead of forced to Applied, and the
+outcome recorded on job.trackerSync ('complete'/'reconciled'; failures leave
+'pending' as inert metadata — no task record exists with learning off).
+syncTrackerApplied is now async; all three call sites await it.
+
+Tests: 17/17 new (locked tracker, merge failure, missing-row recreation,
+ambiguous rows -> blocker, report remapping -> blocked, already-applied
+idempotency, Interview preserved, crash-after-write idempotent completion,
+post-write verification failure, backoff gate + independent retry, crash
+reconstruction, no-worker assertion, flag-off refusal, basename resolution,
+deterministic id, fixture isolation). Full suite: 213/213
+(`node --test auto/test/learning-*.test.mjs`). Self-tests green: state.mjs,
+apply-worker.mjs, run.mjs (panel self-test NOT run — consumes the pause
+sentinel). Plan: T15 boxes ticked + Phase 3 gate item "tracker repair cannot
+produce another employer action or regress a later outcome".
+`data/auto/pause-requested` intact.
+Commit: (pending — coordinator commits)

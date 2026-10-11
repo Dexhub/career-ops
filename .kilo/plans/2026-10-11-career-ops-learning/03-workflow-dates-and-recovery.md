@@ -92,17 +92,17 @@ Exactly-once external delivery is not promised for ATSs without an idempotency m
 **Extend:** `workflow.mjs`; **Modify:** `syncTrackerApplied`/finalization; **Create:** `auto/test/learning-tracker-sync.test.mjs`.
 **Produces:** `syncSubmittedJobs` and `syncTasks` records.
 
-- [ ] In the same committed job update that records confirmed submission, set `trackerSync.status='pending'` and a deterministic task ID. The task can be reconstructed from the job if its separate record was not written before a crash.
-- [ ] Use existing `merge-tracker.mjs` and `set-status.mjs --report N Applied --json`. Resolve report identity from the report basename/link through verified helpers; do not extract an arbitrary first number from an absolute path or guess a row from employer name alone.
-- [ ] If the row is missing, recreate only from verified job/report metadata through the sanctioned tracker-addition/merge flow. Confirm the resulting row identifies the same requisition before changing its state. Ambiguity becomes a reconciliation blocker.
-- [ ] On failure, retain submitted state, task error, backoff and attempt count. On success, reread the canonical tracker and verify the exact row/link before marking sync complete. No sync retry may invoke the application worker.
-- [ ] Do not regress later tracker outcomes. If the canonical row is already Interview, Offer or another later state, record synchronization as reconciled without forcing it back to Applied; use the existing canonical status vocabulary.
-- [ ] Test locked/missing tracker, merge failure, ambiguous employer rows, report remapping, already-applied idempotency, later outcome preservation and crash after tracker write. Run `node --test auto/test/learning-tracker-sync.test.mjs`; inject a fake status executor for error cases.
+- [x] In the same committed job update that records confirmed submission, set `trackerSync.status='pending'` and a deterministic task ID. The task can be reconstructed from the job if its separate record was not written before a crash.
+- [x] Use existing `merge-tracker.mjs` and `set-status.mjs --report N Applied --json`. Resolve report identity from the report basename/link through verified helpers; do not extract an arbitrary first number from an absolute path or guess a row from employer name alone.
+- [x] If the row is missing, recreate only from verified job/report metadata through the sanctioned tracker-addition/merge flow. Confirm the resulting row identifies the same requisition before changing its state. Ambiguity becomes a reconciliation blocker.
+- [x] On failure, retain submitted state, task error, backoff and attempt count. On success, reread the canonical tracker and verify the exact row/link before marking sync complete. No sync retry may invoke the application worker.
+- [x] Do not regress later tracker outcomes. If the canonical row is already Interview, Offer or another later state, record synchronization as reconciled without forcing it back to Applied; use the existing canonical status vocabulary.
+- [x] Test locked/missing tracker, merge failure, ambiguous employer rows, report remapping, already-applied idempotency, later outcome preservation and crash after tracker write. Run `node --test auto/test/learning-tracker-sync.test.mjs`; inject a fake status executor for error cases.
 
 ## Phase 3 review gate
 
 - [ ] Queue/date settings reach execution with an honest unknown-date policy.
 - [ ] Saved answers and verification waits resume the same operation after restart.
 - [ ] Unknown submissions cannot enter the ordinary retry queue.
-- [ ] Tracker repair cannot produce another employer action or regress a later outcome.
+- [x] Tracker repair cannot produce another employer action or regress a later outcome.
 - [ ] Policy changes and newly blocked backlog are visible before activation. No live submission was needed to pass these fixture tests.

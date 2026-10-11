@@ -10,8 +10,10 @@
 // injectable `jobs` adapter that defaults to a lazy import of auto/state.mjs.
 
 import { createHash } from 'node:crypto';
-import { existsSync as fsExists, readFileSync as fsRead } from 'node:fs';
-import { join as pathJoin } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { existsSync as fsExists, mkdirSync as fsMkdir, readFileSync as fsRead, writeFileSync as fsWrite } from 'node:fs';
+import { basename as pathBasename, join as pathJoin } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { LearningError } from './contracts.mjs';
 import { readLearningConfig } from './context.mjs';
 import { commitRecord, getRecord, listRecords } from './store.mjs';
@@ -720,4 +722,371 @@ export async function reconcileAttempt(ctx, { applicationId, attemptId, evidence
     ...(status === 'unknown' ? { blockerId } : {}),
     attempt: updatedIntent,
   };
+}
+
+// ---------------------------------------------------------------------------
+// T15: canonical tracker synchronization as an independently retryable task.
+// The sync NEVER invokes the application worker — it only reads the committed
+// job record and drives the sanctioned tracker scripts (merge-tracker.mjs,
+// set-status.mjs). A failure leaves the job submitted and the task failed
+// with error + backoff; a human-shaped ambiguity opens a blocker instead of
+// guessing.
+
+export const TRACKER_SYNC_BACKOFF_BASE_MS = 5 * MINUTE_MS;
+export const TRACKER_SYNC_BACKOFF_CAP_MS = 6 * 60 * MINUTE_MS;
+
+// Repo code root (this file lives at <root>/auto/learning/). Tracker scripts
+// and templates/states.yml are addressed from here, never from cwd.
+const CODE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+
+/** Deterministic sync-task id, reconstructable from the job alone (crash-safe). */
+export function trackerSyncTaskId(job) {
+  const key = (typeof job?.applicationId === 'string' && job.applicationId !== '')
+    ? job.applicationId : job?.urlKey;
+  nonempty('job identity (applicationId or urlKey)', key);
+  return `sync-${sha40(`syncTask:tracker_applied:${key}`)}`;
+}
+
+/**
+ * Report number from the job's own report basename — the report file the job
+ * record names, NOT the first number found anywhere in an absolute path.
+ * Returns null when the basename does not lead with a report number.
+ */
+export function reportNumFromJob(job) {
+  const rp = job?.reportPath;
+  if (typeof rp !== 'string' || rp.trim() === '') return null;
+  const m = /^0*(\d{1,8})(?=[-._])/.exec(pathBasename(rp.trim()));
+  if (!m) return null;
+  const num = parseInt(m[1], 10);
+  return Number.isInteger(num) && num > 0 ? num : null;
+}
+
+let statesPromise = null;
+async function canonicalStatesList() {
+  if (!statesPromise) {
+    statesPromise = import('../../tracker-utils.mjs').then(
+      (u) => u.loadCanonicalStates(pathJoin(CODE_ROOT, 'templates', 'states.yml')));
+  }
+  return statesPromise;
+}
+
+/** Resolve a tracker cell to canonical vocabulary + its lifecycle position. */
+async function classifyStatus(rawStatus) {
+  const { resolveCanonicalState } = await import('../../tracker-utils.mjs');
+  const states = await canonicalStatesList();
+  const label = resolveCanonicalState(rawStatus, states);
+  if (!label) return { label: null, laterThanApplied: false };
+  const labels = states.map((s) => s.label);
+  return { label, laterThanApplied: labels.indexOf(label) > labels.indexOf('Applied') };
+}
+
+/**
+ * Default executor: the two sanctioned tracker scripts, nothing else. The
+ * injectable shape lets tests exercise every failure path without a tracker.
+ */
+export function defaultTrackerExecutor() {
+  const node = process.execPath;
+  const run = (args) => spawnSync(node, args, {
+    cwd: CODE_ROOT, encoding: 'utf8', timeout: 120_000,
+  });
+  return {
+    mergeTracker() {
+      const r = run(['merge-tracker.mjs']);
+      return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    },
+    setStatus({ reportNum, status, note }) {
+      const args = ['set-status.mjs', '--report', String(reportNum), status, '--json'];
+      if (note) args.splice(4, 0, '--note', note);
+      const r = run(args);
+      return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    },
+  };
+}
+
+async function defaultTrackerReader() {
+  const db = await import('../../core/db.mjs');
+  return { listApplications: () => db.listApplications() };
+}
+
+/**
+ * Identity check: does this tracker row describe the same requisition as the
+ * job? URL is authoritative when both sides have one. Without a row URL the
+ * report link match (already established by the caller) plus an exact
+ * normalized employer match is accepted; employer name ALONE never is.
+ * Returns true / false (provably different) / null (cannot verify).
+ */
+function sameRequisition(row, job) {
+  const norm = (s) => String(s ?? '').trim().toLowerCase().replace(/\/+$/, '');
+  const rowUrl = norm(row.url);
+  const jobUrl = norm(job.urlKey ?? job.url);
+  if (rowUrl && jobUrl) return rowUrl === jobUrl;
+  const slug = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const rc = slug(row.company); const jc = slug(job.company);
+  if (rc && jc) return rc === jc ? true : null;
+  return null;
+}
+
+/** Sanctioned recreate path: a tracker-addition TSV from verified job metadata. */
+function writeTrackerAddition(dataRoot, job, reportNum) {
+  const dir = pathJoin(dataRoot, 'batch', 'tracker-additions');
+  fsMkdir(dir, { recursive: true });
+  const clean = (v) => String(v ?? '').replace(/[\t\n\r]+/g, ' ').trim();
+  const slugify = (v) => clean(v).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'auto';
+  const line = [
+    clean(job.company) || 'unknown', clean(job.role) || 'unknown',
+    'Evaluated', clean(job.urlKey), `reports/${pathBasename(String(job.reportPath))}`,
+    'auto-pipeline submission (tracker row recreated by sync task)',
+  ].join('\t');
+  const file = pathJoin(dir, `${reportNum}-${slugify(job.company)}.tsv`);
+  fsWrite(file, `${line}\n`);
+  return file;
+}
+
+/**
+ * One sync attempt for one committed job. Pure of job-state writes: returns
+ * {outcome: 'completed'|'reconciled'|'failed'|'blocked', ...} and lets the
+ * caller persist task/job state. Idempotent — safe to re-run after any crash.
+ */
+export async function executeTrackerSync({
+  job, dataRoot, executor = null, tracker = null, auditDir = null, log = () => {},
+} = {}) {
+  if (!job || typeof job !== 'object') {
+    throw new LearningError('SCHEMA_VALIDATION', 'executeTrackerSync: job required');
+  }
+  nonempty('dataRoot', dataRoot);
+  const exec = executor ?? defaultTrackerExecutor();
+  const reportNum = reportNumFromJob(job);
+  if (reportNum == null) {
+    return { outcome: 'failed',
+      error: `no verifiable report number in report basename "${String(job.reportPath ?? '')}"` };
+  }
+  const reader = tracker ?? await defaultTrackerReader();
+  const { extractTrackerReportNumbers, extractTrackerReportLinks } = await import('../../tracker-parse.mjs');
+  const readRows = () => reader.listApplications();
+  const linking = (rows) => rows.filter((r) => {
+    try { return extractTrackerReportNumbers(r.report ?? '', r.notes ?? '').includes(reportNum); } catch { return false; }
+  });
+
+  let rows;
+  try { rows = readRows(); } catch (err) {
+    return { outcome: 'failed', error: `canonical tracker unreadable: ${err.message}` };
+  }
+  let candidates = linking(rows);
+  let recreated = false;
+
+  if (candidates.length === 0) {
+    // Pending additions may simply not be merged yet — sanctioned merge first.
+    const m1 = exec.mergeTracker();
+    if ((m1.status ?? 1) !== 0) {
+      return { outcome: 'failed', error: `merge-tracker failed (exit ${m1.status})` };
+    }
+    try { candidates = linking(readRows()); } catch (err) {
+      return { outcome: 'failed', error: `canonical tracker unreadable after merge: ${err.message}` };
+    }
+    if (candidates.length === 0) {
+      // Row genuinely missing: recreate ONLY from verified job/report metadata
+      // through the sanctioned addition+merge flow, then re-verify identity.
+      writeTrackerAddition(dataRoot, job, reportNum);
+      recreated = true;
+      log(`learning: tracker row for report #${reportNum} missing — recreated via tracker-additions`);
+      const m2 = exec.mergeTracker();
+      if ((m2.status ?? 1) !== 0) {
+        return { outcome: 'failed', error: `merge-tracker failed after recreation (exit ${m2.status})` };
+      }
+      try { candidates = linking(readRows()); } catch (err) {
+        return { outcome: 'failed', error: `canonical tracker unreadable after recreation: ${err.message}` };
+      }
+      if (candidates.length === 0) {
+        return { outcome: 'failed', error: `tracker row for report #${reportNum} still missing after sanctioned addition + merge` };
+      }
+    }
+  }
+
+  if (candidates.length > 1) {
+    const narrowed = candidates.filter((r) => sameRequisition(r, job) === true);
+    if (narrowed.length === 1) candidates = narrowed;
+    else {
+      return { outcome: 'blocked',
+        error: `report #${reportNum} is linked by ${candidates.length} tracker rows and requisition identity cannot disambiguate — human reconciliation required` };
+    }
+  }
+
+  const row = candidates[0];
+  const identity = sameRequisition(row, job);
+  if (identity !== true) {
+    return { outcome: 'blocked',
+      error: identity === false
+        ? `tracker row ${row.num != null ? `#${row.num} ` : ''}links report #${reportNum} but identifies a different requisition (url mismatch) — human reconciliation required`
+        : `tracker row ${row.num != null ? `#${row.num} ` : ''}cannot be verified as the same requisition — human reconciliation required` };
+  }
+
+  const current = await classifyStatus(row.status);
+  if (current.label === null && String(row.status ?? '').trim() !== '') {
+    return { outcome: 'blocked',
+      error: `tracker row has unrecognized status "${row.status}" — human reconciliation required` };
+  }
+  if (current.label === 'Applied') {
+    return { outcome: 'completed', reportNum, rowNum: row.num ?? null, alreadyApplied: true, recreated };
+  }
+  if (current.laterThanApplied) {
+    // The canonical row already moved past Applied — record reconciled, never
+    // force the lifecycle backward.
+    return { outcome: 'reconciled', reportNum, rowNum: row.num ?? null, canonicalStatus: current.label, recreated };
+  }
+
+  const note = `auto-submitted; audit ${auditDir ?? job.auditDir ?? ''}`.trim();
+  const res = exec.setStatus({ reportNum, status: 'Applied', note });
+  if ((res.status ?? 1) !== 0) {
+    const detail = (res.stderr || res.stdout || '').trim().slice(0, 200);
+    return { outcome: 'failed', error: `set-status --report ${reportNum} Applied failed (exit ${res.status})${detail ? `: ${detail}` : ''}` };
+  }
+
+  // Success is only what the canonical tracker says after a reread: the exact
+  // row must link this report, identify this requisition, and read Applied.
+  let after;
+  try { after = linking(readRows()); } catch (err) {
+    return { outcome: 'failed', error: `post-write verification reread failed: ${err.message}` };
+  }
+  const vrow = (row.num != null ? after.find((r) => r.num === row.num) : null)
+    ?? (after.length === 1 ? after[0] : null);
+  const linksReport = vrow ? extractTrackerReportLinks(vrow.report ?? '', vrow.notes ?? '')
+    .some((l) => l.target === reportNum) : false;
+  const verified = vrow && linksReport && sameRequisition(vrow, job) === true
+    && (await classifyStatus(vrow.status)).label === 'Applied';
+  if (!verified) {
+    return { outcome: 'failed', error: 'post-write verification failed: canonical tracker does not show Applied on the verified row/link' };
+  }
+  return { outcome: 'completed', reportNum, rowNum: vrow.num ?? null, recreated };
+}
+
+/**
+ * Create (or find) the retryable sync-task record for a submitted job. The id
+ * is deterministic from the job, so a crash between the committed job update
+ * and this record write loses nothing — the next sweep recreates it.
+ */
+export async function ensureSyncTask(ctx, { job } = {}) {
+  assertEnabled(ctx);
+  if (!job || typeof job !== 'object') {
+    throw new LearningError('SCHEMA_VALIDATION', 'ensureSyncTask: job required');
+  }
+  const id = trackerSyncTaskId(job);
+  const existing = getRecord(ctx, 'syncTasks', id);
+  if (existing) return { task: existing, created: false };
+  const task = await commitRecord(ctx, 'syncTasks', id, {
+    taskType: 'tracker_applied',
+    applicationId: job.applicationId ?? null,
+    attemptId: job.execution?.attemptId ?? null,
+    payloadRef: job.urlKey,
+    attempts: 0,
+    lastError: null,
+    nextAttemptAt: null,
+  }, { expectedRevision: 0, status: 'pending', sourceIds: [] });
+  return { task, created: true };
+}
+
+/**
+ * CONTRACTS: syncSubmittedJobs(ctx,{limit,executeStatus}) -> summary.
+ * Sweeps due tracker-sync tasks (and reconstructs task records for committed
+ * jobs whose record write was lost to a crash), executing each through the
+ * injected executor. Never touches the application worker.
+ */
+export async function syncSubmittedJobs(ctx, {
+  limit = 10, executeStatus = null, tracker = null, jobs = null,
+  taskId = null, now = null, log = () => {},
+} = {}) {
+  assertEnabled(ctx);
+  const nowDate = now ?? ctx.now();
+  const state = await jobsApi(jobs);
+  const summary = { scanned: 0, completed: 0, reconciled: 0, failed: 0, blocked: 0, skipped: 0, reconstructed: 0 };
+
+  // Crash recovery: a committed job carrying trackerSync.status 'pending'
+  // deterministically names its task — recreate any record that is missing.
+  for (const j of state.listJobs()) {
+    if (j?.trackerSync?.status !== 'pending') continue;
+    const id = j.trackerSync.taskId ?? trackerSyncTaskId(j);
+    if (!getRecord(ctx, 'syncTasks', id)) {
+      const full = typeof state.loadJob === 'function' ? (state.loadJob(j.urlKey) ?? j) : j;
+      await ensureSyncTask(ctx, { job: full });
+      summary.reconstructed += 1;
+    }
+  }
+
+  const { items } = listRecords(ctx, 'syncTasks', { limit: 500 });
+  let due = items.filter((t) => t.data.taskType === 'tracker_applied'
+    && ['pending', 'failed', 'in_progress'].includes(t.status));
+  if (taskId) due = due.filter((t) => t.id === taskId);
+  due = due.filter((t) => {
+    if (taskId) return true; // explicit immediate attempt skips the backoff gate
+    const at = t.data.nextAttemptAt;
+    if (!at) return true;
+    const ok = Date.parse(at) <= nowDate.getTime();
+    if (!ok) summary.skipped += 1;
+    return ok;
+  }).slice(0, Math.max(1, limit));
+
+  for (const task of due) {
+    summary.scanned += 1;
+    const job = typeof state.loadJob === 'function' ? state.loadJob(task.data.payloadRef) : null;
+    if (!job) {
+      await commitRecord(ctx, 'syncTasks', task.id,
+        { ...task.data, lastError: `no job record for ${task.data.payloadRef}`, nextAttemptAt: null },
+        { expectedRevision: task.revision, status: 'failed', sourceIds: task.sourceIds });
+      summary.failed += 1;
+      continue;
+    }
+    const attempts = (task.data.attempts ?? 0) + 1;
+    const running = await commitRecord(ctx, 'syncTasks', task.id,
+      { ...task.data, attempts },
+      { expectedRevision: task.revision, status: 'in_progress', sourceIds: task.sourceIds });
+
+    let result;
+    try {
+      result = await executeTrackerSync({
+        job, dataRoot: ctx.dataRoot, executor: executeStatus, tracker, log,
+      });
+    } catch (err) {
+      result = { outcome: 'failed', error: err?.message ?? String(err) };
+    }
+
+    if (result.outcome === 'completed' || result.outcome === 'reconciled') {
+      await commitRecord(ctx, 'syncTasks', task.id,
+        { ...running.data, lastError: null, nextAttemptAt: null },
+        { expectedRevision: running.revision, status: 'done', sourceIds: running.sourceIds });
+      await state.updateJob(job.urlKey, {
+        patch: { trackerSync: {
+          status: result.outcome === 'completed' ? 'complete' : 'reconciled', taskId: task.id,
+        } },
+      });
+      summary[result.outcome] += 1;
+      log(`learning: tracker sync ${task.id} ${result.outcome}`
+        + (result.canonicalStatus ? ` (canonical status ${result.canonicalStatus} preserved)` : ''));
+    } else if (result.outcome === 'blocked') {
+      try {
+        await openBlocker(ctx, {
+          applicationId: job.applicationId ?? job.urlKey,
+          attemptId: task.data.attemptId,
+          type: 'source_conflict',
+          question: `canonical tracker reconciliation needed for ${job.urlKey}: ${result.error}`,
+          resumePoint: 'preparing',
+        });
+      } catch { /* settled blocker — keep the task failed below either way */ }
+      await commitRecord(ctx, 'syncTasks', task.id,
+        { ...running.data, lastError: result.error, nextAttemptAt: null },
+        { expectedRevision: running.revision, status: 'failed', sourceIds: running.sourceIds });
+      await state.updateJob(job.urlKey, {
+        patch: { trackerSync: { status: 'blocked', taskId: task.id } },
+      });
+      summary.blocked += 1;
+      log(`learning: tracker sync ${task.id} blocked — ${result.error}`);
+    } else {
+      const backoff = Math.min(TRACKER_SYNC_BACKOFF_BASE_MS * 2 ** (attempts - 1), TRACKER_SYNC_BACKOFF_CAP_MS);
+      await commitRecord(ctx, 'syncTasks', task.id,
+        { ...running.data, lastError: result.error, nextAttemptAt: new Date(nowDate.getTime() + backoff).toISOString() },
+        { expectedRevision: running.revision, status: 'failed', sourceIds: running.sourceIds });
+      // Job stays submitted with trackerSync 'pending' — retryable, nothing lost.
+      summary.failed += 1;
+      log(`learning: tracker sync ${task.id} failed (attempt ${attempts}) — ${result.error}`);
+    }
+  }
+  return summary;
 }

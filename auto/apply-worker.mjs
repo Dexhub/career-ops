@@ -29,7 +29,10 @@ import { loadAutoConfig, loadStandingAnswers, resolveExecutionPolicy } from './l
 import { createLearningContext, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
-import { findOpenAttemptBlocker, markAttemptLaunched, recordAttemptIntent, reconcileAttempt } from './learning/workflow.mjs';
+import {
+  ensureSyncTask, executeTrackerSync, findOpenAttemptBlocker, markAttemptLaunched,
+  recordAttemptIntent, reconcileAttempt, syncSubmittedJobs, trackerSyncTaskId,
+} from './learning/workflow.mjs';
 import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -422,8 +425,11 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
       evidence: { auditDir: job.auditDir },
     });
     if (rec.status === 'confirmed') {
-      const updated = await updateJob(job.urlKey, { transitionTo: 'submitted', patch: { lastError: null } });
-      syncTrackerApplied(updated, job.auditDir, log);
+      const updated = await updateJob(job.urlKey, {
+        transitionTo: 'submitted',
+        patch: { lastError: null, trackerSync: { status: 'pending', taskId: trackerSyncTaskId(job) } },
+      });
+      await syncTrackerApplied(updated, job.auditDir, log, learning);
       log(`apply-worker: ${job.company} — prior attempt ${prior} reconciled as submitted; no relaunch`);
       return { job: updated, auditDir: job.auditDir, verdict: { ok: true, status: 'submitted', reason: 'reconciled: prior attempt confirmed submitted' } };
     }
@@ -691,41 +697,45 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
 }
 
 /** Mark the job Applied in the web tracker (data/applications.md) so the
- *  /pipeline page reflects auto submissions. Uses the sanctioned root
- *  scripts (merge-tracker.mjs + set-status.mjs); never touches web/.
- *  Best-effort: a tracker failure must not fail the submit. */
-export function syncTrackerApplied(job, auditDir, log = console.log) {
-  const reportNum = /(\d+)/.exec(job.reportPath || '')?.[1];
-  if (!reportNum) { log(`apply-worker: tracker sync skipped — no report number in "${job.reportPath}"`); return false; }
-  const node = process.execPath;
-  const setStatus = () => spawnSync(node, ['set-status.mjs', '--report', reportNum, 'Applied',
-    '--note', `auto-submitted; audit ${auditDir || ''}`.trim(), '--json'],
-  { cwd: ROOT, encoding: 'utf8', timeout: 60_000 });
-  // merge any pending tracker-additions so the row exists, then flip status
-  spawnSync(node, ['merge-tracker.mjs'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 });
-  let res = setStatus();
-  if (res.status !== 0 && (res.stdout || '').includes('not-found')) {
-    // The eval chain's addition carried company "unknown" and was dropped by
-    // merge-tracker's dedup. Re-create it from the job record, which knows
-    // the real company/role, then merge and retry once.
-    const day = new Date().toISOString().slice(0, 10);
-    const esc = (s) => String(s ?? '').replace(/[\t\n|]/g, ' ').trim() || 'unknown';
-    const tsv = 'num\tdate\tcompany\trole\tstatus\tscore\tpdf\treport\tnotes\turl\n'
-      + [reportNum, day, esc(job.company), esc(job.role), 'Evaluated',
-        Number.isFinite(Number(job.score)) ? `${Number(job.score).toFixed(1)}/5` : 'N/A', '❌',
-        `[${reportNum}](${job.reportPath})`, 'auto pipeline', job.urlKey].join('\t') + '\n';
-    const addDir = join(getCareerOpsRoot(), 'batch', 'tracker-additions');
-    mkdirSync(addDir, { recursive: true });
-    writeFileSync(join(addDir, `${reportNum}-${slugifySegment(job.company || 'auto')}.tsv`), tsv);
-    spawnSync(node, ['merge-tracker.mjs'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 });
-    res = setStatus();
-  }
-  if (res.status !== 0) {
-    log(`apply-worker: tracker sync failed for report ${reportNum} (exit ${res.status}): ${(res.stderr || res.stdout || '').trim().slice(0, 200)}`);
+ *  /pipeline page reflects auto submissions. T15: routed through the
+ *  retryable sync core in learning/workflow.mjs — the same sanctioned
+ *  scripts (merge-tracker.mjs + set-status.mjs), but every attempt verifies
+ *  report identity from the report basename, rereads the canonical tracker
+ *  after writing, and never forces a row that already moved past Applied.
+ *  With learning on, a failure persists a retryable syncTask record; with
+ *  learning off the immediate attempt still happens and the outcome is
+ *  recorded on the job's trackerSync field. Best-effort either way: a
+ *  tracker failure must not fail the submit, and this path NEVER invokes
+ *  the application worker again. */
+export async function syncTrackerApplied(job, auditDir, log = console.log, learning = null) {
+  try {
+    if (learning) {
+      const { task } = await ensureSyncTask(learning.ctx, { job });
+      const summary = await syncSubmittedJobs(learning.ctx, { limit: 1, taskId: task.id, log });
+      const ok = (summary.completed + summary.reconciled) > 0;
+      if (ok) log(`apply-worker: tracker -> Applied (sync task ${task.id})`);
+      else log(`apply-worker: tracker sync incomplete — task ${task.id} retained for independent retry`);
+      return ok;
+    }
+    // Flag off: identical one-shot semantics through the same verified core.
+    const result = await executeTrackerSync({ job, dataRoot: getCareerOpsRoot(), auditDir, log });
+    if (result.outcome === 'completed' || result.outcome === 'reconciled') {
+      try {
+        await updateJob(job.urlKey, { patch: { trackerSync: {
+          status: result.outcome === 'completed' ? 'complete' : 'reconciled', taskId: null,
+        } } });
+      } catch { /* best effort */ }
+      log(result.outcome === 'completed'
+        ? `apply-worker: tracker -> Applied (report ${result.reportNum})`
+        : `apply-worker: tracker row already ${result.canonicalStatus} — reconciled without forcing Applied`);
+      return true;
+    }
+    log(`apply-worker: tracker sync ${result.outcome} — ${result.error}`);
+    return false;
+  } catch (err) {
+    log(`apply-worker: tracker sync failed (${err.message}) — job remains submitted`);
     return false;
   }
-  log(`apply-worker: tracker -> Applied (report ${reportNum})`);
-  return true;
 }
 
 async function finalizeVerdict(job, auditDir, verdict, attemptNo, maxAttempts, log = console.log,
@@ -750,8 +760,18 @@ async function finalizeVerdict(job, auditDir, verdict, attemptNo, maxAttempts, l
     }
   }
   if (verdict.ok && verdict.status === 'submitted') {
-    updated = await updateJob(job.urlKey, { transitionTo: 'submitted', patch: { auditDir, lastError: null, execution: { phase: 'finished' } } });
-    syncTrackerApplied(updated, auditDir, log);
+    // T15: the SAME committed update that records confirmed submission also
+    // records the pending tracker sync with its deterministic task id — a
+    // crash right here is recoverable because the task is reconstructable
+    // from the job record alone.
+    updated = await updateJob(job.urlKey, {
+      transitionTo: 'submitted',
+      patch: {
+        auditDir, lastError: null, execution: { phase: 'finished' },
+        trackerSync: { status: 'pending', taskId: trackerSyncTaskId(job) },
+      },
+    });
+    await syncTrackerApplied(updated, auditDir, log, learning);
   } else if (verdict.ok && verdict.status === 'parked') {
     updated = await updateJob(job.urlKey, { transitionTo: 'parked', patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
   } else if (attemptNo >= maxAttempts) {
