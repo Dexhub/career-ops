@@ -103,8 +103,10 @@ Reference something specific from the JD visible on the page.
   separate tab, search ONLY for the verification email from that ATS/employer
   domain (e.g. `from:myworkday.com` newer_than:1h), retrieve the code or
   click the verification link, then return and continue the application. Do
-  not read, open, or act on any other email. If no such email arrives within
-  ~2 minutes (refresh once or twice), exit `parked: account-blocked email
+  not read, open, or act on any other email. Some ATS tenants deliver slowly:
+  if the email has not arrived, keep working on other form sections and
+  re-check Gmail every ~2 minutes for up to ~10 minutes before giving up.
+  Only after ~10 minutes with no email, exit `parked: account-blocked email
   verification pending`.
 - Verify the page is actually for "{{ROLE}}" at "{{COMPANY}}" (minor title
   variations fine). Mismatch → exit `parked: role-mismatch`.
