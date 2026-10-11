@@ -564,8 +564,20 @@ for every historical `answers.json` shape: arrays of labeled rows, section
 objects of rows, keyed section/value objects; unknown source → `unverified`,
 secret-bearing keys rejected without leaking values; consumed by
 `apply-worker.mjs:verifyAudit` and `diagnose.mjs:buildReport`, which reports
-missing/malformed answers.json as evidence gaps). Rules: nothing executes at import
-time; learning modules never import `core/db.mjs`; no new dependencies.
+missing/malformed answers.json as evidence gaps). `evidence.mjs` also carries
+T05 backfill: `discoverHistory`/`buildBackfillManifest` (read-only enumeration
+of `output/*/audit/attempt-*/answers.json` + `reports/*.md` sections),
+`captureAttempt` and `backfillHistory` (hash-verified, idempotent via
+`commitRecord expectedRevision:0`; `SOURCE_CHANGED` on preview/apply hash
+mismatch; artifacts modified within 10s are unsettled and refused; Block H
+drafts get coverage `unknown`, never `observed`). CLI: `node auto/learn.mjs
+inspect --json | backfill --dry-run --out <path> | backfill --apply
+--manifest <path> | rebuild --verify` — dry run writes only the `--out`
+artifact; **never run `backfill --apply` against live data before the T27
+activation gate**. Rules: nothing executes at import
+time; learning modules never import `core/db.mjs` (the `learn.mjs` CLI is
+allowed read-only db access for discovery but currently needs only
+`path-resolver.mjs`); no new dependencies.
 Tests: `node --test auto/test/learning-*.test.mjs` — isolated via
 `auto/test/helpers/learning.mjs` (mkdtemp fixture sets `CAREER_OPS_ROOT` +
 `CAREER_OPS_DB`); they never touch the live checkout or data.
