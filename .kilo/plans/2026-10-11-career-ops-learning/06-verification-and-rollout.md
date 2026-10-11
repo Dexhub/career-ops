@@ -10,8 +10,8 @@
 
 **Create:** `auto/test/learning-acceptance.test.mjs`, `auto/test/learning-adversarial.test.mjs`; extend only affected local suites.
 
-- [ ] Build an end-to-end fixture driver that uses the real store, resolvers, checkpoints, API handlers and fake executor, not disconnected stubs that all return success. Instrument model/browser/account/tracker calls.
-- [ ] Pin this minimum matrix as independently named tests:
+- [x] Build an end-to-end fixture driver that uses the real store, resolvers, checkpoints, API handlers and fake executor, not disconnected stubs that all return success. Instrument model/browser/account/tracker calls. *(T25a: `auto/test/helpers/learning-matrix.mjs`, exported for reuse by the A18–A34 half.)*
+- [ ] Pin this minimum matrix as independently named tests: *(T25a: A01–A17 done in `auto/test/learning-acceptance.test.mjs`; A18–A34 pending in `learning-adversarial.test.mjs`.)*
 
 | ID | Scenario | Required outcome |
 |---|---|---|
@@ -52,7 +52,7 @@
 
 - [ ] Run `node --test auto/test/learning-*.test.mjs` and `node --test auto/learning/cloud/test/*.test.mjs`. Store command/exit/result evidence. Run affected existing pure helper suites using `node test-all.mjs --only application-answers` and other exact known filters only after confirming they do not invoke prohibited browser/deployment paths.
 - [ ] Do not run a blanket full suite that launches Playwright, generates live PDFs, or touches real state. Clearly list broader suites skipped and why. A restricted test selection is not a claim that the entire upstream suite passed.
-- [ ] Reject vacuous success: the fixture driver must assert nonzero observations, at least one actual reuse, one prevented bad reuse, one pending-to-resolved blocker and one tracker repair. Save coverage counts, not just a green exit code.
+- [x] Reject vacuous success: the fixture driver must assert nonzero observations, at least one actual reuse, one prevented bad reuse, one pending-to-resolved blocker and one tracker repair. Save coverage counts, not just a green exit code. *(T25a: shared `cov` counters asserted by the A01–A17 summary test; counts at pass: observations 2, reuses 3, preventedReuses 4, blockersResolved 2, trackerRepairs 1, modelCalls 0.)*
 
 ## T26. Rehearse migration, backup, restore and version rollback
 

@@ -1013,3 +1013,11 @@ act then `dialog_accept`; a page.evaluate click will hang. Index rebuild
 is now on the POST path: anything measuring POST latency at scale must
 account for ~1.1 s/10k.
 Commit: (pending — coordinator commits)
+
+## T25a — Acceptance matrix A01–A17 (first half of T25)
+
+- Added `auto/test/helpers/learning-matrix.mjs`: shared end-to-end fixture driver (real store/resolvers/checkpoints/workflow + fake executor; instrumented model/mailbox/account/tracker counters; mkdtemp roots; injected advancing clock; fixture-config learning enablement; shared `cov` coverage counters). Exported for reuse by the A18–A34 adversarial half.
+- Added `auto/test/learning-acceptance.test.mjs`: A00 isolation assertion first, A01–A17 as independently named tests, plus a summary test asserting nonzero observations, ≥1 reuse, ≥1 prevented bad reuse, ≥1 pending→resolved blocker, ≥1 tracker repair, and zero model calls.
+- Evidence: `node --test auto/test/learning-acceptance.test.mjs` → 19/19 pass; full `node --test auto/test/learning-*.test.mjs auto/learning/cloud/test/*.test.mjs` → 379 pass / 0 fail (360 prior + 19 new).
+- No defects found in learning modules during this half; no edits to run.mjs/apply-worker.mjs/state.mjs.
+- Gotcha for A18–A34: policy `mappings[].normalizedText` must be the canonical `normalizeQuestion(observation).normalizedText` (punctuation stripped), or resolution blocks.
