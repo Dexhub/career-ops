@@ -192,6 +192,7 @@
     <button class="tab" data-tab="errors">Errors<span class="pill-badge" id="errBadge" style="display:none">0</span></button>
     <button class="tab" data-tab="analytics">Analytics</button>
     <button class="tab" data-tab="radar">Radar</button>
+    <button class="tab" data-tab="learning">Learning</button>
     <button class="tab" data-tab="settings">Settings</button>
     <button class="tab" data-tab="log">Log</button>
   </nav>
@@ -281,6 +282,12 @@
   </div>
   <h2>Earlier in the funnel <span class="note">— discovered → evaluated → queued; promoted by the next cycle's rank/select stages</span></h2>
   <table id="funnelTbl"><thead><tr><th>stage</th><th>company</th><th>role</th><th>score</th><th>note</th></tr></thead><tbody></tbody></table>
+  <div id="queue-freshness-root"></div>
+</section>
+
+<!-- ======================= LEARNING (T22) ======================= -->
+<section class="tabpane" id="pane-learning">
+  <div id="learning-root"></div>
 </section>
 
 <!-- ======================= ERRORS ======================= -->
@@ -739,4 +746,5 @@ async function showDetail(key){
 refresh(); setInterval(refresh,4000);
 setInterval(refreshOperator,3000);
 </script>
+<script type="module" src="/auto/assets/learning/index.mjs"></script>
 </main></div></body></html>

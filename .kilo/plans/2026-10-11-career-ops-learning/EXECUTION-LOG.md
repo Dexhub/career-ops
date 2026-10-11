@@ -841,3 +841,66 @@ real `createPanelServer` dispatch check. Full suite: 317/317 pass
 Gotcha: `previewAnswerSourcePatch` refuses an existing custom key
 (CONFLICTING_SOURCE_EDIT → mapped 409); proposals in tests must target new
 keys. Commit: (pending — coordinator commits)
+
+## T22 — questions, candidate knowledge and freshness views (2026-10-11)
+
+Status: complete.
+
+Created `auto/ui/learning/{client.mjs,index.mjs,questions.mjs,profile.mjs,learning.css}`
+and `auto/test/learning-ui-data.test.mjs`. Surgical `auto/panel.html` edits:
+"Learning" nav button, `#pane-learning` with `#learning-root`,
+`#queue-freshness-root` inside the queue pane, one `<script type="module">`
+include; `index.mjs` injects the stylesheet link itself.
+
+- Client: paginated GETs under one `generation` (one restart on 409
+  REFRESH_REQUIRED, then typed `stale`), CSRF token only via GET /status with
+  a single retry ONLY on a pre-execution 403 code 'CSRF', keyed
+  AbortController cancellation, typed error kinds for the whole CONTRACTS-G
+  surface. A POST that fails in flight is `unknown_result` and is never
+  retried.
+- Questions: search + type/status/requiredness/role/company/date filters,
+  original wording disclosure, occurrence counts, coverage line, honest
+  `unknown` requiredness (observations are not listed by the API), family
+  join via family records; family inspector with pending regroup proposals
+  routed through the explicit review flow.
+- Candidate Knowledge: pending-first proposal cards (sensitive values stay
+  `[redacted-sensitive]` until an explicit reveal click), approval preview
+  (target, value, source@hash, affected applications, expectedRevision),
+  mandatory post-approval server re-read (`approvalReadback` from re-read
+  records only), grouped confirmed/expired/conflicted/revoked/stale knowledge
+  with provenance and dependents, blockers with resume point and resolution.
+- Freshness: queue pane table with posted/first-seen/last-checked/bucket and
+  "why this rank" from the shared comparator; mode dropdown previews
+  `fit_then_freshness`/`freshness_then_fit` without touching live order.
+- SCOPE DEVIATION (announced on the board before editing, no HOLD): the
+  freshness checkbox could not be met from `auto/ui/learning/*` alone, so
+  `auto/panel.mjs` got a minimal read-only extension: `jobSummaries()` rows
+  now carry `dates` + `lastTransition`, and a new
+  `GET /api/auto/queue-preview?mode=` orders via `pickOrder` from state.mjs
+  (shared comparator), 422 on unknown mode, never mutating live order.
+
+All rendering uses `textContent`/`createElement` only; no innerHTML with data.
+
+Tests: 18/18 new (`node --test auto/test/learning-ui-data.test.mjs`): fixture
+isolation first, typed status mapping, pagination/one-restart/stale giving-up,
+CSRF fetch+retry, unknown-result non-retry, keyed cancellation, question
+rows/filters/facets, family-answer joins (revoked families claim nothing),
+family groups with honest "(not in current page)" gaps, knowledge grouping,
+redaction, readback-from-re-read (incl. the honest "not found on server"
+case), blocker rows. Full learning suites: 335/335 pass (317 prior intact).
+
+Neo browser verification against an isolated fixture panel on :3011
+(mkdtemp root + synthetic store, real `handleLearningRequest`, fake jobs API;
+NEVER the live :3001 panel): Learning tab renders questions + coverage;
+approve dialog shows target/value/source-hash; after approval the readback
+showed proposal applied (rev 2), committed answer `ans-<proposalId>` approved,
+source hash confirmed on the re-read answer record; blocker resolve with an
+approved answer id flipped open→resolved with `rereadRequired` messaging; a
+full reload restored all committed state from the server; freshness dropdown
+opened, options inspected, `freshness_then_fit` selected and the preview
+reordered by bucket (unknown last) while "live order mode: existing" stayed.
+
+Gotchas: blocker `resumePoint` must be one of workflow.mjs EXECUTION_PHASES
+(`in_progress`, not `filling`); `openBlocker` stores `question` as a plain
+string, so blocker view models accept both string and object question shapes.
+Commit: (pending — coordinator commits)

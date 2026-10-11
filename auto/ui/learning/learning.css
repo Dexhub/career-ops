@@ -1,3 +1,48 @@
-/* auto/ui/learning/learning.css — placeholder created by T21. T22 replaces
-   this with the real learning UI styles. Served only via the fixed asset
-   manifest in auto/panel.mjs at /auto/assets/learning/learning.css. */
+/* T22: learning UI styles. Uses Mission Control's existing design tokens
+   (--fg, --muted, --border, --surface, --brand-soft, --brand-text) so light
+   and dark themes apply without any JS. */
+
+.lrn-head{display:flex;gap:8px;align-items:center;margin:14px 0 10px;flex-wrap:wrap}
+.lrn-tab{color:var(--muted);padding:5px 13px;border-radius:999px;font-size:13px;font-weight:500;background:transparent;border:none;cursor:pointer}
+.lrn-tab:hover{background:var(--surface-hover);color:var(--fg)}
+.lrn-here{background:var(--brand-soft);color:var(--brand-text)}
+
+.lrn-filters{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.lrn-search,.lrn-select,.lrn-date{background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:5px 9px;font-size:13px}
+.lrn-search{min-width:240px}
+
+.lrn-table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+.lrn-table th{text-align:left;color:var(--muted);font-weight:600;padding:5px 8px;border-bottom:1px solid var(--border)}
+.lrn-table td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}
+.lrn-qcell{max-width:420px}
+.lrn-example{color:var(--muted);font-size:12px;padding:2px 0 2px 10px;border-left:2px solid var(--border);margin:2px 0;white-space:pre-wrap}
+
+.lrn-muted{color:var(--muted);font-size:12px}
+.lrn-error{color:hsl(0 72% 45%);font-size:13px}
+.dark .lrn-error{color:hsl(0 85% 72%)}
+
+.lrn-chip{display:inline-block;font-size:11px;font-weight:600;border-radius:999px;padding:1px 8px;border:1px solid var(--border);color:var(--muted)}
+.lrn-chip-approved,.lrn-chip-confirmed,.lrn-chip-resolved{border-color:hsl(142 60% 40% / .5);color:hsl(142 60% 35%)}
+.dark .lrn-chip-approved,.dark .lrn-chip-confirmed,.dark .lrn-chip-resolved{color:hsl(142 60% 65%)}
+.lrn-chip-proposed,.lrn-chip-pending,.lrn-chip-waiting,.lrn-chip-draft{border-color:hsl(38 90% 45% / .5);color:hsl(32 90% 38%)}
+.dark .lrn-chip-proposed,.dark .lrn-chip-pending,.dark .lrn-chip-waiting,.dark .lrn-chip-draft{color:hsl(38 90% 65%)}
+.lrn-chip-conflicted,.lrn-chip-revoked,.lrn-chip-expired,.lrn-chip-open,.lrn-chip-unresolved{border-color:hsl(0 72% 51% / .5);color:hsl(0 72% 45%)}
+.dark .lrn-chip-conflicted,.dark .lrn-chip-revoked,.dark .lrn-chip-expired,.dark .lrn-chip-open,.dark .lrn-chip-unresolved{color:hsl(0 85% 72%)}
+
+.lrn-card{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:8px 0;background:var(--surface)}
+.lrn-pending{border-left:3px solid hsl(38 90% 50%)}
+.lrn-confirmed{border-left:3px solid hsl(142 60% 40%)}
+.lrn-conflicted,.lrn-revoked,.lrn-expired{border-left:3px solid hsl(0 72% 51%)}
+.lrn-readback{border-left:3px solid var(--brand-text)}
+.lrn-q{font-weight:600;margin-bottom:4px}
+.lrn-value{font-family:ui-monospace,monospace}
+
+.lrn-btn{background:var(--surface);color:var(--fg);border:1px solid var(--border);border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;margin-top:6px}
+.lrn-btn:hover{background:var(--surface-hover)}
+.lrn-btn:disabled{opacity:.5;cursor:default}
+.lrn-approve{border-color:hsl(142 60% 40% / .6)}
+
+.lrn-family{border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:6px 0}
+.lrn-family summary{cursor:pointer}
+.lrn-proposal-row{font-size:12px;color:hsl(32 90% 38%);margin-top:4px}
+.dark .lrn-proposal-row{color:hsl(38 90% 65%)}

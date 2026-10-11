@@ -616,6 +616,21 @@ revisions; approval tokens are minted server-side (`createUserApproval`/
 `createPromotionApproval`) — payload actor claims are never honored.
 `privacy/apply` is visibly unavailable (no deletion flow exists). Tests:
 `auto/test/learning-api.test.mjs`.
+
+Learning UI (T22): `auto/ui/learning/{client,index,questions,profile}.mjs` +
+`learning.css`, served via the T21 asset manifest and mounted by surgical
+`auto/panel.html` edits (Learning nav button, `#learning-root`,
+`#queue-freshness-root` in the queue pane, one module script). `client.mjs` is
+the only fetch path: CSRF via GET `/status` (one retry only on pre-execution
+403 'CSRF'), one-generation pagination with a single restart on 409
+REFRESH_REQUIRED, keyed cancellation; an in-flight POST failure is
+`unknown_result` and never retried. Views render with `textContent` only;
+sensitive values stay redacted until an explicit reveal; approvals re-read the
+server record (`approvalReadback`), never trust the POST reply alone. The
+queue freshness preview uses read-only `GET /api/auto/queue-preview?mode=`
+in `auto/panel.mjs` (shared comparator via `pickOrder`; never mutates live
+order; job summaries carry `dates` + `lastTransition`). Tests:
+`auto/test/learning-ui-data.test.mjs`.
 Execution policy (T12): `auto/lib/config.mjs` exports `POLICY_RANGES` (one
 validation table shared with the panel's Settings whitelist),
 `resolveExecutionPolicy()` (frozen, digested `policyVersion`; garbled or

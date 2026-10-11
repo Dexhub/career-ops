@@ -32,6 +32,7 @@ import { createLearningContext } from './learning/context.mjs';
 import { reviewStatus as learningReviewStatus } from './learning/reviewer.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 import { handleLearningRequest, API_BASE as LEARNING_API_BASE, ASSET_BASE as LEARNING_ASSET_BASE } from './learning/api.mjs';
+import { ORDER_MODES, freshnessBucket, postedAgeDays } from './learning/freshness.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_OWNER = join(ROOT, 'data', 'auto', 'orchestrator.lock', 'owner.json');
@@ -183,6 +184,9 @@ export function jobSummaries() {
       // records have no dates block). Display-only — the queue order itself
       // comes from the shared comparator via pickOrder + queueOrderOptions.
       postedAt: j.dates?.postedAt ?? null, repostedAt: j.dates?.repostedAt ?? null,
+      // T22: full verified-date block for the queue freshness labels (display
+      // only; null = honestly unknown — the UI never invents a date).
+      dates: j.dates ?? null,
     }))
     .sort((a, b) =>
       (order[a.stage] ?? 99) - (order[b.stage] ?? 99)
@@ -707,6 +711,30 @@ export function createPanelServer() {
       if (p.startsWith('/api/auto/')) {
         if (req.method === 'GET' && p === '/api/auto/status') return send(res, 200, statusPayload());
         if (req.method === 'GET' && p === '/api/auto/jobs') return send(res, 200, { jobs: jobSummaries() });
+        // T22: read-only ordering preview — the SAME shared comparator
+        // (pickOrder -> learning/freshness.mjs orderJobs) under a requested
+        // mode. Never changes the live order: liveMode stays whatever
+        // queueOrderOptions() says, and nothing is written.
+        if (req.method === 'GET' && p === '/api/auto/queue-preview') {
+          const mode = url.searchParams.get('mode') || 'existing';
+          if (!ORDER_MODES.includes(mode)) {
+            return send(res, 422, { error: `unknown mode "${mode}"`, modes: [...ORDER_MODES] });
+          }
+          const now = new Date();
+          const ordered = pickOrder(listJobs(), 2, { mode, now });
+          return send(res, 200, {
+            mode, modes: [...ORDER_MODES], liveMode: queueOrderOptions().mode,
+            items: ordered.map((j, i) => ({
+              rank: i + 1, urlKey: j.urlKey, company: j.company, role: j.role,
+              stage: j.stage, priority: j.priority || 0, score: j.score ?? null,
+              dates: j.dates ?? null,
+              firstSeen: j.dates?.firstSeenAt ?? j.timestamps?.[0]?.at ?? null,
+              lastTransition: j.timestamps?.at(-1)?.at ?? null,
+              ageDays: postedAgeDays(j.dates ?? {}, now),
+              bucket: freshnessBucket(j.dates ?? {}, now),
+            })),
+          });
+        }
         if (req.method === 'GET' && p === '/api/auto/job') {
           const detail = jobDetail(url.searchParams.get('key'));
           return detail ? send(res, 200, detail) : send(res, 404, { error: 'job not found' });
