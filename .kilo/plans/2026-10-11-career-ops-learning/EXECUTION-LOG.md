@@ -451,3 +451,64 @@ LEGACY CREDENTIAL RISK (reported, not fixed, per plan): live logs show
 plaintext ATS passwords outside the learning ledger. T13 keeps learning
 records reference-only; migrating the legacy store needs an operator decision.
 Commit: (pending — coordinator commits)
+
+## T14 — Reconcile uncertain submissions before any retry (2026-10-11)
+
+Status: DONE. All six checkboxes ticked in 03-workflow-dates-and-recovery.md.
+
+- `contracts.mjs`: new `attempts` collection — statuses `intended|launched|
+  confirmed|definitely_not_submitted|unknown`; data keys incl. identity
+  (employerId/tenant/requisitionId/accountId), pinned versions, allocatedAt/
+  launchedAt, append-only `verdicts`; `allowedAction` enum `['submit']`.
+- `workflow.mjs`: `recordAttemptIntent` (immutable, committed BEFORE launch,
+  failure aborts), `markAttemptLaunched` (trusted parent only, intended->
+  launched), `reconcileAttempt(ctx,{applicationId,attemptId,evidence})` ->
+  `{status,evidenceRefs,reason}`. Confirmation must be the structured
+  `learning/confirmation.json` capture (or an injected equivalent) binding
+  attemptId + >=1 of employer/tenant/requisition/account identity known to the
+  intent, retaining sourceArtifact, capturedAt >= allocatedAt. result.json
+  narratives, success sentences, and file existence never count. Explicit
+  `resolution:{outcome,by}` (human/portal review or the supervising parent)
+  settles either way. `intended` (never launched) -> definitely_not_submitted.
+  Settled attempts are never downgraded by weaker evidence; every verdict is
+  appended to history. Unknown opens a `submission_unknown` blocker and patches
+  the owning job's execution (phase blocked); settled resolves it.
+- `apply-worker.mjs`: intent persisted next to learning/meta.json before
+  launch; `markAttemptLaunched` before the executor runs; normal completion
+  settles the attempt via `resolution: by 'apply-worker:verifyAudit'` (the
+  parent supervised the full run — keeps the legacy retry budget working);
+  timeout path now reconciles instead of failed->retry (unknown -> parked);
+  retry pick of a crashed submission attempt reconciles BEFORE any relaunch
+  (confirmed -> submitted + tracker sync, unknown -> parked, never a second
+  launch). Attempt claim patch persists `submissionPossible:true`.
+- `state.mjs`: shared `updateJob` requeue guard — transition to `queued` with
+  `execution.submissionPossible===true` and outcome not
+  `definitely_not_submitted` throws typed `SUBMISSION_OUTCOME_UNKNOWN`.
+  GATING DECISION: this guard is UNCONDITIONAL (not behind the learning flag)
+  because it keys on persisted intent that only learning-gated code writes —
+  legacy jobs never carry the flag, so their requeue is byte-identical; a
+  flag-off flip after a learning run must not reopen the double-submit hole.
+- `run.mjs`: stale-applying exhaustion reconciles persisted-intent attempts
+  (confirmed -> submitted + tracker sync, unknown -> parked w/ blocker reason)
+  instead of retro-failing; legacy stale jobs unchanged (self-test green).
+- `panel.mjs`: requeue error paths pass through `err.code` so bulk/panel
+  callers see the typed SUBMISSION_OUTCOME_UNKNOWN refusal.
+
+Tests: `learning-submission-recovery.test.mjs` (12) — fixture isolation; crash
+before launch (-> definitely_not_submitted, retry allowed); after launch
+before capture (unknown + blocker + requeue refused); after submit click
+(narratives/screenshots insufficient; worker's own "never submitted" claim
+cannot clear the flag); after confirmation before persistence (-> confirmed);
+mismatched/missing identity -> unknown; old capture reused under a new attempt
+refused (attempt binding + predates-allocation); verdict history retention +
+blocker resolution + confirmed-never-requeues; END-TO-END ambiguous timeout
+(verbatim plan snippet: ambiguousEvidence -> 'unknown', requeueFixtureJob
+rejects SUBMISSION_OUTCOME_UNKNOWN, fakeBrowser.submitClicks===1); END-TO-END
+timeout after genuine confirmation (-> submitted, exactly one click);
+END-TO-END retry pick never relaunches (sentinel executor, runCalls===0);
+flag-off gating + legacy requeue unchanged.
+
+Full suite: 196/196 (`node --test auto/test/learning-*.test.mjs`). Self-tests
+green: run.mjs, state.mjs, apply-worker.mjs (panel self-test NOT run — it
+consumes the pause sentinel). `data/auto/pause-requested` intact.
+Commit: (pending — coordinator commits)

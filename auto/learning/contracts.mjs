@@ -17,7 +17,7 @@ export const SCHEMA_VERSION = 1;
 export const COLLECTIONS = Object.freeze([
   'observations', 'questions', 'families', 'answers', 'sourceChanges',
   'blockers', 'accounts', 'procedures', 'insights', 'proposals',
-  'syncTasks', 'reviewRuns', 'forgetRequests',
+  'syncTasks', 'reviewRuns', 'forgetRequests', 'attempts',
 ]);
 
 // Public record limits.
@@ -46,6 +46,10 @@ const STATUS_ENUMS = Object.freeze({
   syncTasks: ['pending', 'in_progress', 'done', 'failed'],
   reviewRuns: ['running', 'completed', 'failed', 'aborted'],
   forgetRequests: ['requested', 'previewed', 'applied', 'rejected'],
+  // T14 (CONTRACTS D4): persisted submission intent per attempt. 'intended'
+  // means the executor was never launched; anything at/after 'launched' can
+  // only settle through reconcileAttempt — never a worker's own narrative.
+  attempts: ['intended', 'launched', 'confirmed', 'definitely_not_submitted', 'unknown'],
 });
 
 // Allowed top-level `data` keys per collection (CONTRACTS D). Unknown keys are
@@ -103,6 +107,15 @@ const DATA_KEYS = Object.freeze({
   forgetRequests: [
     'scope', 'requestedAt', 'targets', 'previewRef', 'appliedAt', 'accounting',
   ],
+  // T14 (CONTRACTS D4): exact job identity + policy intent persisted BEFORE a
+  // submission-capable worker launches, plus the append-only verdict history
+  // written by reconcileAttempt (prior verdicts are retained, never replaced).
+  attempts: [
+    'applicationId', 'attemptId', 'urlKey', 'allowedAction', 'submissionPossible',
+    'policyVersion', 'sourceVersion', 'procedureVersion',
+    'employerId', 'tenant', 'requisitionId', 'accountId',
+    'allocatedAt', 'launchedAt', 'verdicts',
+  ],
 });
 
 // Value enums enforced when the field is present (CONTRACTS D1/D3/D5/D6).
@@ -123,6 +136,9 @@ const FIELD_ENUMS = Object.freeze({
   },
   proposals: {
     kind: ['answer', 'procedure', 'config', 'code', 'ui', 'positioning'],
+  },
+  attempts: {
+    allowedAction: ['submit'],
   },
 });
 

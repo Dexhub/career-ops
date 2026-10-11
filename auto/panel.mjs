@@ -212,7 +212,13 @@ export async function requeueJob(urlKey) {
     const job = await updateJob(urlKey, { transitionTo: 'queued', patch: { attempts: 0, lastError: null } });
     return { ok: true, stage: job.stage };
   } catch (err) {
-    return { ok: false, error: err.code === 'JOB_NOT_FOUND' ? 'job not found' : err.message };
+    return {
+      ok: false,
+      error: err.code === 'JOB_NOT_FOUND' ? 'job not found' : err.message,
+      // T14: surface the typed refusal (e.g. SUBMISSION_OUTCOME_UNKNOWN) so
+      // bulk/panel callers can tell a safety refusal from a plain error.
+      ...(err.code ? { code: err.code } : {}),
+    };
   }
 }
 

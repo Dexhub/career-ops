@@ -624,6 +624,21 @@ transport with scoped search and a 10-minute configurable ceiling.
 `finalizeVerdict` keeps legacy stage transitions and only annotates
 `execution:{phase:'blocked',blockerId}`; `run.mjs` recovery skips persisted
 waits and its cycle start runs `sweepDueBlockers` (learning-gated).
+Submission recovery (T14): every submission-capable attempt persists an
+immutable intent (`attempts` ledger collection) before launch and is marked
+launched by the trusted parent; after that, only
+`reconcileAttempt` settles the outcome — a bound structured capture
+(`learning/confirmation.json`: attemptId + employer/tenant identity +
+sourceArtifact + capturedAt >= allocation; narratives/screenshots never count)
+or an explicit `resolution:{outcome,by}`. Timeouts, crashes and stale
+exhaustion reconcile instead of failed->retry: unknown parks the job behind a
+`submission_unknown` blocker, and the SHARED requeue path (`state.mjs`,
+including panel requeue) refuses `queued` with typed
+`SUBMISSION_OUTCOME_UNKNOWN` whenever `execution.submissionPossible` is set
+and the outcome is not a reconciled non-submission. This guard is
+unconditional by design (it keys on persisted intent only learning writes), so
+flipping the learning flag off never reopens the double-submit hole; legacy
+jobs without the flag requeue unchanged.
 Known legacy risk (reported, unfixed): the pre-existing worker credential
 store writes plaintext ATS passwords to live logs/state outside learning.
 Tests: `node --test auto/test/learning-*.test.mjs` — isolated via

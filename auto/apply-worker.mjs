@@ -29,7 +29,7 @@ import { loadAutoConfig, loadStandingAnswers, resolveExecutionPolicy } from './l
 import { createLearningContext, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
-import { findOpenAttemptBlocker } from './learning/workflow.mjs';
+import { findOpenAttemptBlocker, markAttemptLaunched, recordAttemptIntent, reconcileAttempt } from './learning/workflow.mjs';
 import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -409,6 +409,36 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   let job = pickJob(needle, policy.maxAttempts);
   if (!job) { log('apply-worker: no resume_ready job found'); return null; }
 
+  // T14 (CONTRACTS D4): a retry pick of a job whose PRIOR attempt persisted
+  // submission intent must reconcile before any relaunch — a crash after the
+  // submit click can never be retried into a double submission. Legacy jobs
+  // (no persisted intent) take the unchanged retry path.
+  if (learning && submit && job.stage === 'applying'
+      && job.execution?.submissionPossible === true && job.execution?.attemptId
+      && !['confirmed', 'definitely_not_submitted'].includes(job.execution?.submissionOutcome)) {
+    const prior = job.execution.attemptId;
+    const rec = await reconcileAttempt(learning.ctx, {
+      applicationId: job.applicationId, attemptId: prior,
+      evidence: { auditDir: job.auditDir },
+    });
+    if (rec.status === 'confirmed') {
+      const updated = await updateJob(job.urlKey, { transitionTo: 'submitted', patch: { lastError: null } });
+      syncTrackerApplied(updated, job.auditDir, log);
+      log(`apply-worker: ${job.company} — prior attempt ${prior} reconciled as submitted; no relaunch`);
+      return { job: updated, auditDir: job.auditDir, verdict: { ok: true, status: 'submitted', reason: 'reconciled: prior attempt confirmed submitted' } };
+    }
+    if (rec.status === 'unknown') {
+      const updated = await updateJob(job.urlKey, {
+        transitionTo: 'parked',
+        patch: { lastError: `submission outcome unknown for attempt ${prior} — reconcile before any retry (${rec.reason})` },
+      });
+      log(`apply-worker: ${job.company} — submission outcome unknown for ${prior}; parked, refusing to relaunch`);
+      return { job: updated, auditDir: job.auditDir, verdict: { ok: true, status: 'parked', reason: 'submission outcome unknown — refusing to relaunch' } };
+    }
+    log(`apply-worker: ${job.company} — prior attempt ${prior} reconciled as definitely not submitted; retry allowed`);
+    job = loadJob(job.urlKey); // reconciliation patched execution; work from the fresh record
+  }
+
   // Dispatch gate BEFORE preflight, allocation, and any browser/agent time.
   // A refusal mutates nothing: the job stays where it is, visibly, and the
   // backlog preview (panel /api/auto/policy-preview) explains why.
@@ -492,6 +522,21 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
       applicationId: attempt?.applicationId ?? null,
       urlKey: job.urlKey,
     }, null, 2));
+    if (attempt) {
+      // T14 (CONTRACTS D4): persist the exact job identity + policy intent
+      // BEFORE the submission-capable executor launches. A failure here throws
+      // and aborts the launch — the safety boundary must exist first.
+      let tenant = null;
+      try { tenant = new URL(job.url).hostname || null; } catch { tenant = null; }
+      await recordAttemptIntent(learning.ctx, {
+        applicationId: attempt.applicationId, attemptId: attempt.attemptId,
+        urlKey: job.urlKey, allowedAction: 'submit',
+        policyVersion: attempt.policyVersion, sourceVersion: attempt.sourceVersion,
+        procedureVersion: attempt.procedureVersion,
+        employerId: job.company ?? null, tenant,
+        allocatedAt: attempt.allocatedAt,
+      });
+    }
   }
 
   log(`apply-worker: ${job.company} — ${job.role} [${submit ? 'SUBMIT' : 'dry-run'}] -> ${auditDir}`);
@@ -519,6 +564,9 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
             // recovery path: a later shrink of max_attempts surfaces as a
             // pending policy change instead of silently failing the job.
             pinnedPolicy: { maxAttempts: policy.maxAttempts, timeoutMinutes: policy.timeoutMinutes },
+            // T14 (learning only): the persisted submission-intent flag the
+            // shared requeue path keys on. Flag off, the claim is unchanged.
+            ...(learning ? { submissionPossible: true, submissionOutcome: null, confirmationRef: null } : {}),
           },
         },
       });
@@ -539,6 +587,12 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     agentUsed = agentCfg.fallback;
     log(`apply-worker: attempt ${attemptNo} — escalating to fallback agent ${agentUsed}`);
   }
+  if (learning && submit && attempt) {
+    // T14: the trusted parent marks the launch; from here on only
+    // reconciliation can settle the outcome. A failure throws BEFORE the
+    // executor runs — an unlaunched intent reconciles to definitely_not_submitted.
+    await markAttemptLaunched(learning.ctx, { attemptId: attempt.attemptId });
+  }
   const run = learning
     ? await runInjectedExecutor({
       executor, prompt, auditDir, job,
@@ -556,9 +610,50 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
 
   harvestCredentials(auditDir, undefined, log);
 
-  const verdict = run.timedOut
-    ? { ok: false, status: 'failed', reason: `agent timeout` }
-    : verifyAudit(auditDir, { submit });
+  let verdict;
+  if (!run.timedOut) {
+    verdict = verifyAudit(auditDir, { submit });
+    if (learning && attempt) {
+      // T14: the executor ran to completion under this parent's supervision and
+      // verifyAudit rendered the verdict from artifacts — settle the attempt
+      // outcome explicitly so a later retry/requeue is not mistaken for an
+      // interrupted (unknown) submission. Crashes/kills/timeouts never reach
+      // this branch and stay subject to evidence-bound reconciliation.
+      await reconcileAttempt(learning.ctx, {
+        applicationId: attempt.applicationId, attemptId: attempt.attemptId,
+        evidence: {
+          auditDir,
+          resolution: {
+            outcome: verdict.status === 'submitted' ? 'submitted' : 'not_submitted',
+            by: 'apply-worker:verifyAudit',
+          },
+        },
+      });
+    }
+  } else if (!(learning && attempt)) {
+    verdict = { ok: false, status: 'failed', reason: `agent timeout` }; // legacy edge unchanged
+  } else {
+    // T14 (CONTRACTS D4): a timeout after launch is NOT a failure to retry.
+    // Reconcile against the structured captures bound to this exact attempt;
+    // unknown parks the job behind a submission_unknown blocker instead of
+    // re-entering the retry loop.
+    try {
+      const rec = await reconcileAttempt(learning.ctx, {
+        applicationId: attempt.applicationId, attemptId: attempt.attemptId,
+        evidence: { auditDir },
+      });
+      if (rec.status === 'confirmed') {
+        verdict = { ok: true, status: 'submitted', reason: 'reconciled after timeout: confirmation bound to this attempt' };
+      } else if (rec.status === 'definitely_not_submitted') {
+        verdict = { ok: false, status: 'failed', reason: 'agent timeout (reconciled: definitely not submitted)' };
+      } else {
+        verdict = { ok: true, status: 'parked', reason: `submission outcome unknown after timeout — ${rec.reason}` };
+      }
+    } catch (err) {
+      log(`apply-worker: post-timeout reconciliation FAILED (${err.message}) — parking conservatively`);
+      verdict = { ok: true, status: 'parked', reason: `submission outcome unknown after timeout (reconciliation error: ${err.message})` };
+    }
+  }
 
   // The orchestrator's own judgment, stored next to the agent's result.json
   // so every audit dir is self-contained for later diagnosis (a divergence

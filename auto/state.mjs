@@ -256,6 +256,15 @@ export async function updateJob(urlKey, { expectedVersion, patch = {}, transitio
       if (!allowed.includes(transitionTo)) {
         throw new Error(`updateJob: illegal ${job.stage} → ${transitionTo} for ${urlKey}`);
       }
+      // T14 (CONTRACTS D4), unconditional in the SHARED requeue path: an
+      // attempt that persisted submission intent can only re-enter the queue
+      // after reconciliation proves it definitely did not submit. Legacy jobs
+      // never carry submissionPossible, so their requeue is unchanged.
+      if (transitionTo === 'queued' && job.execution?.submissionPossible === true
+          && job.execution?.submissionOutcome !== 'definitely_not_submitted') {
+        throw typedError('SUBMISSION_OUTCOME_UNKNOWN',
+          `updateJob: ${urlKey} has an unreconciled submission attempt — requeue refused until reconciliation confirms non-submission`);
+      }
     }
     for (const [key, value] of Object.entries(patch)) {
       if (NESTED_PATCH_KEYS.includes(key) && value && typeof value === 'object'

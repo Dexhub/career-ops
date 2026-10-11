@@ -10,6 +10,8 @@
 // injectable `jobs` adapter that defaults to a lazy import of auto/state.mjs.
 
 import { createHash } from 'node:crypto';
+import { existsSync as fsExists, readFileSync as fsRead } from 'node:fs';
+import { join as pathJoin } from 'node:path';
 import { LearningError } from './contracts.mjs';
 import { readLearningConfig } from './context.mjs';
 import { commitRecord, getRecord, listRecords } from './store.mjs';
@@ -450,4 +452,272 @@ export async function sweepDueBlockers(ctx, { now, jobs } = {}) {
     summary.resolved.push({ blockerId: b.id, answerId: answer.id, urlKey: result.job.urlKey });
   }
   return summary;
+}
+
+// ---------------------------------------------------------------------------
+// T14 (CONTRACTS D4): submission-outcome recovery. The safety boundary is the
+// persisted attempt intent, written BEFORE any submission-capable executor
+// launches. After that point a crash, kill, or timeout can never be classified
+// "didn't submit" from the worker's own narrative: only read-only
+// reconciliation against bound evidence (or an explicit human/portal-review
+// resolution) settles the outcome. Unknown stays unknown — parked with a
+// structured submission_unknown blocker — and the shared requeue path refuses
+// to retry it (state.mjs, code SUBMISSION_OUTCOME_UNKNOWN).
+
+/**
+ * recordAttemptIntent(ctx,{applicationId,attemptId,urlKey,...}) -> record.
+ * Persists the exact job identity and policy intent for one immutable attempt
+ * with submissionPossible: true, status 'intended'. Must be committed before
+ * the executor launches; a persistence failure must abort the launch.
+ */
+export async function recordAttemptIntent(ctx, {
+  applicationId, attemptId, urlKey, allowedAction = 'submit',
+  policyVersion = null, sourceVersion = null, procedureVersion = null,
+  employerId = null, tenant = null, requisitionId = null, accountId = null,
+  allocatedAt = null,
+} = {}) {
+  assertEnabled(ctx);
+  nonempty('applicationId', applicationId);
+  nonempty('attemptId', attemptId);
+  nonempty('urlKey', urlKey);
+  const existing = getRecord(ctx, 'attempts', attemptId);
+  if (existing) {
+    throw new LearningError('SCHEMA_VALIDATION',
+      `attempt intent ${attemptId} already exists — attempts are immutable, allocate a fresh one`);
+  }
+  return commitRecord(ctx, 'attempts', attemptId, {
+    applicationId, attemptId, urlKey, allowedAction,
+    submissionPossible: true,
+    policyVersion, sourceVersion, procedureVersion,
+    employerId, tenant, requisitionId, accountId,
+    allocatedAt: allocatedAt ?? ctx.now().toISOString(),
+    launchedAt: null,
+    verdicts: [],
+  }, { expectedRevision: 0, status: 'intended', sourceIds: [] });
+}
+
+/**
+ * markAttemptLaunched — the trusted parent (never the executor) records that
+ * the submission-capable executor is about to run. From here on, only
+ * reconcileAttempt can settle the outcome. A failure to mark must abort the
+ * launch: an unlaunched 'intended' record safely reconciles to
+ * definitely_not_submitted.
+ */
+export async function markAttemptLaunched(ctx, { attemptId, launchedAt = null } = {}) {
+  assertEnabled(ctx);
+  nonempty('attemptId', attemptId);
+  const intent = getRecord(ctx, 'attempts', attemptId);
+  if (!intent) throw new LearningError('SCHEMA_VALIDATION', `unknown attempt intent ${attemptId}`);
+  if (intent.status !== 'intended') {
+    throw new LearningError('SCHEMA_VALIDATION',
+      `attempt ${attemptId} is ${intent.status} — launch can only follow 'intended'`);
+  }
+  return commitRecord(ctx, 'attempts', attemptId,
+    { ...intent.data, launchedAt: launchedAt ?? ctx.now().toISOString() },
+    { expectedRevision: intent.revision, status: 'launched', sourceIds: intent.sourceIds });
+}
+
+// Identity fields a confirmation must bind when the intent knows them.
+const BINDING_KEYS = Object.freeze(['employerId', 'tenant', 'requisitionId', 'accountId']);
+
+/**
+ * Structured confirmation validation. Only a capture that binds the attempt
+ * AND the employer/requisition/account identity (as available on the intent)
+ * AND retains its source artifact counts. File existence, an unrelated
+ * thank-you page (identity mismatch), or an agent's success sentence can
+ * never pass here — they are not structured, bound captures.
+ */
+function confirmationVerdict(intent, conf) {
+  if (!conf || typeof conf !== 'object' || Array.isArray(conf)) {
+    return { ok: false, reason: 'no structured confirmation capture' };
+  }
+  if (conf.attemptId !== intent.data.attemptId) {
+    return { ok: false, reason: 'confirmation does not bind this attempt (stale or foreign capture)' };
+  }
+  if (typeof conf.sourceArtifact !== 'string' || conf.sourceArtifact.trim() === '') {
+    return { ok: false, reason: 'confirmation retains no source artifact' };
+  }
+  const capturedMs = Date.parse(conf.capturedAt ?? '');
+  if (!Number.isFinite(capturedMs)) {
+    return { ok: false, reason: 'confirmation has no parseable capturedAt' };
+  }
+  const allocatedMs = Date.parse(intent.data.allocatedAt ?? '');
+  if (Number.isFinite(allocatedMs) && capturedMs < allocatedMs) {
+    return { ok: false, reason: 'confirmation predates this attempt (old capture reused)' };
+  }
+  let bound = 0;
+  for (const key of BINDING_KEYS) {
+    const expected = intent.data[key];
+    if (expected == null) continue; // identity the intent never knew cannot bind
+    if (conf[key] == null) {
+      return { ok: false, reason: `confirmation missing ${key} binding` };
+    }
+    if (conf[key] !== expected) {
+      return { ok: false, reason: `confirmation contradicts intent on ${key}` };
+    }
+    bound += 1;
+  }
+  if (bound === 0) {
+    return { ok: false, reason: 'confirmation binds no employer/requisition/account identity' };
+  }
+  return { ok: true, ref: conf.sourceArtifact };
+}
+
+function readConfirmationCapture(auditDir) {
+  const path = pathJoin(auditDir, 'learning', 'confirmation.json');
+  if (!fsExists(path)) return null;
+  try {
+    const parsed = JSON.parse(fsRead(path, 'utf8'));
+    return parsed && typeof parsed === 'object' ? { conf: parsed, ref: 'learning/confirmation.json' } : null;
+  } catch {
+    return null; // unparseable capture is NOT evidence
+  }
+}
+
+/**
+ * reconcileAttempt(ctx,{applicationId,attemptId,evidence}) ->
+ * {status,evidenceRefs,reason} with status
+ * confirmed | definitely_not_submitted | unknown (CONTRACTS reconcileAttempt).
+ *
+ * Read-only with respect to the outside world; locally it appends a verdict
+ * to the attempt's history (prior verdicts and evidence are retained, never
+ * replaced), routes the job's execution record, and opens/resolves the
+ * submission_unknown blocker.
+ *
+ * evidence: {
+ *   auditDir?    — attempt audit dir; learning/confirmation.json is read as
+ *                  the structured capture (result.json narratives never count),
+ *   confirmation? — structured capture object (same validation),
+ *   resolution?  — explicit read-only portal review or human resolution:
+ *                  {outcome:'submitted'|'not_submitted', by, checkedAt?}.
+ * }
+ */
+export async function reconcileAttempt(ctx, { applicationId, attemptId, evidence = {} } = {}, { jobs } = {}) {
+  assertEnabled(ctx);
+  nonempty('applicationId', applicationId);
+  nonempty('attemptId', attemptId);
+
+  const intent = getRecord(ctx, 'attempts', attemptId);
+  if (!intent) {
+    // No persisted intent: this layer cannot prove anything either way, and it
+    // must not touch job records it never claimed. Conservative, side-effect
+    // free unknown.
+    return { status: 'unknown', evidenceRefs: [], reason: 'no persisted attempt intent' };
+  }
+  if (intent.data.applicationId !== applicationId) {
+    throw new LearningError('SCHEMA_VALIDATION',
+      `attempt ${attemptId} belongs to application ${intent.data.applicationId}, not ${applicationId}`);
+  }
+
+  // Gather structured evidence. The executor's result.json / success sentence
+  // and bare file existence are deliberately never read here.
+  const evidenceRefs = [];
+  let conf = null;
+  if (evidence.confirmation && typeof evidence.confirmation === 'object') {
+    conf = evidence.confirmation;
+  } else if (typeof evidence.auditDir === 'string' && evidence.auditDir !== '') {
+    const read = readConfirmationCapture(evidence.auditDir);
+    if (read) { conf = read.conf; }
+  }
+  const resolution = evidence.resolution && typeof evidence.resolution === 'object'
+    ? evidence.resolution : null;
+
+  let status; let reason; let confirmationRef = null;
+  if (intent.status === 'intended') {
+    // The trusted parent never marked a launch: the executor never ran.
+    status = 'definitely_not_submitted';
+    reason = 'executor never launched for this attempt';
+  } else if (resolution !== null) {
+    if (!['submitted', 'not_submitted'].includes(resolution.outcome)
+        || typeof resolution.by !== 'string' || resolution.by.trim() === '') {
+      throw new LearningError('SCHEMA_VALIDATION',
+        'resolution evidence requires outcome submitted|not_submitted and a nonempty by');
+    }
+    if (resolution.outcome === 'submitted') {
+      status = 'confirmed';
+      confirmationRef = `resolution:${resolution.by}`;
+      reason = `resolved as submitted by ${resolution.by}`;
+    } else {
+      status = 'definitely_not_submitted';
+      reason = `resolved as not submitted by ${resolution.by}`;
+    }
+    evidenceRefs.push(confirmationRef ?? `resolution:${resolution.by}`);
+  } else {
+    const v = confirmationVerdict(intent, conf);
+    if (v.ok) {
+      status = 'confirmed';
+      confirmationRef = v.ref;
+      evidenceRefs.push(v.ref);
+      reason = 'structured confirmation binds attempt and employer identity with retained source';
+    } else {
+      status = 'unknown';
+      reason = v.reason;
+    }
+  }
+
+  // A settled attempt is never un-settled by weaker evidence; the re-check is
+  // still appended to the verdict history.
+  if (['confirmed', 'definitely_not_submitted'].includes(intent.status) && status === 'unknown') {
+    status = intent.status;
+    reason = `already ${intent.status}; prior verdicts retained (${reason})`;
+  }
+
+  const verdict = {
+    status, reason, evidenceRefs: [...evidenceRefs],
+    reconciledAt: ctx.now().toISOString(),
+  };
+  const updatedIntent = await commitRecord(ctx, 'attempts', intent.id,
+    { ...intent.data, verdicts: [...(intent.data.verdicts ?? []), verdict] },
+    { expectedRevision: intent.revision, status, sourceIds: intent.sourceIds });
+
+  // Route the job (same application identity) and the submission_unknown
+  // blocker. Only the attempt that owns the job's execution record may move
+  // it; a newer attempt's state is never clobbered by an old reconciliation.
+  const state = await jobsApi(jobs);
+  let job = null;
+  try {
+    job = typeof state.loadJob === 'function' ? state.loadJob(intent.data.urlKey) : null;
+  } catch { job = null; }
+  const owns = job?.execution?.attemptId === attemptId;
+  let blockerId = job?.execution?.blockerId ?? null;
+
+  if (status === 'unknown') {
+    const { blocker } = await openBlocker(ctx, {
+      applicationId, attemptId, type: 'submission_unknown',
+      question: `submission outcome unknown for attempt ${attemptId}`,
+      employerId: intent.data.employerId, tenant: intent.data.tenant,
+      resumePoint: 'preparing',
+    });
+    blockerId = blocker.id;
+    if (owns) {
+      await state.updateJob(job.urlKey, {
+        patch: { execution: { submissionOutcome: 'unknown', phase: 'blocked', blockerId: blocker.id } },
+      });
+    }
+  } else {
+    // Settled either way: resolve the live submission_unknown wait, if any.
+    const open = findOpenAttemptBlocker(ctx, attemptId);
+    if (open && open.data.type === 'submission_unknown') {
+      await commitRecord(ctx, 'blockers', open.id,
+        { ...open.data, resolution: { outcome: status, resolvedAt: ctx.now().toISOString() } },
+        { expectedRevision: open.revision, status: 'resolved', sourceIds: open.sourceIds });
+    }
+    if (owns) {
+      await state.updateJob(job.urlKey, {
+        patch: {
+          execution: {
+            submissionOutcome: status,
+            blockerId: null,
+            ...(status === 'confirmed' ? { phase: 'finished', confirmationRef } : {}),
+          },
+        },
+      });
+    }
+  }
+
+  return {
+    status, evidenceRefs: verdict.evidenceRefs, reason,
+    ...(status === 'unknown' ? { blockerId } : {}),
+    attempt: updatedIntent,
+  };
 }

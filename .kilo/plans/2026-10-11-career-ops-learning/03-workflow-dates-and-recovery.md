@@ -71,12 +71,12 @@ The fixture helper drives the public checkpoint/blocker functions and a fake exe
 **Extend:** `workflow.mjs`; **Modify:** timeout, stale-applying, requeue and final-verdict paths; **Create:** `auto/test/learning-submission-recovery.test.mjs`.
 **Produces:** `reconcileAttempt` and enforced unknown-outcome routing.
 
-- [ ] Persist an attempt intent with job identity, allowed action, source/resume hashes and policy before launching a potentially submitting worker. Set `submissionPossible:true` before granting that capability, even when the executor cannot provide an exact click checkpoint.
-- [ ] Add granular checkpoints when observed, but never let an untrusted worker clear the conservative side-effect flag. A process that never launched can be definitely-not-submitted; a timed-out process that might have acted cannot.
-- [ ] Replace `timeout => failure => retry` and stale-attempt exhaustion with reconciliation. Read the available captures and structured result even after timeout, validate them against the exact job/attempt, and return `confirmed`, `definitely_not_submitted`, or `unknown`.
-- [ ] Confirmation evidence must bind employer/requisition/account/attempt as available and retain its source. Mere file existence, an unrelated thank-you page, or the agent's success sentence is insufficient. If the evidence is incomplete or contradictory, preserve `unknown` and require scoped read-only portal review or human resolution.
-- [ ] Make generic/bulk requeue refuse `submission_unknown`; only a reconciled non-submission can become eligible for another attempt. Retain original evidence and previous verdicts when recording a later reconciliation.
-- [ ] Test crash before launch, after launch before capture, after submit click, after confirmation before local persistence, missing/mismatched evidence, an old capture reused under a new attempt, and process timeout after genuine confirmation. Run `node --test auto/test/learning-submission-recovery.test.mjs`.
+- [x] Persist an attempt intent with job identity, allowed action, source/resume hashes and policy before launching a potentially submitting worker. Set `submissionPossible:true` before granting that capability, even when the executor cannot provide an exact click checkpoint.
+- [x] Add granular checkpoints when observed, but never let an untrusted worker clear the conservative side-effect flag. A process that never launched can be definitely-not-submitted; a timed-out process that might have acted cannot.
+- [x] Replace `timeout => failure => retry` and stale-attempt exhaustion with reconciliation. Read the available captures and structured result even after timeout, validate them against the exact job/attempt, and return `confirmed`, `definitely_not_submitted`, or `unknown`.
+- [x] Confirmation evidence must bind employer/requisition/account/attempt as available and retain its source. Mere file existence, an unrelated thank-you page, or the agent's success sentence is insufficient. If the evidence is incomplete or contradictory, preserve `unknown` and require scoped read-only portal review or human resolution.
+- [x] Make generic/bulk requeue refuse `submission_unknown`; only a reconciled non-submission can become eligible for another attempt. Retain original evidence and previous verdicts when recording a later reconciliation.
+- [x] Test crash before launch, after launch before capture, after submit click, after confirmation before local persistence, missing/mismatched evidence, an old capture reused under a new attempt, and process timeout after genuine confirmation. Run `node --test auto/test/learning-submission-recovery.test.mjs`.
 
 ```js
 const result = await reconcileAttempt(ctx,{applicationId,attemptId,evidence:ambiguousEvidence});

@@ -30,8 +30,9 @@ import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { loadAutoConfig, resolveExecutionPolicy } from './lib/config.mjs';
 import { listJobs, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
-import { learningRuntime, runApply } from './apply-worker.mjs';
+import { learningRuntime, runApply, syncTrackerApplied } from './apply-worker.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
+import { reconcileAttempt } from './learning/workflow.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { writeDigest } from './digest.mjs';
 
@@ -171,11 +172,41 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
           + ` current limit ${policy.maxAttempts}; leaving in applying for operator reconciliation`);
         continue;
       }
-      const job = await updateJob(stale.urlKey, {
-        transitionTo: 'failed',
-        patch: { lastError: stale.lastError || 'exhausted attempts (stale applying)' },
-      });
-      log(`run: recovered stale applying job ${job.company} -> failed`);
+      // T14 (learning-gated; CONTRACTS D4): an exhausted attempt that persisted
+      // submission intent is reconciled against its captures instead of being
+      // retro-failed — a crash after the submit click must never become a
+      // requeueable "failure". Unknown parks behind a submission_unknown
+      // blocker; confirmed completes the SAME application.
+      let staleOutcome = null;
+      if (learning && stale.execution?.submissionPossible === true && stale.execution?.attemptId) {
+        try {
+          staleOutcome = await reconcileAttempt(learning.ctx, {
+            applicationId: stale.applicationId, attemptId: stale.execution.attemptId,
+            evidence: { auditDir: stale.auditDir },
+          });
+        } catch (err) {
+          log(`run: reconciliation FAILED for ${stale.company} (${err.message}) — parking conservatively`);
+          staleOutcome = { status: 'unknown', reason: `reconciliation error: ${err.message}` };
+        }
+      }
+      let job;
+      if (staleOutcome?.status === 'confirmed') {
+        job = await updateJob(stale.urlKey, { transitionTo: 'submitted', patch: { lastError: null } });
+        syncTrackerApplied(job, stale.auditDir, log);
+        log(`run: recovered stale applying job ${job.company} -> submitted (reconciled)`);
+      } else if (staleOutcome?.status === 'unknown') {
+        job = await updateJob(stale.urlKey, {
+          transitionTo: 'parked',
+          patch: { lastError: `submission outcome unknown for attempt ${stale.execution.attemptId} — ${staleOutcome.reason}` },
+        });
+        log(`run: recovered stale applying job ${job.company} -> parked (submission outcome unknown)`);
+      } else {
+        job = await updateJob(stale.urlKey, {
+          transitionTo: 'failed',
+          patch: { lastError: stale.lastError || 'exhausted attempts (stale applying)' },
+        });
+        log(`run: recovered stale applying job ${job.company} -> failed`);
+      }
       // T10: an interrupted attempt still finalizes its learning evidence and
       // enqueues local consolidation. A failure here is logged, never hidden;
       // this path never manufactures a submission status and never starts
