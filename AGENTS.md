@@ -603,6 +603,19 @@ read-only `learningReview` due-ness field; the reviewer has no path to
 time; learning modules never import `core/db.mjs` (the `learn.mjs` CLI is
 allowed read-only db access for discovery but currently needs only
 `path-resolver.mjs`); no new dependencies.
+Panel learning API (T21): `auto/learning/api.mjs` serves `/api/auto/learning/*`
+(CONTRACTS G) and fixed-manifest assets at `/auto/assets/learning/<name>` from
+`auto/ui/learning/` (manifest const in `auto/panel.mjs`; no user paths). GETs
+are read-only (status/questions/question/answers/blockers/insights/procedures/
+proposals/metrics) with capped pagination, generation-stable cursors and
+masking; disabled learning yields `feature:{enabled:false,
+reason:'learning_not_activated'}`, a corrupt index a visible 500. POSTs
+require loopback Host+Origin, the CSRF token issued by GET `/status`, JSON
+≤64 KiB, strict schemas (unknown fields rejected), an `opId` and expected
+revisions; approval tokens are minted server-side (`createUserApproval`/
+`createPromotionApproval`) — payload actor claims are never honored.
+`privacy/apply` is visibly unavailable (no deletion flow exists). Tests:
+`auto/test/learning-api.test.mjs`.
 Execution policy (T12): `auto/lib/config.mjs` exports `POLICY_RANGES` (one
 validation table shared with the panel's Settings whitelist),
 `resolveExecutionPolicy()` (frozen, digested `policyVersion`; garbled or

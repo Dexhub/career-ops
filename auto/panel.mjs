@@ -31,6 +31,7 @@ import { getCareerOpsRoot } from '../path-resolver.mjs';
 import { createLearningContext } from './learning/context.mjs';
 import { reviewStatus as learningReviewStatus } from './learning/reviewer.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
+import { handleLearningRequest, API_BASE as LEARNING_API_BASE, ASSET_BASE as LEARNING_ASSET_BASE } from './learning/api.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const LOCK_OWNER = join(ROOT, 'data', 'auto', 'orchestrator.lock', 'owner.json');
@@ -39,6 +40,21 @@ const OUTPUT_ROOT = join(ROOT, 'output');
 const PANEL_HTML = join(ROOT, 'auto', 'panel.html');
 const PAUSE_FLAG = join(ROOT, 'data', 'auto', 'pause-requested');
 const UPSTREAM = { host: '127.0.0.1', port: Number(process.env.CAREER_OPS_WEB_PORT) || 3003 };
+
+// T21: fixed-name learning UI asset manifest (CONTRACTS G). No user paths, no
+// wildcards — only these exact names resolve, all beneath auto/ui/learning/.
+// T22/T23 create the remaining files; an unbuilt name is a plain 404.
+const LEARNING_UI_ROOT = join(ROOT, 'auto', 'ui', 'learning');
+const LEARNING_ASSET_MANIFEST = Object.freeze({
+  'client.mjs': 'client.mjs',
+  'index.mjs': 'index.mjs',
+  'questions.mjs': 'questions.mjs',
+  'profile.mjs': 'profile.mjs',
+  'intelligence.mjs': 'intelligence.mjs',
+  'operations.mjs': 'operations.mjs',
+  'proposals.mjs': 'proposals.mjs',
+  'learning.css': 'learning.css',
+});
 
 let panelChild = null; // cycle process started by this panel
 
@@ -680,6 +696,13 @@ export function createPanelServer() {
     try {
       if (req.method === 'GET' && (p === '/auto' || p === '/auto/')) {
         return send(res, 200, readFileSync(PANEL_HTML, 'utf8'), 'text/html; charset=utf-8');
+      }
+      // T21: learning API and fixed-manifest assets (handler in learning/api.mjs).
+      if (p === LEARNING_API_BASE || p.startsWith(`${LEARNING_API_BASE}/`) || p.startsWith(LEARNING_ASSET_BASE)) {
+        await handleLearningRequest(req, res, {
+          assetRoot: LEARNING_UI_ROOT, assetManifest: LEARNING_ASSET_MANIFEST,
+        });
+        return undefined;
       }
       if (p.startsWith('/api/auto/')) {
         if (req.method === 'GET' && p === '/api/auto/status') return send(res, 200, statusPayload());

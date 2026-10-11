@@ -784,3 +784,60 @@ separation. Full learning + cloud suites: 298/298 pass (286 prior intact).
 Live CLI smoke read-only: `node auto/learn.mjs metrics` → `store: absent`.
 Phase 4 gate ticked (all five items; T16–T20 complete).
 Commit: (pending — coordinator commits)
+
+## T21 — Narrow local panel APIs + static asset serving (2026-10-11)
+
+Status: complete. Created `auto/learning/api.mjs` (handleLearningRequest,
+CONTRACTS G), `auto/test/learning-api.test.mjs`, placeholder
+`auto/ui/learning/{index.mjs,learning.css}`. `auto/panel.mjs` modified
+surgically: one import, the fixed `LEARNING_ASSET_MANIFEST` const
+(8 fixed names under `auto/ui/learning/`, no user paths/wildcards), and one
+dispatch hook before the `/api/auto/` block (+23 lines total). The live panel
+was NOT restarted (deployment is T27); no cycle/browser/model started.
+
+- GET (read-only, never launches anything): `/status` (feature, review
+  due-ness, storePresent, csrfToken), `/questions`, `/question?id=`,
+  `/answers`, `/blockers`, `/insights`, `/procedures`, `/proposals`,
+  `/metrics`. Lists return `{items,nextCursor,generation,coverage,feature}`
+  with limit capped at 200 (store caps 500), status filters validated against
+  `statusEnumFor`, stale cursors → 409 REFRESH_REQUIRED, corrupt index → 500
+  CORRUPT_RECORD (never a fake empty list). Disabled learning: GETs return
+  honest empty envelopes with `feature:{enabled:false,
+  reason:'learning_not_activated'}` without touching the store.
+- Masking: `maskDeep` redacts secret-named keys (`isSecretKey`) and
+  sensitive values (`data.sensitive`→`value`, `diff.sensitive`→
+  `proposedValue` → '[redacted-sensitive]'). The store already refuses
+  secret-bearing keys at commit; API masking is defense-in-depth.
+- POST: loopback Host AND present loopback Origin, per-process CSRF token
+  (issued only via GET /status), `application/json` only (else 415), 64-KiB
+  cap (else 413), strict schemas rejecting unknown fields (an injected
+  `actor:'user'` is a 422, never honored), `opId` (8–64 chars) and expected
+  revisions. Approval authority is minted server-side: `createUserApproval`
+  for `/answers/approve`, `createPromotionApproval` for
+  `/procedures/promote`, `{approvedBy:'panel-operator'}` for confirmed
+  blocker resolution. Duplicate identical approval → `already_applied`
+  (never re-applied); stale revision → 409 and the source is untouched.
+- `/answers/propose` is preview-then-commit: proposal record + patch preview
+  hashes (selector/beforeHash/afterHash), source untouched; approve returns
+  the committed hash which must match the preview. `/proposals/decision`
+  flips review status only (approved/rejected) and never applies a diff.
+  `/review` is local-only unless a D03 `approvalId` is named (runReview
+  verifies it). `/privacy/preview` works; `/privacy/apply` is visibly
+  unavailable (403 NOT_AVAILABLE — no deletion flow exists in this build).
+- Assets: `/auto/assets/learning/<name>` resolves only exact manifest keys
+  (traversal/encoded shapes are 404), correct JS/CSS content types,
+  nosniff, GET only. Reverse-proxy and all existing panel routes untouched.
+- Error map: 409 stale/conflict/lease, 403 authority/CSRF/origin/disabled,
+  404 unknown, 422 invalid, 500 corrupt/config/write-verification.
+
+Tests: 19/19 new (`node --test auto/test/learning-api.test.mjs`): fixture
+isolation first, wrong Host/Origin, absent/forged CSRF, missing Origin,
+content type, oversized body, malformed JSON, traversal (query + assets),
+unknown ids/routes/methods, malformed limit/cursor, stale cursor/revision,
+masking, propose→preview→approve→idempotent-repeat, decision-only proposals,
+privacy preview/apply, corrupt index 500, disabled-feature envelopes, and a
+real `createPanelServer` dispatch check. Full suite: 317/317 pass
+(298 prior intact). AGENTS.md learning section updated (T21 paragraph).
+Gotcha: `previewAnswerSourcePatch` refuses an existing custom key
+(CONFLICTING_SOURCE_EDIT → mapped 409); proposals in tests must target new
+keys. Commit: (pending — coordinator commits)

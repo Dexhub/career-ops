@@ -12,12 +12,12 @@
 **Modify:** `auto/panel.mjs` route dispatch and a small asset manifest only.
 **Produces:** `handleLearningRequest` and CONTRACTS G endpoints.
 
-- [ ] Write route tests using mocked requests/responses or an isolated loopback test server with synthetic data. Cover wrong Host/Origin, absent CSRF token, invalid content type, oversized body, traversal, unknown IDs, malformed queries, stale revisions and disabled features.
-- [ ] Implement the GET routes as read-only views over current indexes/records. Default limits are bounded, sensitive values are masked/omitted, and every list response includes generation/cursor. A GET must never launch a reviewer, model call, account operation or application.
-- [ ] Implement POST routes with strict request schemas, same-origin validation, CSRF, expected revision and operation identity. Bind approval provenance to the trusted local UI/session action; do not honor an arbitrary `actor:'user'` field from a model payload. A duplicate identical approval must not apply twice; conflicting repeats return 409.
-- [ ] Expose answer/source changes as preview then commit. Return committed source/record versions for success; if persistence fails, the UI must not display success. Code/UI proposal decisions change review status only and do not apply the suggested diff.
-- [ ] Serve `/auto/assets/learning/` from a fixed filename manifest beneath `auto/ui/learning/`. No user-selected file paths, no wildcard filesystem exposure, and correct JavaScript/CSS content types with nosniff. Do not link excluded prompt/credential artifacts from the learning evidence viewer.
-- [ ] Keep localhost binding and existing application controls intact. Preserve reverse-proxy behavior without granting the upstream UI new submission capabilities. Run `node --test auto/test/learning-api.test.mjs`.
+- [x] Write route tests using mocked requests/responses or an isolated loopback test server with synthetic data. Cover wrong Host/Origin, absent CSRF token, invalid content type, oversized body, traversal, unknown IDs, malformed queries, stale revisions and disabled features.
+- [x] Implement the GET routes as read-only views over current indexes/records. Default limits are bounded, sensitive values are masked/omitted, and every list response includes generation/cursor. A GET must never launch a reviewer, model call, account operation or application.
+- [x] Implement POST routes with strict request schemas, same-origin validation, CSRF, expected revision and operation identity. Bind approval provenance to the trusted local UI/session action; do not honor an arbitrary `actor:'user'` field from a model payload. A duplicate identical approval must not apply twice; conflicting repeats return 409.
+- [x] Expose answer/source changes as preview then commit. Return committed source/record versions for success; if persistence fails, the UI must not display success. Code/UI proposal decisions change review status only and do not apply the suggested diff.
+- [x] Serve `/auto/assets/learning/` from a fixed filename manifest beneath `auto/ui/learning/`. No user-selected file paths, no wildcard filesystem exposure, and correct JavaScript/CSS content types with nosniff. Do not link excluded prompt/credential artifacts from the learning evidence viewer.
+- [x] Keep localhost binding and existing application controls intact. Preserve reverse-proxy behavior without granting the upstream UI new submission capabilities. Run `node --test auto/test/learning-api.test.mjs`.
 
 Response example:
 
