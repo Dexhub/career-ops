@@ -737,3 +737,50 @@ included. Full learning suite + cloud handler: 286/286 pass (273 prior intact).
 CLI smoke against the live checkout refused safely (`review` without `--once`
 usage error; `--once --local-only` → "learning is disabled … review refused").
 Commit: (pending — coordinator commits)
+
+## T20 — Measure operational savings and career outcomes honestly (2026-10-11T15:05Z)
+
+Created: `auto/test/learning-metrics.test.mjs`.
+Modified: `auto/learning/intelligence.mjs` (new `deriveLearningMetrics` +
+`compareMetricCohorts`), `auto/learn.mjs` (read-only `metrics [--from ISO]
+[--to ISO]` subcommand — the analytics integration; prints `store: absent`
+honestly when no learning store exists, which is the current live state).
+
+- `deriveLearningMetrics(ctx,{from,to,cohort,tracker})` (CONTRACTS, plan line
+  111) reports every channel SEPARATELY: reuse disposition counts (observation
+  `answerDisposition`), new-question rate (first-seen over all history vs the
+  window), unsupported/conflicted answers, repeat missing-fact blocks
+  (`missing_answer` blockers grouped by question, repeats = seen ≥2), wait vs
+  active time via `extractEpisodes` (attempts with unknown active time are
+  COUNTED, never zeroed), action counts, model usage/cost from
+  `cloud_reservation` reviewRuns (knownCostUsd from `actualUsd` only; unknown
+  outcomes counted with the `estUsd` ceiling reported separately; `tokens`
+  null — not zero — when no run has usage), attempt status mix, duplicate
+  attempts, and trackerSync task statuses.
+- Outcome join uses the canonical tracker readers (`core/db.mjs`
+  `listApplications`/`listStatusEvents`) imported LAZILY only when no reader
+  is injected (same pattern as workflow.mjs; static import graph untouched).
+  Join key: normalized attempt `urlKey` vs tracker `url`. The LAST status
+  event wins (later corrections). Terminal statuses mirror calibrate.mjs
+  `TRACKER_TERMINAL`; everything else is `in_flight` — never inferred
+  rejected, reported separately, excluded from every rate. Rates use the
+  calibrate sample floor (5): below it `rate: null` with
+  `reason: 'sample_below_floor'`. Posting age has no verified ledger source
+  so it stays null per row, never guessed. Resume/source + policy/procedure
+  versions exposed per row and selectable via `cohort` (unknown keys rejected).
+- `compareMetricCohorts({before,after,kind})` (pure): `fixture_replay` with
+  identical role mix/ATS mix/window → `mechanistic_savings`; any drift or
+  `kind:'live'` → `association` with caveats naming role-mix/ATS-mix/window
+  changes, small samples, and unknown time/cost exclusions. Never claims a
+  procedure caused an interview. No calibration rule, threshold, resume fact
+  or preference is edited anywhere — advisory numbers only.
+
+Tests: 12/12 new (`node --test auto/test/learning-metrics.test.mjs`) covering
+fixture isolation (first assertion), missing token usage, waiting vs active
+time, duplicate attempts, pending outcomes, later outcome corrections,
+altered resume versions, tiny cohorts, repeat missing-fact blocks, cohort-key
+rejection, association vs mechanistic labeling, and tracker-sync/action
+separation. Full learning + cloud suites: 298/298 pass (286 prior intact).
+Live CLI smoke read-only: `node auto/learn.mjs metrics` → `store: absent`.
+Phase 4 gate ticked (all five items; T16–T20 complete).
+Commit: (pending — coordinator commits)

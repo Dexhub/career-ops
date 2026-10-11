@@ -110,16 +110,16 @@ Implement CLI `node auto/learn.mjs review --once --local-only` as a local, featu
 **Extend:** `intelligence.mjs`, digest/analytics integration; **Create:** `auto/test/learning-metrics.test.mjs`.
 **Produces:** `deriveLearningMetrics`.
 
-- [ ] Record reuse disposition, new-question rate, unsupported/conflicted answers, repeat missing-fact blocks, active browser time, email/queue wait time, action count, model usage/cost when available, attempt outcome and tracker synchronization separately. Unknown usage remains unknown, not zero.
-- [ ] Join verified application identity, resume/source version, policy/procedure cohort, posting age, reply/interview/offer/hiring outcome and observation window. Reuse the canonical tracker/outcome readers; do not infer rejection from a pending application.
-- [ ] Preserve existing advisory calibration constraints. Do not auto-edit global scoring rules, application threshold, resume facts or candidate preferences. Display rates only when the underlying existing calibration rules support them; do not recompute a more flattering rate.
-- [ ] Compare fixed fixture replays for mechanistic savings. For live before/after comparisons, expose changed role mix, ATS mix, date window and small samples; label associations rather than claiming a procedure caused an interview.
-- [ ] Test missing token usage, waiting versus active time, duplicate attempts, pending outcomes, later outcome corrections, altered resume versions and tiny cohorts. Run `node --test auto/test/learning-metrics.test.mjs`.
+- [x] Record reuse disposition, new-question rate, unsupported/conflicted answers, repeat missing-fact blocks, active browser time, email/queue wait time, action count, model usage/cost when available, attempt outcome and tracker synchronization separately. Unknown usage remains unknown, not zero.
+- [x] Join verified application identity, resume/source version, policy/procedure cohort, posting age, reply/interview/offer/hiring outcome and observation window. Reuse the canonical tracker/outcome readers; do not infer rejection from a pending application.
+- [x] Preserve existing advisory calibration constraints. Do not auto-edit global scoring rules, application threshold, resume facts or candidate preferences. Display rates only when the underlying existing calibration rules support them; do not recompute a more flattering rate.
+- [x] Compare fixed fixture replays for mechanistic savings. For live before/after comparisons, expose changed role mix, ATS mix, date window and small samples; label associations rather than claiming a procedure caused an interview.
+- [x] Test missing token usage, waiting versus active time, duplicate attempts, pending outcomes, later outcome corrections, altered resume versions and tiny cohorts. Run `node --test auto/test/learning-metrics.test.mjs`.
 
 ## Phase 4 review gate
 
-- [ ] Role insights cite actual source evidence and distinct denominators; candidate facts remain independent of market demand.
-- [ ] Cloud-disabled operation is useful and complete for capture/reuse/local metrics.
-- [ ] No unapproved model call, duplicate paid request, automatic application start or executable generated patch occurred.
-- [ ] Procedure promotion has a reproducible evaluation result and scope; model confidence alone is not acceptance.
-- [ ] Metrics separate saved time, wait time, cost uncertainty and actual career outcomes.
+- [x] Role insights cite actual source evidence and distinct denominators; candidate facts remain independent of market demand.
+- [x] Cloud-disabled operation is useful and complete for capture/reuse/local metrics.
+- [x] No unapproved model call, duplicate paid request, automatic application start or executable generated patch occurred.
+- [x] Procedure promotion has a reproducible evaluation result and scope; model confidence alone is not acceptance.
+- [x] Metrics separate saved time, wait time, cost uncertainty and actual career outcomes.

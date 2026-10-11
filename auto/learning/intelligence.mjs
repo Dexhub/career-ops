@@ -11,6 +11,12 @@
 //   joinCapabilitiesToExperience({capabilities,stories})     (pure)
 //   screenProposedTopics(topics, sources) -> {evidenceBacked,rejected} (pure)
 //   deriveRoleInsights(ctx, {roleFamily, filters, asOf}) -> insights[]
+//   deriveLearningMetrics(ctx, {from,to,cohort}) -> metrics          (T20)
+//   compareMetricCohorts({before,after,kind}) -> comparison          (pure)
+//
+// T20 note: the outcome join lazily imports core/db.mjs (the canonical
+// tracker reader, same pattern as workflow.mjs) only when no reader is
+// injected; nothing from core/db.mjs is imported at module load.
 //
 // Counts always use DISTINCT requisitions (applicationId) and DISTINCT
 // companies as denominators — never raw audit/observation rows. Raw evidence
@@ -22,6 +28,7 @@ import { LearningError, validateRecordData } from './contracts.mjs';
 import { commitRecord, getRecord, listRecords } from './store.mjs';
 import { normalizeQuestion } from './questions.mjs';
 import { loadSourceSnapshot, extractExperienceStories } from './retrieval.mjs';
+import { extractEpisodes } from './procedures.mjs';
 
 function sha256(text) {
   return createHash('sha256').update(text).digest('hex');
@@ -609,4 +616,443 @@ export async function saveRoleInsight(ctx, insight) {
     status: 'draft',
     sourceIds: (insight.sourceIds ?? []).slice(0, MAX_SOURCE_IDS),
   });
+}
+
+// --- T20: honest operational savings and career-outcome metrics -----------------
+// Deterministic, read-only derivation. Every channel is reported SEPARATELY
+// and unknown values stay unknown (null / counted-as-unknown), never zero.
+// Rates honor the existing calibration conventions (calibrate.mjs): a sample
+// floor of 5 per rate, in-flight applications excluded from every rate and
+// reported separately, and a pending application is NEVER inferred rejected.
+
+const RATE_SAMPLE_FLOOR = 5; // calibrate.mjs --min-band-n default; never lowered here
+
+// Tracker statuses that resolve an outcome (mirrors calibrate.mjs
+// TRACKER_TERMINAL). Everything else is in-flight and carries no outcome.
+const TRACKER_OUTCOME = Object.freeze({
+  hired: { class: 'hired', reachedInterview: true, reachedOffer: true },
+  offer: { class: 'offer', reachedInterview: true, reachedOffer: true },
+  interview: { class: 'interview', reachedInterview: true, reachedOffer: false },
+  rejected: { class: 'rejected', reachedInterview: false, reachedOffer: false },
+});
+
+const ALLOWED_COHORT_KEYS = new Set(['policyVersion', 'sourceVersion', 'procedureVersion', 'atsVendor']);
+const ATTEMPT_RANK = Object.freeze({
+  confirmed: 4, definitely_not_submitted: 3, unknown: 2, launched: 1, intended: 0,
+});
+
+function listAllRecordsOf(ctx, collection) {
+  const items = [];
+  let cursor;
+  do {
+    const page = listRecords(ctx, collection, { cursor, limit: 500 });
+    items.push(...page.items);
+    cursor = page.nextCursor;
+  } while (cursor);
+  return items;
+}
+
+function inWindow(at, fromIso, toIso) {
+  if (typeof at !== 'string' || at === '') return false;
+  if (fromIso !== null && at < fromIso) return false;
+  if (toIso !== null && at > toIso) return false;
+  return true;
+}
+
+/** Rate with the calibration sample floor: below it, rate stays null. */
+function honestRate(numerator, denominator) {
+  if (!Number.isInteger(denominator) || denominator < RATE_SAMPLE_FLOOR) {
+    return { numerator, denominator, rate: null, reason: 'sample_below_floor' };
+  }
+  return { numerator, denominator, rate: numerator / denominator };
+}
+
+function normalizeUrl(u) {
+  return String(u ?? '').trim().toLowerCase().replace(/\/+$/, '');
+}
+
+async function defaultOutcomeReader() {
+  // Canonical tracker readers, imported lazily (never at module load).
+  const db = await import('../../core/db.mjs');
+  return {
+    listApplications: () => db.listApplications(),
+    listStatusEvents: () => db.listStatusEvents(),
+  };
+}
+
+function classifyTrackerStatus(status) {
+  const s = String(status ?? '').trim().toLowerCase();
+  if (s === '') return { class: 'unknown', reachedInterview: null, reachedOffer: null, terminal: false };
+  const terminal = TRACKER_OUTCOME[s];
+  if (terminal) return { ...terminal, terminal: true };
+  // Pending/in-flight: NEVER inferred as rejection.
+  return { class: 'in_flight', reachedInterview: null, reachedOffer: null, terminal: false };
+}
+
+/**
+ * deriveLearningMetrics(ctx, {from, to, cohort, tracker}) -> metrics.
+ * from/to: optional ISO strings bounding the observation window (from=null
+ * means all history; to defaults to ctx.now()). cohort: optional filter over
+ * {policyVersion,sourceVersion,procedureVersion,atsVendor}. tracker: injected
+ * {listApplications,listStatusEvents} reader for tests; defaults to the
+ * canonical core/db.mjs readers.
+ *
+ * Advisory only: this NEVER edits scoring rules, the application threshold,
+ * resume facts or candidate preferences — it returns numbers with their
+ * denominators and unknowns exposed.
+ */
+export async function deriveLearningMetrics(ctx, { from = null, to = null, cohort = {}, tracker = null } = {}) {
+  if (!isPlainObject(cohort)) {
+    throw new LearningError('SCHEMA_VALIDATION', 'cohort must be a plain object');
+  }
+  for (const key of Object.keys(cohort)) {
+    if (!ALLOWED_COHORT_KEYS.has(key)) {
+      throw new LearningError('SCHEMA_VALIDATION', `unknown cohort key "${key}"`);
+    }
+  }
+  const toIso = to === null ? ctx.now().toISOString() : new Date(to).toISOString();
+  const fromIso = from === null ? null : new Date(from).toISOString();
+  if (Number.isNaN(Date.parse(toIso)) || (fromIso !== null && Number.isNaN(Date.parse(fromIso)))) {
+    throw new LearningError('SCHEMA_VALIDATION', 'from/to must be ISO date strings');
+  }
+
+  // --- Observations: reuse disposition + new-question rate -------------------
+  const allObservations = listAllRecordsOf(ctx, 'observations');
+  const observedAtOf = (r) => r.data.observedAt ?? r.createdAt;
+  const windowObservations = allObservations.filter((r) => inWindow(observedAtOf(r), fromIso, toIso)
+    && (cohort.atsVendor === undefined || r.data.atsVendor === cohort.atsVendor));
+  const byDisposition = {
+    unanswered: 0, reused: 0, drafted: 0, confirmed: 0, declined: 0, blocked: 0,
+  };
+  for (const r of windowObservations) {
+    const d = r.data.answerDisposition ?? 'unanswered';
+    byDisposition[d in byDisposition ? d : 'unanswered'] += 1;
+  }
+  // Question definitions: first-seen over ALL history, membership in window.
+  const firstSeen = new Map();
+  const inWindowDefs = new Set();
+  for (const r of allObservations) {
+    if (typeof r.data.originalText !== 'string' || r.data.originalText.trim() === '') continue;
+    let def;
+    try { def = normalizeQuestion(r.data); } catch { continue; }
+    const at = observedAtOf(r);
+    const prev = firstSeen.get(def.id);
+    if (prev === undefined || (typeof at === 'string' && at < prev)) firstSeen.set(def.id, at);
+    if (windowObservations.includes(r)) inWindowDefs.add(def.id);
+  }
+  let newQuestions = 0;
+  for (const defId of inWindowDefs) {
+    if (inWindow(firstSeen.get(defId), fromIso, toIso)) newQuestions += 1;
+  }
+  const reuse = {
+    byDisposition,
+    distinctQuestions: inWindowDefs.size,
+    newQuestions,
+    newQuestionRate: honestRate(newQuestions, inWindowDefs.size),
+  };
+
+  // --- Answers: unsupported / conflicted -------------------------------------
+  const allAnswers = listAllRecordsOf(ctx, 'answers')
+    .filter((r) => inWindow(r.updatedAt, fromIso, toIso));
+  const answers = {
+    total: allAnswers.length,
+    conflicted: allAnswers.filter((r) => r.status === 'conflicted').length,
+    unsupported: allAnswers.filter((r) => !Array.isArray(r.data.sourceRefs)
+      || r.data.sourceRefs.length === 0).length,
+  };
+
+  // --- Repeat missing-fact blocks --------------------------------------------
+  const allBlockers = listAllRecordsOf(ctx, 'blockers');
+  const missingByQuestion = new Map();
+  let missingAnswerBlockers = 0;
+  for (const b of allBlockers) {
+    if (b.data.type !== 'missing_answer') continue;
+    if (!inWindow(b.data.requestedAt ?? b.createdAt, fromIso, toIso)) continue;
+    missingAnswerBlockers += 1;
+    const q = String(b.data.question ?? '').trim().toLowerCase();
+    missingByQuestion.set(q, (missingByQuestion.get(q) ?? 0) + 1);
+  }
+  const repeats = [...missingByQuestion.entries()]
+    .filter(([, n]) => n >= 2)
+    .map(([question, count]) => ({ question, count }))
+    .sort((a, b) => b.count - a.count || (a.question < b.question ? -1 : 1));
+  const blockers = {
+    missingAnswerBlockers,
+    repeatedMissingFactQuestions: repeats.length,
+    repeats,
+  };
+
+  // --- Attempts + episodes: time, actions, outcomes ---------------------------
+  const allAttempts = listAllRecordsOf(ctx, 'attempts');
+  const versionMatch = (d) => ['policyVersion', 'sourceVersion', 'procedureVersion']
+    .every((k) => cohort[k] === undefined || d[k] === cohort[k]);
+  const cohortAttempts = allAttempts.filter((a) => versionMatch(a.data)
+    && inWindow(a.data.allocatedAt ?? a.createdAt, fromIso, toIso));
+  const episodesById = new Map(extractEpisodes(ctx).map((e) => [e.sourceId, e]));
+
+  let waitMsTotal = 0;
+  let activeMsKnownTotal = 0;
+  let attemptsWithKnownActiveTime = 0;
+  let attemptsWithUnknownActiveTime = 0;
+  let verdicts = 0;
+  const byStatus = { intended: 0, launched: 0, confirmed: 0, definitely_not_submitted: 0, unknown: 0 };
+  const byApplication = new Map();
+  for (const a of cohortAttempts) {
+    byStatus[a.status in byStatus ? a.status : 'unknown'] += 1;
+    const ep = episodesById.get(a.id);
+    if (ep) {
+      waitMsTotal += ep.waitMs;
+      if (ep.activeMs === null) attemptsWithUnknownActiveTime += 1; // unknown stays unknown, never zero
+      else { activeMsKnownTotal += ep.activeMs; attemptsWithKnownActiveTime += 1; }
+      verdicts += ep.verdictCount;
+    } else {
+      attemptsWithUnknownActiveTime += 1;
+    }
+    const appId = a.data.applicationId ?? a.id;
+    if (!byApplication.has(appId)) byApplication.set(appId, []);
+    byApplication.get(appId).push(a);
+  }
+  const duplicateAttemptApplications = [...byApplication.values()].filter((l) => l.length > 1).length;
+  const time = {
+    waitMsTotal,
+    activeMsKnownTotal,
+    attemptsWithKnownActiveTime,
+    attemptsWithUnknownActiveTime,
+  };
+  const actions = {
+    attempts: cohortAttempts.length,
+    verdicts,
+    observations: windowObservations.length,
+  };
+
+  // --- Model usage/cost: unknown usage remains unknown ------------------------
+  const reservations = listAllRecordsOf(ctx, 'reviewRuns')
+    .filter((r) => r.data?.budget?.kind === 'cloud_reservation'
+      && inWindow(r.data.startedAt, fromIso, toIso));
+  let knownCostUsd = 0;
+  let runsWithKnownCost = 0;
+  let runsWithUnknownCost = 0;
+  let reservedEstUsdUnknownOutcome = 0;
+  const tokens = { input: 0, output: 0, total: 0 };
+  let runsWithKnownUsage = 0;
+  for (const r of reservations) {
+    const actual = r.data.outcomes?.actualUsd;
+    if (typeof actual === 'number' && Number.isFinite(actual)) {
+      knownCostUsd += actual; runsWithKnownCost += 1;
+    } else {
+      runsWithUnknownCost += 1;
+      const est = r.data.budget?.estUsd;
+      if (typeof est === 'number' && Number.isFinite(est)) reservedEstUsdUnknownOutcome += est;
+    }
+    const usage = r.data.outcomes?.usage;
+    if (usage && typeof usage === 'object') {
+      runsWithKnownUsage += 1;
+      for (const k of ['input', 'output', 'total']) {
+        if (Number.isFinite(usage[k])) tokens[k] += usage[k];
+      }
+    }
+  }
+  const modelUsage = {
+    runs: reservations.length,
+    runsWithKnownCost,
+    knownCostUsd,
+    runsWithUnknownCost,                 // cost unknown stays unknown — reported as a count,
+    reservedEstUsdUnknownOutcome,        // and the reservation ceiling is shown separately
+    runsWithKnownUsage,
+    runsWithUnknownUsage: reservations.length - runsWithKnownUsage,
+    tokens: runsWithKnownUsage > 0 ? tokens : null, // no known usage -> null, not zero
+  };
+
+  // --- Tracker synchronization -------------------------------------------------
+  const syncByStatus = { pending: 0, in_progress: 0, done: 0, failed: 0 };
+  for (const t of listAllRecordsOf(ctx, 'syncTasks')) {
+    if (t.status in syncByStatus) syncByStatus[t.status] += 1;
+  }
+
+  // --- Outcome join: verified identity, canonical readers, no inference -------
+  const reader = tracker ?? await defaultOutcomeReader();
+  let rows = []; let events = []; let trackerReadable = true;
+  try {
+    rows = reader.listApplications();
+    events = reader.listStatusEvents();
+  } catch { trackerReadable = false; }
+  const rowByUrl = new Map();
+  for (const row of rows) {
+    const u = normalizeUrl(row.url);
+    if (u) rowByUrl.set(u, row);
+  }
+  const eventsByApp = new Map();
+  for (const ev of events) {
+    if (!eventsByApp.has(ev.app_num)) eventsByApp.set(ev.app_num, []);
+    eventsByApp.get(ev.app_num).push(ev);
+  }
+
+  const joined = [];
+  let unjoinedApplications = 0;
+  let resolved = 0; let inFlight = 0;
+  let reachedInterview = 0; let reachedOffer = 0; let rejectedCount = 0;
+  for (const [applicationId, list] of byApplication) {
+    // Authoritative attempt: most settled status, latest update as tiebreak.
+    const best = [...list].sort((x, y) => (ATTEMPT_RANK[y.status] - ATTEMPT_RANK[x.status])
+      || (x.updatedAt < y.updatedAt ? 1 : -1))[0];
+    const d = best.data;
+    const row = trackerReadable ? (rowByUrl.get(normalizeUrl(d.urlKey)) ?? null) : null;
+    let outcome = null;
+    if (row) {
+      // Later corrections win: the LAST status event is the current truth.
+      const appEvents = eventsByApp.get(row.num) ?? [];
+      const last = appEvents.length > 0 ? appEvents[appEvents.length - 1] : null;
+      const currentStatus = last?.to_status ?? row.status ?? '';
+      const cls = classifyTrackerStatus(currentStatus);
+      outcome = {
+        joined: true,
+        status: currentStatus,
+        class: cls.class,
+        reachedInterview: cls.reachedInterview,
+        reachedOffer: cls.reachedOffer,
+        correctedAt: last?.event_date ?? null,
+        corrections: appEvents.length,
+      };
+      if (cls.terminal) {
+        resolved += 1;
+        if (cls.reachedInterview) reachedInterview += 1;
+        if (cls.reachedOffer) reachedOffer += 1;
+        if (cls.class === 'rejected') rejectedCount += 1;
+      } else if (cls.class === 'in_flight') {
+        inFlight += 1; // reported separately; never counted as rejection
+      }
+    } else {
+      unjoinedApplications += 1;
+      outcome = { joined: false, status: null, class: 'unjoined', reachedInterview: null, reachedOffer: null, correctedAt: null, corrections: 0 };
+    }
+    joined.push({
+      applicationId,
+      attemptId: d.attemptId ?? null,
+      attemptStatus: best.status,
+      duplicateAttempts: list.length - 1,
+      sourceVersion: d.sourceVersion ?? null,
+      policyVersion: d.policyVersion ?? null,
+      procedureVersion: d.procedureVersion ?? null,
+      postingAgeDays: null, // no verified posting date in the ledger: unknown, never guessed
+      observationWindow: { from: d.allocatedAt ?? best.createdAt, to: toIso },
+      outcome,
+    });
+  }
+  joined.sort((a, b) => (a.applicationId < b.applicationId ? -1 : 1));
+  const outcomes = {
+    trackerReadable,
+    joined,
+    unjoinedApplications,
+    resolved,
+    inFlight, // excluded from every rate below
+    // Rates over RESOLVED outcomes only, with the calibration sample floor.
+    rates: {
+      interview: honestRate(reachedInterview, resolved),
+      offer: honestRate(reachedOffer, resolved),
+      rejected: honestRate(rejectedCount, resolved),
+    },
+  };
+
+  // --- Comparability: expose the mix instead of hiding it ----------------------
+  const roleMix = {};
+  const atsMix = {};
+  const titleByApp = new Map();
+  const vendorByApp = new Map();
+  for (const r of windowObservations) {
+    const appId = r.data.applicationId;
+    if (typeof appId !== 'string') continue;
+    if (!titleByApp.has(appId) && typeof r.data.roleTitle === 'string') {
+      titleByApp.set(appId, r.data.roleTitle);
+    }
+    if (!vendorByApp.has(appId)) vendorByApp.set(appId, r.data.atsVendor ?? 'unknown');
+  }
+  for (const [appId] of byApplication) {
+    for (const tag of classifyRoleTitle(titleByApp.get(appId) ?? null).roleTags) {
+      roleMix[tag] = (roleMix[tag] ?? 0) + 1;
+    }
+    const vendor = vendorByApp.get(appId) ?? 'unknown';
+    atsMix[vendor] = (atsMix[vendor] ?? 0) + 1;
+  }
+  const comparability = {
+    roleMix,
+    atsMix,
+    dateWindow: { from: fromIso, to: toIso },
+    sampleSizes: { applications: byApplication.size, resolvedOutcomes: resolved, inFlight },
+    smallSample: resolved < RATE_SAMPLE_FLOOR,
+    claimType: 'association',
+    note: 'before/after live comparisons are associations; role mix, ATS mix, date window and sample size are exposed here — a procedure is never claimed to have caused an interview',
+  };
+
+  return {
+    window: { from: fromIso, to: toIso },
+    cohort: { ...cohort },
+    reuse,
+    answers,
+    blockers,
+    time,
+    actions,
+    modelUsage,
+    attempts: {
+      byStatus,
+      distinctApplications: byApplication.size,
+      duplicateAttemptApplications,
+    },
+    trackerSync: { byStatus: syncByStatus },
+    outcomes,
+    comparability,
+  };
+}
+
+/**
+ * compareMetricCohorts({before, after, kind}) -> comparison (pure).
+ * kind 'fixture_replay': fixed-fixture mechanistic comparison — the claim
+ * 'mechanistic_savings' is allowed ONLY when role mix, ATS mix and sample
+ * cohort are identical. kind 'live': always labeled 'association' and every
+ * mix/window/sample difference is exposed as a caveat.
+ */
+export function compareMetricCohorts({ before, after, kind = 'live' } = {}) {
+  if (!isPlainObject(before) || !isPlainObject(after)) {
+    throw new LearningError('SCHEMA_VALIDATION', 'compareMetricCohorts requires before and after metrics objects');
+  }
+  if (!['live', 'fixture_replay'].includes(kind)) {
+    throw new LearningError('SCHEMA_VALIDATION', `kind must be live|fixture_replay, got ${String(kind)}`);
+  }
+  const sameJson = (a, b) => JSON.stringify(a ?? {}) === JSON.stringify(b ?? {});
+  const roleMixChanged = !sameJson(before.comparability?.roleMix, after.comparability?.roleMix);
+  const atsMixChanged = !sameJson(before.comparability?.atsMix, after.comparability?.atsMix);
+  const windowsDiffer = !sameJson(before.window, after.window);
+  const smallSample = Boolean(before.comparability?.smallSample) || Boolean(after.comparability?.smallSample);
+
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const delta = (a, b) => (num(a) === null || num(b) === null ? null : b - a);
+  const deltas = {
+    waitMsTotal: delta(before.time?.waitMsTotal, after.time?.waitMsTotal),
+    activeMsKnownTotal: delta(before.time?.activeMsKnownTotal, after.time?.activeMsKnownTotal),
+    knownCostUsd: delta(before.modelUsage?.knownCostUsd, after.modelUsage?.knownCostUsd),
+    reusedAnswers: delta(before.reuse?.byDisposition?.reused, after.reuse?.byDisposition?.reused),
+    newQuestions: delta(before.reuse?.newQuestions, after.reuse?.newQuestions),
+  };
+
+  const caveats = [];
+  if (roleMixChanged) caveats.push('role mix changed between cohorts');
+  if (atsMixChanged) caveats.push('ATS mix changed between cohorts');
+  if (windowsDiffer) caveats.push('date windows differ between cohorts');
+  if (smallSample) caveats.push(`a cohort has fewer than ${RATE_SAMPLE_FLOOR} resolved outcomes`);
+  const unknownActive = (before.time?.attemptsWithUnknownActiveTime ?? 0)
+    + (after.time?.attemptsWithUnknownActiveTime ?? 0);
+  if (unknownActive > 0) caveats.push('some attempts have unknown active time (excluded, not zeroed)');
+  const unknownCost = (before.modelUsage?.runsWithUnknownCost ?? 0)
+    + (after.modelUsage?.runsWithUnknownCost ?? 0);
+  if (unknownCost > 0) caveats.push('some model runs have unknown cost (excluded, not zeroed)');
+
+  const mechanistic = kind === 'fixture_replay' && !roleMixChanged && !atsMixChanged && !windowsDiffer;
+  return {
+    kind,
+    claimType: mechanistic ? 'mechanistic_savings' : 'association',
+    deltas,
+    mixChanges: { roleMixChanged, atsMixChanged, windowsDiffer },
+    smallSample,
+    caveats,
+    note: 'associations only: outcome differences are never attributed to a procedure as a cause',
+  };
 }

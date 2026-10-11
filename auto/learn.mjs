@@ -13,6 +13,7 @@
 //   node auto/learn.mjs checkpoint --attempt-id ID --phase PHASE --input FILE
 //   node auto/learn.mjs capture-attempt --attempt-id ID --apply
 //   node auto/learn.mjs review --once --local-only [--limit N]
+//   node auto/learn.mjs metrics [--from ISO] [--to ISO]
 //
 // The attempt subcommands (CONTRACTS J) are the restricted executor's ONLY
 // write surface into the learning store: strict JSON in/out, inputs must be
@@ -50,7 +51,8 @@ const USAGE = `Usage:
   node auto/learn.mjs checkpoint --attempt-id ID --phase PHASE --input FILE
   node auto/learn.mjs capture-attempt --attempt-id ID --apply
   node auto/learn.mjs review --once --local-only [--limit N]
-  node auto/learn.mjs review --once --approval-id ID`;
+  node auto/learn.mjs review --once --approval-id ID
+  node auto/learn.mjs metrics [--from ISO] [--to ISO]`;
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -59,7 +61,7 @@ function parseArgs(argv) {
     const arg = rest[i];
     if (!arg.startsWith('--')) throw new Error(`unexpected argument: ${arg}`);
     const name = arg.slice(2);
-    if (['out', 'manifest', 'attempt-id', 'input', 'phase', 'approval-id', 'limit'].includes(name)) {
+    if (['out', 'manifest', 'attempt-id', 'input', 'phase', 'approval-id', 'limit', 'from', 'to'].includes(name)) {
       const value = rest[i + 1];
       if (!value || value.startsWith('--')) throw new Error(`missing value for --${name}`);
       flags[name] = value;
@@ -589,6 +591,22 @@ export async function main(argv = process.argv.slice(2)) {
       approvalId: flags['approval-id'] ?? null,
     });
     print(report);
+    return 0;
+  }
+
+  if (command === 'metrics') {
+    // T20: read-only honest metrics (works cloud-disabled). Never edits
+    // scoring rules, threshold, resume facts or preferences; never starts
+    // a worker, model or browser.
+    if (!existsSync(learningDataRoot(ctx))) {
+      print({ store: 'absent', note: 'no learning store exists; no metrics to derive' });
+      return 0;
+    }
+    const { deriveLearningMetrics } = await import('./learning/intelligence.mjs');
+    print(await deriveLearningMetrics(ctx, {
+      from: flags.from ?? null,
+      to: flags.to ?? null,
+    }));
     return 0;
   }
 
