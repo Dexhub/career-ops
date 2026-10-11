@@ -584,7 +584,13 @@ drafts get coverage `unknown`, never `observed`). CLI: `node auto/learn.mjs
 inspect --json | backfill --dry-run --out <path> | backfill --apply
 --manifest <path> | rebuild --verify` — dry run writes only the `--out`
 artifact; **never run `backfill --apply` against live data before the T27
-activation gate**. `retrieval.mjs` (T09): `buildContextPacket` -> bounded
+activation gate**. `migrate.mjs` (T26): migration/backup/restore/rollback
+helpers — `buildDataManifest`, `backupDataPaths` (0700 dest, hash-verified,
+credential-named paths refused), `restoreBackup`, `writeStoreMeta`/
+`assertWriterCompatible` (store-meta.json reader/writer compatibility marker;
+old writers rejected), `guardSnapshotRestore` (never restore a pre-submission
+snapshot over a submitted job); operator procedures in
+`auto/learning/README.md`. `retrieval.mjs` (T09): `buildContextPacket` -> bounded
 `{answers,stories,procedures,gaps,versions,bytes}` packets (max 12 candidates,
 byte cap from `config/learning.yml`, provenance/gaps/procedures reserved before
 stories); stories are verbatim CV/profile spans with hashes, never synthesized;

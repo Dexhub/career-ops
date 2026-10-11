@@ -58,13 +58,13 @@
 
 **Create:** `auto/test/learning-migration.test.mjs`, an operator section in `auto/README.md` or `auto/learning/README.md`.
 
-- [ ] Build a synthetic legacy data root containing old job versions, reused-attempt history, missing artifacts, malformed files, staged answers and a pending tracker update. Create a manifest before migration.
-- [ ] Back up only the approved data paths to an owner-protected destination and verify hashes. Do not copy credentials into an unprotected ZIP or commit backup data. A backup is not accepted until a restore to a second scratch root reproduces the expected records.
-- [ ] Rehearse migration preview, application, interruption and restart. Maintain an input/output schema/version manifest and a reader-compatibility marker. Reject running unsupported old writers against a new store.
-- [ ] Prove indexes can be discarded/rebuilt without losing authoritative records and that failed index generation leaves the previous generation usable.
-- [ ] Rehearse rollback: stop the reviewer/application writers at an approved safe boundary, keep unresolved external outcomes parked, disable new features, restore compatible code/config/data or a verified adapter, and recheck the canonical tracker. Never restore an old “queued” snapshot over a newly submitted job.
-- [ ] Document irreversible external effects: a rollback cannot unsend an application, delete an employer account, retract a message or undo a public-profile publication. Such actions are outside the local restore.
-- [ ] Run `node --test auto/test/learning-migration.test.mjs`; attach backup/restore and compatibility evidence. No live rollback is performed by this test.
+- [x] Build a synthetic legacy data root containing old job versions, reused-attempt history, missing artifacts, malformed files, staged answers and a pending tracker update. Create a manifest before migration.
+- [x] Back up only the approved data paths to an owner-protected destination and verify hashes. Do not copy credentials into an unprotected ZIP or commit backup data. A backup is not accepted until a restore to a second scratch root reproduces the expected records.
+- [x] Rehearse migration preview, application, interruption and restart. Maintain an input/output schema/version manifest and a reader-compatibility marker. Reject running unsupported old writers against a new store.
+- [x] Prove indexes can be discarded/rebuilt without losing authoritative records and that failed index generation leaves the previous generation usable.
+- [x] Rehearse rollback: stop the reviewer/application writers at an approved safe boundary, keep unresolved external outcomes parked, disable new features, restore compatible code/config/data or a verified adapter, and recheck the canonical tracker. Never restore an old “queued” snapshot over a newly submitted job.
+- [x] Document irreversible external effects: a rollback cannot unsend an application, delete an employer account, retract a message or undo a public-profile publication. Such actions are outside the local restore.
+- [x] Run `node --test auto/test/learning-migration.test.mjs`; attach backup/restore and compatibility evidence. No live rollback is performed by this test.
 
 ## T27. Activate through explicit, narrow gates
 
