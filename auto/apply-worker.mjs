@@ -25,6 +25,7 @@ import { flagValue, hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 import { loadAutoConfig, loadStandingAnswers } from './lib/config.mjs';
+import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { allocateAttempt, listJobs, loadJob, pickOrder, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -136,13 +137,17 @@ export function verifyAudit(auditDir, { submit }) {
     return { ok: false, status: 'failed', reason: `audit: 01-form-filled.png missing for status ${status}`, result };
   }
   try {
-    // Agents write either an array of {label,value,source} rows or a
-    // structured object keyed by form section — both are valid evidence.
-    const answers = JSON.parse(readFileSync(join(auditDir, 'answers.json'), 'utf8'));
-    const empty = Array.isArray(answers)
-      ? answers.length === 0
-      : !(answers && typeof answers === 'object' && Object.keys(answers).length > 0);
-    if (empty) {
+    // Agents write arrays of labeled rows, section objects of rows, or a
+    // keyed section/value object — normalizeAuditAnswers (T04) accepts all
+    // three. This is audit-SHAPE validation only: whether any row's source
+    // authorizes answer reuse is a separate learning-layer decision.
+    const raw = JSON.parse(readFileSync(join(auditDir, 'answers.json'), 'utf8'));
+    const { entries, rejected } = normalizeAuditAnswers(raw);
+    // Rows the normalizer could not recognize are still evidence of a fill
+    // (an evidence gap for diagnostics, not an empty audit); only a file with
+    // no content at all (pointer '$' = unsupported top-level shape) is empty.
+    const hasContent = entries.length > 0 || rejected.some((r) => r.pointer !== '$');
+    if (!hasContent) {
       return { ok: false, status: 'failed', reason: 'audit: answers.json empty', result };
     }
   } catch {

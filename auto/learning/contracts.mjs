@@ -131,6 +131,15 @@ const PROTO_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
+/**
+ * Shared secret/forbidden-key test (T04 evidence reuses the same pattern as
+ * record validation). Matches the key/label NAME only; callers must never put
+ * the value in an error or rejection message.
+ */
+export function isSecretKey(key) {
+  return typeof key === 'string' && FORBIDDEN_KEY_RE.test(key);
+}
+
 export function isValidCollection(collection) {
   return COLLECTIONS.includes(collection);
 }

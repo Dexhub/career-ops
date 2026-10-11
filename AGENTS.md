@@ -558,7 +558,13 @@ ingest-path allowlists), `context.mjs` (explicit code/data roots + injected
 clock, `config/learning.yml` reader — defaults disabled/shadow), `store.mjs`
 (`getRecord`/`listRecords`/`commitRecord`/`rebuildIndexes`; optimistic
 concurrency via `expectedRevision`, `REVISION_CONFLICT` on stale commits;
-per-entity locks via `pipeline-lock.mjs`). Rules: nothing executes at import
+per-entity locks via `pipeline-lock.mjs`), `evidence.mjs`
+(`normalizeAuditAnswers(input) -> {entries, rejected}` — the single parser
+for every historical `answers.json` shape: arrays of labeled rows, section
+objects of rows, keyed section/value objects; unknown source → `unverified`,
+secret-bearing keys rejected without leaking values; consumed by
+`apply-worker.mjs:verifyAudit` and `diagnose.mjs:buildReport`, which reports
+missing/malformed answers.json as evidence gaps). Rules: nothing executes at import
 time; learning modules never import `core/db.mjs`; no new dependencies.
 Tests: `node --test auto/test/learning-*.test.mjs` — isolated via
 `auto/test/helpers/learning.mjs` (mkdtemp fixture sets `CAREER_OPS_ROOT` +

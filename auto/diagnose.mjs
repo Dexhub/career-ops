@@ -20,11 +20,20 @@ import { fileURLToPath } from 'node:url';
 
 import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
+import { normalizeAuditAnswers } from './learning/evidence.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; }
+}
+
+/** Like readJson, but distinguishes a missing file from a malformed one. */
+function readJsonDetail(path) {
+  if (!existsSync(path)) return { value: null, state: 'missing' };
+  try { return { value: JSON.parse(readFileSync(path, 'utf8')), state: 'ok' }; } catch {
+    return { value: null, state: 'malformed' };
+  }
 }
 
 /** Collect every attempt dir under <scanRoot>/<app>/audit/attempt-*. */
@@ -38,13 +47,17 @@ export function collectAttempts(scanRoot) {
     for (const att of readdirSync(auditRoot, { withFileTypes: true })) {
       if (!att.isDirectory() || !att.name.startsWith('attempt-')) continue;
       const dir = join(auditRoot, att.name);
+      const answersRead = readJsonDetail(join(dir, 'answers.json'));
       attempts.push({
         app: app.name,
         attempt: att.name,
         dir,
         result: readJson(join(dir, 'result.json')),
         verdict: readJson(join(dir, 'verdict.json')),
-        answers: readJson(join(dir, 'answers.json')),
+        answers: answersRead.value,
+        // missing/malformed answers.json is an evidence GAP for the report,
+        // never evidence of an external (employer-side) failure.
+        answersGap: answersRead.state === 'ok' ? null : answersRead.state,
         error: readJson(join(dir, 'error.json')),
       });
     }
@@ -67,6 +80,7 @@ export function buildReport(attempts) {
   const missing = new Map();
   const generated = new Map();
   const divergent = [];
+  const evidenceGaps = [];
 
   for (const a of attempts.sort((x, y) => (x.app + x.attempt).localeCompare(y.app + y.attempt))) {
     const agentStatus = a.result?.status ?? '(no result.json)';
@@ -84,8 +98,19 @@ export function buildReport(attempts) {
     for (const m of a.result?.missing ?? []) {
       bump(missing, m.label || JSON.stringify(m), `${a.app} (${m.needed || '?'})`);
     }
-    for (const ans of a.answers ?? []) {
-      if (ans.source === 'generated') bump(generated, ans.label, a.app);
+    // Single normalization path (T04): arrays, section objects and keyed
+    // section/value answers.json all flow through normalizeAuditAnswers.
+    const gap = a.answersGap ?? (a.answers == null ? 'missing' : null);
+    if (gap) {
+      evidenceGaps.push(`- **${a.app}/${a.attempt}**: answers.json ${gap} (evidence gap, not an external failure)`);
+    } else {
+      const norm = normalizeAuditAnswers(a.answers);
+      for (const ans of norm.entries) {
+        if (ans.source === 'generated') bump(generated, ans.label, a.app);
+      }
+      if (norm.rejected.length) {
+        evidenceGaps.push(`- **${a.app}/${a.attempt}**: ${norm.rejected.length} unrecognized answer row(s) at ${norm.rejected.map((r) => r.pointer).slice(0, 5).join(', ')}`);
+      }
     }
   }
   lines.push('');
@@ -118,6 +143,12 @@ export function buildReport(attempts) {
     for (const [label, apps] of [...generated].sort((a, b) => b[1].length - a[1].length)) {
       lines.push(`- **${label}** ×${apps.length}: ${[...new Set(apps)].join(', ')}`);
     }
+    lines.push('');
+  }
+  if (evidenceGaps.length) {
+    lines.push('## Evidence gaps (missing/malformed/unrecognized answers.json)');
+    lines.push('');
+    lines.push(...evidenceGaps);
     lines.push('');
   }
   return lines.join('\n');
