@@ -152,32 +152,37 @@ test("layoutSankey positions nodes and draws a path per live link", () => {
 });
 
 // ── readStatusLog(): the ledger read behind the Sankey ──────────────────────
-// A missing data/status-log.tsv is normal and charts from the snapshot; any
-// other read failure must surface instead of passing for an empty log. It lives
-// in career-ops.ts, reached through the shared @/ alias hook, with
-// CAREER_OPS_ROOT pointed at a scratch data root.
+// An empty status_events table is normal and charts from the snapshot; a data
+// layer that cannot OPEN must surface instead of passing for an empty log. It
+// lives in career-ops.ts, reached through the shared @/ alias hook, with
+// CAREER_OPS_ROOT pointed at a scratch data root (data/career-ops.db).
 const skipTs = !process.features?.typescript && "this Node cannot import career-ops.ts (no type stripping)";
 const { readStatusLog, readApplicationStatusLog } = skipTs ? {} : await import("@/lib/career-ops");
+// The engine's data layer, for seeding. Same module instance career-ops.ts
+// reaches through @/lib/db, so openDb() re-resolves CAREER_OPS_ROOT per call.
+const coreDb = skipTs ? null : await import("../../../core/db.mjs");
 
 function withDataRoot(setup, fn) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sankey-status-log-"));
   fs.mkdirSync(path.join(root, "data"));
-  fs.writeFileSync(path.join(root, "data/applications.md"), "");
-  setup(path.join(root, "data"));
   const prev = process.env.CAREER_OPS_ROOT;
   process.env.CAREER_OPS_ROOT = root;
   try {
+    setup(path.join(root, "data"));
     return fn();
   } finally {
+    coreDb?.closeDb();
     if (prev === undefined) delete process.env.CAREER_OPS_ROOT;
     else process.env.CAREER_OPS_ROOT = prev;
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
 
-test("readStatusLog: a present log is parsed from the data root", { skip: skipTs }, () => {
-  const tsv = "13\t2026-08-26\tInterview\tRejected\tset-status\t\n";
-  const rows = withDataRoot((data) => fs.writeFileSync(path.join(data, "status-log.tsv"), tsv), () => readStatusLog());
+test("readStatusLog: recorded status events are read from the data root", { skip: skipTs }, () => {
+  const rows = withDataRoot(
+    () => coreDb.appendStatusEvent({ appNum: 13, eventDate: "2026-08-26", fromStatus: "Interview", toStatus: "Rejected", source: "set-status" }),
+    () => readStatusLog(),
+  );
   assert.equal(rows.length, 1);
   assert.equal(rows[0].num, 13);
 });
@@ -186,59 +191,29 @@ test("readStatusLog: a missing log is an empty log", { skip: skipTs }, () => {
   assert.deepEqual(withDataRoot(() => {}, () => readStatusLog()), []);
 });
 
-test("Sankey and cumulative tiles read the same active tracker's ledger", { skip: skipTs }, (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sankey-tracker-"));
-  const priorRoot = process.env.CAREER_OPS_ROOT;
-  const priorTracker = process.env.CAREER_OPS_TRACKER;
-  const ledger = (num) => `${num}\t2026-08-26\tOffer\tRejected\tset-status\t\n`;
-  try {
-    process.env.CAREER_OPS_ROOT = root;
-    delete process.env.CAREER_OPS_TRACKER;
-    for (const [dir, num] of [["", 1], ["data", 2], ["custom", 3]]) {
-      fs.mkdirSync(path.join(root, dir), { recursive: true });
-      fs.writeFileSync(path.join(root, dir, "applications.md"), "");
-      fs.writeFileSync(path.join(root, dir, "status-log.tsv"), ledger(num));
-    }
-    const check = (num) => {
-      assert.equal(readApplicationStatusLog(), ledger(num));
-      assert.deepEqual(readStatusLog(), parseStatusLog(ledger(num)));
-    };
-    check(2);
-    fs.unlinkSync(path.join(root, "data/applications.md"));
-    check(1);
-    const custom = path.join(root, "custom/applications.md");
-    process.env.CAREER_OPS_TRACKER = custom;
-    check(3);
-    process.env.CAREER_OPS_TRACKER = path.relative(process.cwd(), custom);
-    check(3);
-    // A FILE symlink needs a privilege a non-elevated Windows shell lacks, and
-    // a junction only links directories, so this one leg has no stand-in there.
-    // Skip it by name; any other error is still a failure.
-    let linked = true;
-    try {
-      fs.symlinkSync(custom, path.join(root, "linked.md"));
-    } catch (e) {
-      if (e?.code !== "EPERM" || e?.syscall !== "symlink") throw e;
-      linked = false;
-      t.diagnostic("symlinked-tracker leg skipped: no symlink privilege (EPERM)");
-    }
-    if (linked) {
-      process.env.CAREER_OPS_TRACKER = path.join(root, "linked.md");
-      check(3);
-    }
-  } finally {
-    if (priorRoot === undefined) delete process.env.CAREER_OPS_ROOT;
-    else process.env.CAREER_OPS_ROOT = priorRoot;
-    if (priorTracker === undefined) delete process.env.CAREER_OPS_TRACKER;
-    else process.env.CAREER_OPS_TRACKER = priorTracker;
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+// Sankey and cumulative tiles both consume readStatusLog, which parses the
+// exact TSV readApplicationStatusLog reconstructs from status_events — the
+// single ledger in data/career-ops.db (the per-tracker status-log.tsv
+// selection via CAREER_OPS_TRACKER is gone with the files).
+test("Sankey and cumulative tiles read the same reconstructed ledger", { skip: skipTs }, () => {
+  withDataRoot(
+    () => {
+      coreDb.appendStatusEvent({ appNum: 1, eventDate: "2026-08-26", fromStatus: "Offer", toStatus: "Rejected", source: "set-status" });
+      coreDb.appendStatusEvent({ appNum: 2, eventDate: "2026-08-27", fromStatus: "Applied", toStatus: "Interview", source: "web", note: "recruiter call" });
+    },
+    () => {
+      const tsv = readApplicationStatusLog();
+      assert.equal(tsv, "1\t2026-08-26\tOffer\tRejected\tset-status\t\n2\t2026-08-27\tApplied\tInterview\tweb\trecruiter call");
+      assert.deepEqual(readStatusLog(), parseStatusLog(tsv));
+    },
+  );
 });
 
-test("readStatusLog: an unreadable log throws instead of reading as empty", { skip: skipTs }, () => {
-  // A directory where the file should be: EISDIR, a read failure that is not ENOENT.
+test("readStatusLog: an unopenable data layer throws instead of reading as empty", { skip: skipTs }, () => {
+  // A directory where data/career-ops.db should be: the SQLite open fails with
+  // a non-missing error, which must surface rather than chart as an empty log.
   withDataRoot(
-    (data) => fs.mkdirSync(path.join(data, "status-log.tsv")),
-    () => assert.throws(() => readStatusLog(), (err) => err?.code !== undefined && err.code !== "ENOENT"),
+    (data) => fs.mkdirSync(path.join(data, "career-ops.db")),
+    () => assert.throws(() => readStatusLog()),
   );
 });

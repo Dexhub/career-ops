@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { careerOpsRoot, readApplications } from "@/lib/career-ops";
+import { readApplications } from "@/lib/career-ops";
+import { coreDb, coreDbAvailable } from "@/lib/db";
 import { getNormalizeTextKey } from "@/lib/core/text-key";
 import { evaluatedKeys, isEvaluated } from "@/lib/whats-new-suppression.mjs";
 import type { DiscoveredOffer } from "@/lib/explore";
@@ -10,10 +9,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // The SUPPLY loop, ZERO tokens: "new matches this week" = roles surfaced by past
-// free scans (data/scan-history.tsv) in the last N days that the user hasn't
+// free scans (the scan_history table) in the last N days that the user hasn't
 // evaluated yet. No scan runs here — it reads the history a past scan already
 // wrote, so the home stays instant + free (directly answers the #1 token-cost
 // complaint). cols: url, first_seen, portal, title, company, status, location.
+// The rows are re-serialized in that historical TSV column order so the proven
+// pure helper (collectWhatsNew + its node --test coverage) parses them unchanged.
 // Company matching keys come from the CORE (see lib/core/text-key.ts), never a
 // local reimplementation. The previous ASCII-only key deleted every non-Latin
 // letter, so "Škoda" collided with "Koda" — suppressing a real offer as
@@ -27,12 +28,11 @@ export async function GET(req: Request) {
   // total is free while the rendered list keeps a ceiling (see MAX_OFFER_LIMIT).
   const offerLimit = resolveOfferLimit(searchParams.get("limit"));
   const cutoff = Date.now() - days * 86_400_000;
-  let rows: string[];
-  try {
-    rows = fs.readFileSync(path.join(careerOpsRoot(), "data", "scan-history.tsv"), "utf8").split("\n");
-  } catch {
-    return Response.json({ offers: [], count: 0 });
-  }
+  if (!coreDbAvailable()) return Response.json({ offers: [], count: 0 });
+  const cell = (v: unknown) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+  const rows = coreDb()
+    .listScanHistory()
+    .map((r) => [r.url, r.first_seen, r.portal, r.title, r.company, r.status, r.location].map(cell).join("\t"));
 
   // Roles already evaluated → don't resurface as "new". Keyed on company AND
   // role, not company alone: suppressing by employer removed that employer's

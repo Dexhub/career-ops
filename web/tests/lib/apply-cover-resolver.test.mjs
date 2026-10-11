@@ -76,15 +76,19 @@ register('data:text/javascript,' + encodeURIComponent(loaderSrc), pathToFileURL(
 
 const { resolveTailoredCover } = await import('../../src/lib/apply/cover.ts');
 const { matchesTailoredCover } = await import('../../src/lib/apply/cv-match.mjs');
+// The engine's data layer, used to seed the scratch tracker. Same module
+// instance the resolver reaches through @/lib/db (both resolve to
+// <checkout>/core/db.mjs), so openDb() re-resolves CAREER_OPS_ROOT per call.
+const coreDb = await import('../../../core/db.mjs');
 
 /**
  * Provision a throwaway career-ops root with an output/ dir, redirected via the
  * same CAREER_OPS_ROOT override careerOpsRoot() reads (see
  * web/src/lib/career-ops.ts) — no monkeypatching fs needed.
  *
- * `rows` (optional) are written as data/applications.md in the legacy fixed
- * column order parseApplications falls back to, so the applicationNumber path
- * has a real tracker to join against.
+ * `rows` (optional) are seeded into the scratch root's data/career-ops.db via
+ * core/db.mjs upsertApplication, so the applicationNumber path has a real
+ * tracker to join against.
  */
 async function withFixture(files, fn, rows) {
   const root = mkdtempSync(join(tmpdir(), 'cover-resolver-'));
@@ -98,28 +102,25 @@ async function withFixture(files, fn, rows) {
       utimesSync(p, t, t);
     }
   }
-  if (rows) {
-    mkdirSync(join(root, 'data'), { recursive: true });
-    writeFileSync(
-      join(root, 'data', 'applications.md'),
-      [
-        '# Applications Tracker',
-        '',
-        '| # | Date | Company | Role | Score | Status | PDF | Report | Notes |',
-        '|---|------|---------|------|-------|--------|-----|--------|-------|',
-        ...rows.map(
-          ({ n, company, role }) =>
-            `| ${n} | 2026-01-01 | ${company} | ${role} | 4.5/5 | Applied | ✅ | [${n}](../reports/${n}-x-2026-01-01.md) | |`
-        ),
-        '',
-      ].join('\n')
-    );
-  }
   const prev = process.env.CAREER_OPS_ROOT;
   process.env.CAREER_OPS_ROOT = root;
   try {
+    if (rows) {
+      for (const { n, company, role } of rows) {
+        coreDb.upsertApplication({
+          num: Number(n),
+          date: '2026-01-01',
+          company,
+          role,
+          score: '4.5/5',
+          status: 'Applied',
+          report: `[${n}](../reports/${n}-x-2026-01-01.md)`,
+        });
+      }
+    }
     return await fn(outputDir);
   } finally {
+    coreDb.closeDb();
     if (prev === undefined) delete process.env.CAREER_OPS_ROOT;
     else process.env.CAREER_OPS_ROOT = prev;
   }

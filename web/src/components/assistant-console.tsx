@@ -119,7 +119,7 @@ function describePage(p: string): string {
   if (p === "/pipeline") return "Pipeline — the applications table + the inbox of pending job URLs.";
   const m = p.match(/^\/pipeline\/([^/]+)$/);
   if (m)
-    return `The user is viewing the EVALUATION REPORT for application #${m[1]}. If they say "this offer", "apply", "evaluate it", "draft a cover letter", they mean application #${m[1]} — read reports/${m[1]}-*.md or the matching data/applications.md row and act on THAT one.`;
+    return `The user is viewing the EVALUATION REPORT for application #${m[1]}. If they say "this offer", "apply", "evaluate it", "draft a cover letter", they mean application #${m[1]} — read reports/${m[1]}-*.md or the matching tracker row and act on THAT one.`;
   if (p === "/analytics") return "Analytics — pipeline Sankey, funnel, score distribution, top companies.";
   if (p === "/cv") return "CV editor (cv.md).";
   if (p === "/config") return "Config — CLI / engine setup.";

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { careerOpsRoot, doctorState, readApplications, readInbox, trackerCanDelete } from "@/lib/career-ops";
+import { coreDb, coreDbAvailable } from "@/lib/db";
 import { scannerSupportsJson } from "@/lib/core/scan";
 
 export const runtime = "nodejs";
@@ -11,12 +12,10 @@ export const dynamic = "force-dynamic";
 // here as "12 candidate rows, 5 parsed", which is exactly what triage needs,
 // without a single company name leaving the machine.
 
-function lineCount(rel: string, predicate: (l: string) => boolean): number {
+function count(sql: string): number {
   try {
-    return fs
-      .readFileSync(path.join(careerOpsRoot(), rel), "utf8")
-      .split("\n")
-      .filter(predicate).length;
+    if (!coreDbAvailable()) return 0;
+    return Number((coreDb().get(sql) as { c?: number } | undefined)?.c ?? 0);
   } catch {
     return 0;
   }
@@ -32,13 +31,11 @@ function dirCount(rel: string, ext: string): number {
 
 export async function GET() {
   const doctor = doctorState();
-  // "candidate" = a line that LOOKS like a row; parsed = what the tolerant
-  // reader accepted. A gap between the two is the data-contract fingerprint.
-  const inboxCandidates = lineCount("data/pipeline.md", (l) => /^\s*-\s*\[[ xX]\]/.test(l));
-  const trackerCandidates = lineCount(
-    "data/applications.md",
-    (l) => l.trim().startsWith("|") && !/^\|\s*#\s*\|/.test(l.trim()) && !/^\|\s*:?-{2,}/.test(l.trim()),
-  );
+  // "candidate" = a stored row; parsed = what the tolerant reader accepted.
+  // A gap between the two is the data-contract fingerprint (e.g. pipeline
+  // rows whose preserved raw line no longer parses as a checkbox row).
+  const inboxCandidates = count("SELECT COUNT(*) AS c FROM pipeline_items");
+  const trackerCandidates = count("SELECT COUNT(*) AS c FROM applications");
   return Response.json({
     runtime: { node: process.version, platform: process.platform, arch: process.arch },
     setup: {
@@ -52,7 +49,11 @@ export async function GET() {
       tracker: { candidates: trackerCandidates, parsed: readApplications().length },
       reports: dirCount("reports", ".md"),
       pdfs: dirCount("output", ".pdf"),
-      followupsFile: fs.existsSync(path.join(careerOpsRoot(), "data", "follow-ups.md")),
+      // Key name kept for triage continuity: "is there any follow-up data" —
+      // now the follow_ups/follow_up_next tables instead of data/follow-ups.md.
+      followupsFile:
+        count("SELECT COUNT(*) AS c FROM follow_ups") > 0 ||
+        count("SELECT COUNT(*) AS c FROM follow_up_next") > 0,
     },
     capabilities: {
       scanJson: scannerSupportsJson(),

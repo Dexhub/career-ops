@@ -3,21 +3,17 @@ import path from "node:path";
 import * as yaml from "js-yaml";
 import { atomicWrite } from "@/lib/core/safe-write";
 import { resolveDataRoot } from "@/lib/core/data-root.mjs";
-import { readTrackerFile } from "@/lib/core/tracker-files.mjs";
 import { resolveCodeRoot, resolveRootScript } from "@/lib/core/code-root.mjs";
-import { parseApplications } from "@/lib/tracker-table.mjs";
 import { parseStatusLog } from "@/lib/pipeline-sankey.mjs";
 // Pipeline rows are parsed in a plain .mjs for the same reason as
 // tracker-table.mjs: so `node --test` can exercise the real parser.
-import { parseInbox, splitLines } from "@/lib/pipeline-table.mjs";
+import { parseInbox } from "@/lib/pipeline-table.mjs";
 // One definition of the `{n}-RESERVED.md` convention, shared with
 // run-cli-support.mjs — see report-files.mjs for why it lives there.
 import { isReservedReportFile } from "@/lib/report-files.mjs";
-import { resolvePdfIndexPath } from "@/lib/core/pdf-index";
-// Pure parser, no I/O — shared with the apply flow's CV resolver so the two
-// don't drift into two different definitions of "which report does this
-// index row belong to" (#2599, #2008 review).
-import { pdfIndexEntryForReport } from "@/lib/apply/cv-selection.mjs";
+// The data layer: data/career-ops.db via core/db.mjs — the single source of
+// truth for tracker, inbox, status-log, scan-history and pdf-index data.
+import { coreDb, coreDbAvailable } from "@/lib/db";
 
 /**
  * Resolve the career-ops "home" — the directory holding the user's sibling
@@ -77,46 +73,35 @@ export function trackerCanDelete(): boolean {
   }
 }
 
-function read(rel: string): string | null {
-  try {
-    return fs.readFileSync(path.join(careerOpsRoot(), rel), "utf8");
-  } catch {
-    return null;
-  }
-}
-
 export type InboxJob = { url: string; company: string; role: string; location?: string; compensation?: string; done: boolean; postedAt?: string };
 
-/** Parse data/pipeline.md. The row grammar and its labeled-segment handling
- *  live in pipeline-table.mjs — see there for the column rules (#1015, #1017). */
+/** Read the inbox from pipeline_items (the data/pipeline.md replacement).
+ *  Each row preserves the original annotated line in `raw`, so the proven
+ *  row grammar in pipeline-table.mjs still does the parsing — one parser,
+ *  whether the line came from the legacy file or the DB (#1015, #1017). */
 export function readInbox(): InboxJob[] {
-  const md = read("data/pipeline.md");
-  if (!md) return [];
-  return parseInbox(md);
+  if (!coreDbAvailable()) return [];
+  const rows = coreDb().listPipelineItems();
+  if (!rows.length) return [];
+  // parseInbox only reads "- [ ]" checkbox lines, so section membership is
+  // carried by the raw line itself (processed rows aren't checkbox rows).
+  return parseInbox(rows.map((r) => r.raw).join("\n"));
 }
 
 /**
- * Read data/scan-history.tsv → Map<url, first_seen(YYYY-MM-DD)>. The scanner
- * already stamps every discovered posting with the date it was first seen
- * (col 2), so we derive the inbox's freshness signal here WITHOUT touching the
- * core (see the inbox-triage build: freshness = option A, no scanner change).
- * Tolerant by construction: no file → empty map (freshness facet just hides);
- * a malformed row is skipped, never thrown (missing ≠ corrupt).
+ * scan_history → Map<url, first_seen(YYYY-MM-DD)>. The scanner stamps every
+ * discovered posting with the date it was first seen, so we derive the inbox's
+ * freshness signal here WITHOUT touching the core (see the inbox-triage build:
+ * freshness = option A, no scanner change). Tolerant by construction: no data
+ * layer → empty map (freshness facet just hides); a malformed date is skipped,
+ * never thrown (missing ≠ corrupt).
  */
 export function readScanDates(): Map<string, string> {
-  const tsv = read("data/scan-history.tsv");
   const dates = new Map<string, string>();
-  if (!tsv) return dates;
-  const lines = splitLines(tsv);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line || (i === 0 && line.startsWith("url\t"))) continue; // skip header
-    const tab = line.indexOf("\t");
-    if (tab < 1) continue;
-    const url = line.slice(0, tab);
-    const firstSeen = line.slice(tab + 1).split("\t")[0]?.trim();
-    // keep the EARLIEST first_seen if a url recurs (it's "first" seen, after all)
-    if (/^\d{4}-\d{2}-\d{2}$/.test(firstSeen) && !dates.has(url)) dates.set(url, firstSeen);
+  if (!coreDbAvailable()) return dates;
+  for (const row of coreDb().listScanHistory()) {
+    const firstSeen = (row.first_seen ?? "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(firstSeen) && !dates.has(row.url)) dates.set(row.url, firstSeen);
   }
   return dates;
 }
@@ -142,23 +127,30 @@ export type Application = {
 };
 
 /**
- * Parse data/applications.md — the tracker table (source of truth).
- * The header-aware parsing lives in tracker-table.mjs, which resolves headers
- * through the SAME alias table the Node tooling uses (tracker-aliases.json,
- * exported by tracker-parse.mjs as HEADER_ALIASES) — one shared source, no
- * web-side mirror to drift (#954, PR #1598 review). A data-only root falls back
- * to the running system checkout for that system-layer alias table.
+ * Read the tracker from the applications table (source of truth). Column
+ * meanings are unchanged from the markdown tracker: `report` keeps its
+ * markdown-link cell (e.g. `[001](../reports/001-….md)`) so findReportFile's
+ * link resolution works exactly as before. `followUp` has no DB column —
+ * follow-up scheduling lives in follow_ups/follow_up_next — so it is "" here,
+ * the same value the parser produced when the tracker had no such column.
  */
 export function readApplications(): Application[] {
-  const md = readTrackerFile(careerOpsRoot());
-  if (!md) return [];
-  // parseApplications derives each row from WEB_FIELD (tracker-table.mjs), so
-  // its keys are exactly this type's field names by construction — adding a
-  // tracker column is the two edits described there (WEB_FIELD + Application),
-  // never a hand-written return-shape list that the two could drift from. The
-  // third argument is the running system checkout, so a data-only root (no
-  // tracker-aliases.json of its own) still resolves headers correctly.
-  return parseApplications(md, careerOpsRoot(), path.resolve(process.cwd(), "..")) as Application[];
+  if (!coreDbAvailable()) return [];
+  return coreDb().listApplications().map((r) => ({
+    n: String(r.num),
+    date: r.date,
+    company: r.company,
+    via: r.via,
+    role: r.role,
+    location: r.location,
+    score: r.score,
+    status: r.status,
+    pdf: r.pdf,
+    report: r.report,
+    applyLink: r.url,
+    followUp: "",
+    notes: r.notes,
+  }));
 }
 
 export type StatusLogRow = {
@@ -170,21 +162,27 @@ export type StatusLogRow = {
   note: string;
 };
 
-/** Append-only transitions beside the active tracker. A missing log is
- *  normal (no status change recorded yet) and yields []. Any other read failure
- *  is rethrown: an unreadable log must not pass for an empty one, which would
- *  silently drop recorded interview paths from the Sankey (web/AGENTS.md: a
- *  missing file is not a malformed file). */
+/** Append-only status transitions (status_events). An empty table is normal
+ *  (no status change recorded yet) and yields []. */
 export function readStatusLog(): StatusLogRow[] {
   return parseStatusLog(readApplicationStatusLog() ?? "");
 }
 
-/** Ledger sibling of the same tracker readApplications consumes. */
+/** The status ledger reconstructed in its historical TSV shape
+ *  (num\tdate\tfrom\tto\tsource\tnote) from status_events, so existing
+ *  consumers (parseStatusLog, the analytics history view) read it unchanged.
+ *  null mirrors the old "no log file yet": data layer missing or no events. */
 export function readApplicationStatusLog(): string | null {
-  return readTrackerFile(careerOpsRoot(), "status-log.tsv");
+  if (!coreDbAvailable()) return null;
+  const events = coreDb().listStatusEvents();
+  if (!events.length) return null;
+  const cell = (v: unknown) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+  return events
+    .map((e) => [e.app_num, e.event_date, e.from_status, e.to_status, e.source, e.note].map(cell).join("\t"))
+    .join("\n");
 }
 
-/** Resolve the report-number cell in data/pdf-index.tsv for a given report id.
+/** Resolve the report-number key in the pdf_index table for a given report id.
  *  Digits-only, full-string match — parseInt alone would let "12abc" resolve to
  *  report 12, matching the wrong index row. Returns null for anything malformed,
  *  so callers never have to re-validate. */
@@ -210,34 +208,23 @@ export type PdfPathForReportResult =
  *  SPECIFIC report's PDF instead of guessing the newest file for the company —
  *  two applications at the same company have two different tailored CVs.
  *
- *  The manifest path comes from the core's resolvePdfIndexPath (ACL, honors
- *  CAREER_OPS_PDF_INDEX) rather than a hardcoded "data/pdf-index.tsv" literal
- *  — the exact class of bug that #2471 fixed in the core, once, for every
- *  reader. The parsing itself is pdfIndexEntryForReport, a pure function
- *  shared with the apply flow's own CV resolver (cv-selection.mjs) so there
- *  is one definition of "which row matches this report", not two. */
+ *  The lookup is the core's own getPdfIndexEntry (pdf_index table, kind-aware:
+ *  cover-letter rows never answer a CV lookup) — the same resolver the CLI's
+ *  generate-pdf flow writes through, so there is one definition of "which row
+ *  matches this report", not two. */
 export async function pdfPathStatusForReport(n: string): Promise<PdfPathForReportResult> {
   const target = pdfIndexTarget(n);
   if (target === null) return { status: "invalid" };
-  const indexPath = await resolvePdfIndexPath();
-  if (!indexPath) return { status: "not-found" };
-  let tsv: string;
-  try {
-    tsv = fs.readFileSync(indexPath, "utf8");
-  } catch {
-    return { status: "not-found" };
-  }
+  if (!coreDbAvailable()) return { status: "not-found" };
   const root = careerOpsRoot();
-  const entry = pdfIndexEntryForReport(tsv, target);
-  if (!entry.found) return { status: "not-found" };
-  if (!entry.path) return { status: "rejected" };
-  // The manifest is a user-layer file (generate-pdf.mjs writes it, but nothing
-  // stops a hand edit) turned into a filesystem read that this route then
-  // serves — the path must be contained BY CONSTRUCTION, not by trusting the
-  // writer. Rows are written relative to the WORKSPACE root (careerOpsRoot()),
-  // not to the manifest's own data/ directory — same base the pre-ACL version
-  // of this function used — and must stay under the project's output/ tree.
-  const abs = path.resolve(root, entry.path);
+  const row = coreDb().getPdfIndexEntry(String(target), { kind: "cv" });
+  if (!row) return { status: "not-found" };
+  if (!row.pdf) return { status: "rejected" };
+  // The index is user-layer data turned into a filesystem read that this route
+  // then serves — the path must be contained BY CONSTRUCTION, not by trusting
+  // the writer. Rows are written relative to the WORKSPACE root
+  // (careerOpsRoot()), same base as always, and must stay under output/.
+  const abs = path.resolve(root, row.pdf);
   const outputDir = path.resolve(root, "output");
   if (!abs.startsWith(outputDir + path.sep)) return { status: "rejected" };
   // Scoped to outputDir, not the broader root: the lexical startsWith check

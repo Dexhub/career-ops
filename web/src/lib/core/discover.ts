@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
-import { careerOpsRoot, readInbox, readApplications } from "@/lib/career-ops";
+import { readInbox, readApplications } from "@/lib/career-ops";
+import { coreDb, coreDbAvailable } from "@/lib/db";
 import { canon } from "@/lib/explore-ai";
 
 /**
@@ -15,16 +14,12 @@ export function assembleDedupContext(): { urls: Set<string>; lines: string[] } {
   const companies = new Set<string>();
   const roles = new Set<string>();
 
-  // scan-history.tsv col 0 = url (every URL ever surfaced)
-  try {
-    const tsv = fs.readFileSync(path.join(careerOpsRoot(), "data", "scan-history.tsv"), "utf8");
-    const rows = tsv.split("\n");
-    for (let i = 1; i < rows.length; i++) {
-      const url = rows[i].split("\t")[0]?.trim();
+  // scan_history (every URL ever surfaced by a scan)
+  if (coreDbAvailable()) {
+    for (const row of coreDb().listScanHistory()) {
+      const url = (row.url ?? "").trim();
       if (url && /^https?:\/\//i.test(url)) urls.add(canon(url));
     }
-  } catch {
-    /* no history yet */
   }
 
   for (const j of readInbox()) {

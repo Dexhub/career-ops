@@ -1,22 +1,20 @@
-import fs from "node:fs";
-import path from "node:path";
-import { atomicWrite } from "@/lib/core/safe-write";
 import { CHANNELS, isRealISODate, localISODate } from "@/lib/followups";
 import { parseFollowupId } from "@/lib/followup-id.mjs";
-import { followupsLogPath, withFollowupsWrite, followupsWriteError } from "@/lib/followups-server";
+import { coreDb, coreDbAvailable, dbWriteError } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Append-only follow-up log → data/follow-ups.md (NEVER clobber; the cadence
-// calculator reads this to advance the schedule). Writes the canonical TABLE row
-// the core's followup-cadence.mjs parses:
-//   | num | appNum | date | company | role | channel | contact | notes |
-// (Earlier builds wrote bullet lines; those stay in place — the core parser now
-// reads both formats — but every new log is a full-fidelity table row.)
+// Append-only follow-up log → the follow_ups table (NEVER clobber; the cadence
+// calculator reads this to advance the schedule). Columns are the canonical
+// row the core's followup-cadence.mjs consumes:
+//   num | app_num | date | company | role | channel | contact | notes
+// SQLite serializes writers (web, CLI, seeder) — the old in-process queue +
+// cross-process file lock pair is retired with data/follow-ups.md itself.
 
-/** Table cells must stay single-line and pipe-free. `max` optional — notes are
- *  deliberately uncapped (user decision), identity fields keep a sanity cap. */
+/** Cells must stay single-line and pipe-free (the cadence calculator and the
+ *  history panel render them inline). `max` optional — notes are deliberately
+ *  uncapped (user decision), identity fields keep a sanity cap. */
 function cell(v: unknown, max?: number): string {
   const s = String(v ?? "")
     .replace(/[\r\n]+/g, " ")
@@ -24,8 +22,6 @@ function cell(v: unknown, max?: number): string {
     .trim();
   return max ? s.slice(0, max) : s;
 }
-
-const TABLE_HEADER = "| num | appNum | date | company | role | channel | contact | notes |\n|---|---|---|---|---|---|---|---|\n";
 
 export async function POST(req: Request) {
   let body: {
@@ -68,47 +64,26 @@ export async function POST(req: Request) {
   const contact = cell(body.contact, 120);
   const notes = cell(body.notes ?? body.note ?? "");
 
-  const file = followupsLogPath();
+  if (!coreDbAvailable()) {
+    return Response.json({ error: "the career-ops data layer is unavailable" }, { status: 503 });
+  }
   try {
-    return await withFollowupsWrite(() => {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      let existing = "";
-      if (fs.existsSync(file)) existing = fs.readFileSync(file, "utf8");
-      else fs.writeFileSync(file, "# Follow-ups\n\n", "utf8");
-
-      // Auto-increment num = max existing TABLE num + 1 (legacy bullets carry none).
-      let maxNum = 0;
-      let hasHeader = false;
-      for (const line of existing.split("\n")) {
-        if (!line.startsWith("|")) continue;
-        const first = line.split("|")[1]?.trim() ?? "";
-        // Both header spellings exist in the wild: "num" (this writer) and
-        // "#" (files created per modes/followup.md) — recognize either, or a
-        // second header block gets appended into CLI-created files.
-        if (/^(num|#)$/i.test(first)) hasHeader = true;
-        const n = Number.parseInt(first, 10);
-        if (Number.isInteger(n) && n > maxNum) maxNum = n;
-      }
-      const num = maxNum + 1;
-
-      let out = "";
-      // CLI-created files may lack a trailing newline — guard regardless of
-      // whether we're also inserting the header, or the row glues to the last line.
-      if (existing && !existing.endsWith("\n")) out += "\n";
-      if (!hasHeader) out += TABLE_HEADER;
-      out += `| ${num} | ${appNum} | ${date} | ${company} | ${role} | ${channel} | ${contact} | ${notes} |\n`;
-      fs.appendFileSync(file, out, "utf8");
-      return Response.json({ ok: true, num, appNum, date, channel });
+    const db = coreDb();
+    // num allocation + insert in ONE transaction, so two concurrent logs can't
+    // mint the same num (the old file writer serialized this with a queue).
+    const num = db.tx(() => {
+      const next = db.maxFollowUpNum() + 1;
+      db.upsertFollowUp({ num: next, app_num: appNum, date, company, role, channel, contact, notes });
+      return next;
     });
+    return Response.json({ ok: true, num, appNum, date, channel });
   } catch (e) {
-    return followupsWriteError(e, "write failed");
+    return dbWriteError(e, "write failed");
   }
 }
 
 // Remove ONE logged follow-up by its `num` (mistake correction — user-initiated
-// from the history panel). Only the matching table row is dropped; every other
-// byte of the file (header, other rows, legacy bullets) is preserved. Legacy
-// bullets carry no num and cannot be deleted here.
+// from the history panel). Only the matching row is dropped.
 export async function DELETE(req: Request) {
   let body: { num?: string | number };
   try {
@@ -119,22 +94,14 @@ export async function DELETE(req: Request) {
   const num = parseFollowupId(body.num);
   if (num === null) return Response.json({ error: "num required" }, { status: 400 });
 
-  const file = followupsLogPath();
-  if (!fs.existsSync(file)) return Response.json({ error: "no follow-up log" }, { status: 404 });
+  if (!coreDbAvailable()) return Response.json({ error: "no follow-up log" }, { status: 404 });
   try {
-    return await withFollowupsWrite(() => {
-      const lines = fs.readFileSync(file, "utf8").split("\n");
-      const idx = lines.findIndex((line) => {
-        if (!line.startsWith("|")) return false;
-        const first = line.split("|")[1]?.trim() ?? "";
-        return Number.parseInt(first, 10) === num && /^\d+$/.test(first);
-      });
-      if (idx === -1) return Response.json({ error: `follow-up #${num} not found` }, { status: 404 });
-      lines.splice(idx, 1);
-      atomicWrite(file, lines.join("\n"));
-      return Response.json({ ok: true, num });
-    });
+    const db = coreDb();
+    const existing = db.get("SELECT num FROM follow_ups WHERE num = ?", [num]);
+    if (!existing) return Response.json({ error: `follow-up #${num} not found` }, { status: 404 });
+    db.run("DELETE FROM follow_ups WHERE num = ?", [num]);
+    return Response.json({ ok: true, num });
   } catch (e) {
-    return followupsWriteError(e, "delete failed");
+    return dbWriteError(e, "delete failed");
   }
 }

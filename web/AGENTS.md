@@ -1,6 +1,6 @@
 # Working in `web/`
 
-The web app is a **view over the user's own files**, not a second engine. Read this
+The web app is a **view over the user's own data**, not a second engine. Read this
 before changing anything under `web/`.
 
 ## The three rules that are not style preferences
@@ -11,11 +11,14 @@ before changing anything under `web/`.
    halves start disagreeing, and the disagreement is always silent.
    `web/src/lib/core/` holds the access layer for exactly this.
 
-2. **Markdown is the source of truth.** `data/applications.md`, `cv.md`, `reports/`
-   are canonical; anything else is a derived index. Status changes go through
+2. **The SQLite database is the source of truth for tracking data.** Applications,
+   status events, follow-ups, pipeline items, scan history and the PDF index live in
+   `data/career-ops.db`, accessed ONLY through the root `core/db.mjs` (via
+   `web/src/lib/db.ts` — never open the DB yourself). `cv.md`, `reports/` and
+   `output/` PDFs stay files and stay canonical. Status changes still go through
    `/api/status`, which delegates to the root `set-status.mjs`. That is the single
-   write path, and it is single on purpose. Never write a user's file from a route
-   that bypasses it.
+   status write path, and it is single on purpose — never change a status from a
+   route that bypasses it.
 
 3. **Nothing is ever submitted automatically.** The apply flow fills in and previews;
    a human presses send. There is no exception, no flag, and no "just for testing".
@@ -41,7 +44,8 @@ npm run dev       # the app, reading the sibling career-ops files
 ```
 
 Point `CAREER_OPS_ROOT` at a scratch directory when you need data to test against;
-it is how the app finds the user's files, and it keeps your real pipeline out of it.
+it is how the app finds the user's data root (`data/career-ops.db`, `cv.md`,
+`reports/`…), and it keeps your real pipeline out of it.
 
 ## Reviews and scope
 

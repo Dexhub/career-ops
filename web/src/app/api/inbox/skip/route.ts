@@ -1,29 +1,16 @@
 import { NextResponse } from "next/server";
-import fs from "node:fs";
-import path from "node:path";
-import { careerOpsRoot } from "@/lib/career-ops";
-import { setInboxSkip } from "@/lib/inbox-skip.mjs";
+import { postingUrl } from "@/lib/inbox-skip.mjs";
+import { coreDb, coreDbAvailable, type PipelineItemRow } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Inbox Skip/undo: flip `- [ ]` ↔ `- [x]` on the matching data/pipeline.md row.
-// This is NOT /api/status — Home DecisionCard Skip writes a tracker Discarded
-// status; the inbox is the pipeline checklist.
-
-const ERROR_HTTP: Record<string, number> = {
-  "invalid-url": 400,
-  "unmatched": 404,
-  "not-found": 404,
-  "busy": 409,
-};
-
-const ERROR_MSG: Record<string, string> = {
-  "invalid-url": "url must be an http(s) posting URL",
-  "unmatched": "no pipeline row for that URL",
-  "not-found": "pipeline.md not found",
-  "busy": "The pipeline is being written right now (CLI or another tab). Try again.",
-};
+// Inbox Skip/undo: flip checked 0 ↔ 1 on the matching pending pipeline_items
+// row (the data/pipeline.md replacement). This is NOT /api/status — Home
+// DecisionCard Skip writes a tracker Discarded status; the inbox is the
+// pipeline checklist. The row's `raw` line is flipped in lockstep so every
+// reader of the preserved line (readInbox's parser) agrees with `checked`.
+// SQLite serializes this against the CLI/scanner — no file lock needed.
 
 export async function POST(req: Request) {
   let body: { url?: unknown; done?: unknown };
@@ -33,36 +20,47 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "bad json" }, { status: 400 });
   }
 
-  const url = typeof body.url === "string" ? body.url : "";
+  const url = postingUrl(body.url);
+  if (!url) {
+    return NextResponse.json({ error: "url must be an http(s) posting URL", code: "invalid-url" }, { status: 400 });
+  }
   if (body.done !== undefined && typeof body.done !== "boolean") {
     return NextResponse.json({ error: "done must be a boolean" }, { status: 400 });
   }
   const done = body.done !== false;
 
-  const root = careerOpsRoot();
-  const file = path.join(root, "data", "pipeline.md");
-  const lockModule = path.join(root, "pipeline-lock.mjs");
-  if (!fs.existsSync(lockModule)) {
+  if (!coreDbAvailable()) {
     return NextResponse.json(
-      { error: "inbox skip needs the career-ops scripts; this root has data only", code: "core-script-missing" },
+      { error: "inbox skip needs the career-ops data layer; this root has data only", code: "core-script-missing" },
       { status: 503 },
     );
   }
 
   try {
-    const result = await setInboxSkip(file, url, done, { lockModule });
-    if (!result.ok) {
-      const code = result.error;
+    const db = coreDb();
+    // Pending rows only — processed entries are history, not an inbox item the
+    // user can skip (same scoping the old Pending-section range check enforced).
+    const row = db.get("SELECT * FROM pipeline_items WHERE url = ? AND section = 'pending'", [url]) as
+      | PipelineItemRow
+      | undefined;
+    if (!row) {
+      return NextResponse.json({ error: "no pipeline row for that URL", code: "unmatched" }, { status: 404 });
+    }
+    const already = (row.checked ? 1 : 0) === (done ? 1 : 0);
+    if (!already) {
+      // Flip the stored checkbox marker inside the preserved raw line too.
+      const raw = row.raw.replace(/^(\s*-\s*)\[[ xX]\]/, `$1[${done ? "x" : " "}]`);
+      db.updatePipelineItem(url, { checked: done ? 1 : 0, raw });
+    }
+    return NextResponse.json({ ok: true, done, matched: 1, changed: already ? 0 : 1 });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "";
+    if (/busy|locked/i.test(msg)) {
       return NextResponse.json(
-        { error: ERROR_MSG[code] ?? "skip failed", code },
-        {
-          status: ERROR_HTTP[code] ?? 400,
-          ...(code === "busy" ? { headers: { "Retry-After": "5" } } : {}),
-        },
+        { error: "The pipeline is being written right now (CLI or another tab). Try again.", code: "busy" },
+        { status: 409, headers: { "Retry-After": "5" } },
       );
     }
-    return NextResponse.json({ ok: true, done, matched: result.matched, changed: result.changed });
-  } catch {
     return NextResponse.json({ error: "write failed" }, { status: 500 });
   }
 }
