@@ -546,6 +546,24 @@ Rules for agents working here:
 - After `npm run update`, re-apply `auto/patches/apply-ethical-override.mjs`
   and re-add this section if the update overwrote AGENTS.md.
 
+### Learning layer (`auto/learning/`, additive, feature-flagged off)
+
+File-based versioned record store for apply-pipeline learning (plan:
+`.kilo/plans/2026-10-11-career-ops-learning/`). Deliberately **not** in
+SQLite — records are immutable JSON revisions under
+`{DATA_ROOT}/data/auto/learning/records/<collection>/<id>/<rev>.json`, with
+batch index generations + atomic `indexes/current.json` pointer. Modules:
+`contracts.mjs` (envelope/schema validation, 13 collections, secret-key and
+ingest-path allowlists), `context.mjs` (explicit code/data roots + injected
+clock, `config/learning.yml` reader — defaults disabled/shadow), `store.mjs`
+(`getRecord`/`listRecords`/`commitRecord`/`rebuildIndexes`; optimistic
+concurrency via `expectedRevision`, `REVISION_CONFLICT` on stale commits;
+per-entity locks via `pipeline-lock.mjs`). Rules: nothing executes at import
+time; learning modules never import `core/db.mjs`; no new dependencies.
+Tests: `node --test auto/test/learning-*.test.mjs` — isolated via
+`auto/test/helpers/learning.mjs` (mkdtemp fixture sets `CAREER_OPS_ROOT` +
+`CAREER_OPS_DB`); they never touch the live checkout or data.
+
 ## Stack and Conventions
 
 - Node.js (`.mjs`), Playwright (PDF + scraping), YAML (config), HTML/CSS (template), Markdown (data), Canva MCP (optional visual CV)

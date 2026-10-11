@@ -1,0 +1,27 @@
+schema_version: 1
+enabled: false
+mode: shadow
+capture:
+  max_artifact_bytes: 2097152
+  max_fields_per_page: 100
+retrieval:
+  max_candidates: 12
+  max_context_bytes: 24000
+review:
+  enabled: false
+  interval_minutes: 360
+  max_new_attempts: 25
+  concurrency: 1
+  auto_promote_procedures: false
+queue:
+  mode: existing
+cloud:
+  enabled: false
+  region: us-east-1
+  profile: hk_dev
+  function_arn: null
+  model_id: null
+  daily_usd_cap: 0
+  max_calls_per_day: 0
+  max_output_tokens: 1200
+  max_payload_bytes: 65536
