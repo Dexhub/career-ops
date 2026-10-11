@@ -350,8 +350,52 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
 
   if (!submit) return { job, auditDir, verdict }; // dry runs never mutate state
 
+  return finalizeVerdict(job, auditDir, verdict, attemptNo, log);
+}
+
+/** Mark the job Applied in the web tracker (data/applications.md) so the
+ *  /pipeline page reflects auto submissions. Uses the sanctioned root
+ *  scripts (merge-tracker.mjs + set-status.mjs); never touches web/.
+ *  Best-effort: a tracker failure must not fail the submit. */
+export function syncTrackerApplied(job, auditDir, log = console.log) {
+  const reportNum = /(\d+)/.exec(job.reportPath || '')?.[1];
+  if (!reportNum) { log(`apply-worker: tracker sync skipped — no report number in "${job.reportPath}"`); return false; }
+  const node = process.execPath;
+  const setStatus = () => spawnSync(node, ['set-status.mjs', '--report', reportNum, 'Applied',
+    '--note', `auto-submitted; audit ${auditDir || ''}`.trim(), '--json'],
+  { cwd: ROOT, encoding: 'utf8', timeout: 60_000 });
+  // merge any pending tracker-additions so the row exists, then flip status
+  spawnSync(node, ['merge-tracker.mjs'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 });
+  let res = setStatus();
+  if (res.status !== 0 && (res.stdout || '').includes('not-found')) {
+    // The eval chain's addition carried company "unknown" and was dropped by
+    // merge-tracker's dedup. Re-create it from the job record, which knows
+    // the real company/role, then merge and retry once.
+    const day = new Date().toISOString().slice(0, 10);
+    const esc = (s) => String(s ?? '').replace(/[\t\n|]/g, ' ').trim() || 'unknown';
+    const tsv = 'num\tdate\tcompany\trole\tstatus\tscore\tpdf\treport\tnotes\turl\n'
+      + [reportNum, day, esc(job.company), esc(job.role), 'Evaluated',
+        Number.isFinite(Number(job.score)) ? `${Number(job.score).toFixed(1)}/5` : 'N/A', '❌',
+        `[${reportNum}](${job.reportPath})`, 'auto pipeline', job.urlKey].join('\t') + '\n';
+    const addDir = join(ROOT, 'batch', 'tracker-additions');
+    mkdirSync(addDir, { recursive: true });
+    writeFileSync(join(addDir, `${reportNum}-${slugifySegment(job.company || 'auto')}.tsv`), tsv);
+    spawnSync(node, ['merge-tracker.mjs'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 });
+    res = setStatus();
+  }
+  if (res.status !== 0) {
+    log(`apply-worker: tracker sync failed for report ${reportNum} (exit ${res.status}): ${(res.stderr || res.stdout || '').trim().slice(0, 200)}`);
+    return false;
+  }
+  log(`apply-worker: tracker -> Applied (report ${reportNum})`);
+  return true;
+}
+
+function finalizeVerdict(job, auditDir, verdict, attemptNo, log = console.log) {
+
   if (verdict.ok && verdict.status === 'submitted') {
     transition(job, 'submitted', { auditDir, lastError: null });
+    syncTrackerApplied(job, auditDir, log);
   } else if (verdict.ok && verdict.status === 'parked') {
     transition(job, 'parked', { auditDir, lastError: verdict.reason });
   } else if (attemptNo >= MAX_ATTEMPTS) {
