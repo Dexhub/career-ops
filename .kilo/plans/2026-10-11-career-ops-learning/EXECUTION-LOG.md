@@ -100,7 +100,49 @@ verifyAudit treats rejection-only files as non-empty fill evidence.
 Pipeline paused during edits, resumed after commit.
 Commit: 276cc4c9
 
-Next task: T05 (purely additive — pipeline stays running)
+Task: T05 — backfill manifest + learn.mjs CLI
+Status: implemented (offline-checked; live read-only smoke done)
+Evidence: 13/13 backfill tests (crash-rerun idempotency, duplicate sources,
+overwritten legacy dir, live-changing file, originals byte-identical); all
+suites 66/66. Live read-only smoke: 109 settled entries (106 audit, 3
+report), 97 jobs, 80 companies, 0 unsettled; gaps 13 missing_answers /
+1618 report_without_answers / 3 unlinked_report. No --apply run (T27 gate);
+data/auto/learning absent after smoke.
+Known behavior: labels containing "authorization" over-reject via the shared
+secret regex (safe; values never leak).
+Commit: 34643815
+
+## Phase 1 review gate — PASSED
+- Nonempty fixtures -> nonempty observations; no-data vs unreadable-data
+  distinguished (answersGap, coverage statuses). ✓
+- Second import idempotent; crash recovery preserves accepted records. ✓
+- Credentials/unknown sources cannot become approved memories (secret-key
+  rejection, unknown source -> unverified). ✓
+- No audit overwrite, lost queue change, model call, browser action, or live
+  data mutation in testing (pipeline paused only during T03/T04 shared-file
+  edits; data/auto/learning never created). ✓
+- Test commands, caller-migration list, manifests, and coverage gaps recorded
+  above. ✓
+
+Task: T06 — question definitions/occurrences/families
+Status: implemented (offline-checked)
+Evidence: 10/10 tests; required assertions verbatim (current-auth vs future-
+sponsorship ids differ; USD-base vs CAD-OTE ids differ; spaced duplicate
+normalizes identical). Restricted assessments -> policy blocker metadata only;
+merge/split corrections invalidate bound answers without rewriting raw
+observations. 15 synthetic D1 fixtures (no real values).
+
+Task: T07 — authority-ordered answer resolution
+Status: implemented (offline-checked)
+Evidence: 16/16 tests; required snippet verbatim (ready/'4 weeks'/0 model
+calls on approved repeat; changed sources -> stale, value null). Conflicts ->
+blocked w/ conflictingRefs; menu-offer guard; no location->eligibility
+inference; drafts only model-consulting path.
+Note: lexical candidate matching = Jaccard >= 0.6 over normalized tokens
+(default, not plan-specified).
+Commit: 6db66fcf
+
+Next task: T08+T09 (additive; pipeline running)
 
 Task: T05 — repeatable history backfill (captureAttempt/backfillHistory + learn CLI)
 Status: implemented (purely additive; pipeline stayed running)
@@ -123,4 +165,30 @@ tripped the shared secret-key regex ('authorization') — renamed in the test;
 contract behavior kept as-is intentionally (over-rejection is safe, values
 never leak). SETTLE_MS=10s; manifest schemaVersion 1, adapter versions
 audit-answers@1/report-answers@1.
+Commit: (pending — coordinator commits)
+
+Task: T08 — durable proposal and approval (proposeAnswer/approveAnswer/invalidateSource)
+Status: implemented (offline-checked; additive only, pipeline untouched)
+Evidence: 21/21 new tests (13 learning-answer-approval + 8 learning-
+invalidation); all learning suites 113/113 (92 baseline + 21). Required
+assertions verbatim: stale expectedRevision rejects with
+error.code==='REVISION_CONFLICT'; hashFile(standingPath)===hashAfterIndependentEdit.
+Proposals never touch sources; sensitive values redacted in default lists;
+byte-preserving custom-block patch (comments survive, only approved path
+changes; profile/CV/non-custom/existing-key edits refuse with
+COMPLEX_SOURCE_EDIT/CONFLICTING_SOURCE_EDIT). Approval: user-approval token
+(WeakSet; agent actor:'user' -> APPROVAL_REQUIRED) + withPipelineLock on the
+standing file + persisted intent + atomic write + committed-hash verification;
+idempotent repeat -> already_applied. Crash reconciliation
+(reconcileApprovals): after-hash match finalizes without reapplying,
+before-hash match drops the pending intent (never a usable fact), divergence
+kept for review. invalidateSource: bound answers stale (revoked on deletion),
+grounded-template stories/procedures/insights stale, positioning drafts
+rejected, only bound non-submission_unknown blockers notified, sourceChanges
+recorded; stale fact no longer resolves. previewForget lists canonical
+revisions/derived gen-* indexes/surviving original audits; deletes nothing and
+never claims erasure while originals remain.
+Deviations: reconcileApprovals + previewForget + createUserApproval exported
+beyond the three contract functions (needed for crash-recovery and forget
+checkboxes); approveAnswer returns 'already_applied' on repeat (idempotency).
 Commit: (pending — coordinator commits)
