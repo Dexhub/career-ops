@@ -35,6 +35,7 @@ import { validateFlags, flagValue, safeIntFlag } from '../lib/cli-flags.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { createJob, loadJob, updateJob } from './state.mjs';
+import { readJobDates, LABELED_SEGMENT } from './learning/freshness.mjs';
 import { listPipelineItems } from '../core/db.mjs';
 
 const ROOT = getCareerOpsRoot();
@@ -45,15 +46,31 @@ const JD_TIMEOUT_MS = 15_000;
 /**
  * Parse pending rows in the legacy pipeline.md line format
  * (`- [ ] url | company | role | ...`), as preserved in pipeline_items.raw.
- * @returns {{url: string, company: string, role: string}[]}
+ * Labeled segments (`posted: 2026-10-08`, `trust: 70`) are recognized only
+ * from overall cell index 3 on — the same rule as the web parser
+ * (web/src/lib/pipeline-table.mjs) — so company/role stay purely positional
+ * and a colon-y role is never misread as metadata. The raw line is retained
+ * so date evidence can be read from it (T11).
+ * @returns {{url: string, company: string, role: string,
+ *            labels: Record<string,string>, raw: string}[]}
  */
 export function parsePendingRows(text) {
   const rows = [];
   for (const line of text.split('\n')) {
     const m = line.match(/^- \[ \] (https?:\/\/\S+)(.*)$/);
     if (!m) continue;
-    const rest = m[2].split('|').map((s) => s.trim()).filter(Boolean);
-    rows.push({ url: m[1], company: rest[0] || '', role: rest[1] || '' });
+    // Cell 0 is the (empty) remainder next to the URL, keeping indexes aligned
+    // with the web parser, where cell 0 is the URL itself.
+    const cells = m[2].split('|').map((s) => s.trim());
+    const labels = {};
+    const positional = [];
+    for (const [i, seg] of cells.entries()) {
+      if (!seg) continue;
+      const lm = i >= 3 ? seg.match(LABELED_SEGMENT) : null;
+      if (lm) labels[lm[1].toLowerCase()] = lm[2].trim();
+      else positional.push(seg);
+    }
+    rows.push({ url: m[1], company: positional[0] || '', role: positional[1] || '', labels, raw: line });
   }
   return rows;
 }
@@ -174,7 +191,8 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
   // Pending inbox rows; raw preserves the legacy `- [ ] url | company | role`
   // line, so company/role parse out of it when present.
   const rows = listPipelineItems({ section: 'pending', checked: 0 }).map((item) =>
-    parsePendingRows(item.raw || '')[0] ?? { url: item.url, company: '', role: '' });
+    parsePendingRows(item.raw || '')[0]
+      ?? { url: item.url, company: '', role: '', labels: {}, raw: item.raw || '' });
   log(`eval-queue: ${rows.length} pending pipeline rows, evaluating up to ${max} (model ${model}, threshold ${threshold})`);
 
   let processed = 0;
@@ -244,7 +262,16 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
       continue;
     }
 
-    const { job } = createJob({ url: row.url, company: row.company, role: row.role, ats: jd.ats || '' });
+    // T11: carry the scanner's recorded publication evidence (`posted:` label
+    // in the raw pipeline row) into the job record. The JD APIs expose no
+    // publication timestamp (browser-extract returns {url,title,text,ats}
+    // only), so there is no providerEvidence here; absent a label the
+    // publication date stays an honest null and first-seen is recorded
+    // separately by createJob.
+    const { job } = createJob({
+      url: row.url, company: row.company, role: row.role, ats: jd.ats || '',
+      dates: readJobDates({ pipelineLine: row.raw }),
+    });
     log(`eval-queue: evaluating ${row.company} — ${row.role}`);
     const evalRes = runOllamaEval({ jdText: `${jd.title ? jd.title + '\n\n' : ''}${jd.text}`, url: row.url, model, baseUrl: cfg.eval.base_url });
     if (!evalRes.ok) {

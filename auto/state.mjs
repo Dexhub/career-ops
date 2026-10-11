@@ -26,6 +26,7 @@ import { normalizeUrl } from '../url-key.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { validateFlags } from '../lib/cli-flags.mjs';
 import { listAutoJobs, loadAutoJob, saveAutoJob, tx } from '../core/db.mjs';
+import { orderJobs, ORDER_MODES } from './learning/freshness.mjs';
 
 const ROOT = getCareerOpsRoot();
 
@@ -76,11 +77,12 @@ export function jobPath(urlKey) {
  * record — idempotent against re-scans.
  * @returns {{job: object, created: boolean}}
  */
-export function createJob({ url, company = '', role = '', ats = '' }) {
+export function createJob({ url, company = '', role = '', ats = '', dates = null }) {
   const urlKey = normalizeUrl(url);
   if (!urlKey) throw new Error(`createJob: not a keyable posting URL: ${url}`);
   const existing = loadJob(urlKey);
   if (existing) return { job: existing, created: false };
+  const at = new Date().toISOString();
   const job = {
     urlKey,
     url,
@@ -95,7 +97,19 @@ export function createJob({ url, company = '', role = '', ats = '' }) {
     attempts: 0,
     lastError: null,
     auditDir: null,
-    timestamps: [{ stage: 'discovered', at: new Date().toISOString() }],
+    timestamps: [{ stage: 'discovered', at }],
+    // T11 / CONTRACTS D4: publication metadata from the scanner's recorded
+    // evidence (learning/freshness.mjs readJobDates). Discovery time is stored
+    // separately and is never relabeled as the posting date; absent evidence
+    // stays an honest null, never a guess.
+    dates: {
+      postedAt: dates?.postedAt ?? null,
+      postedPrecision: dates?.postedPrecision ?? null,
+      postedSource: dates?.postedSource ?? null,
+      firstSeenAt: dates?.firstSeenAt ?? at,
+      lastCheckedAt: dates?.lastCheckedAt ?? null,
+      repostedAt: dates?.repostedAt ?? null,
+    },
   };
   saveJob(job);
   return { job, created: true };
@@ -335,21 +349,33 @@ export function listJobs(stages) {
 
 /**
  * The ONE pick order shared by the orchestrator, the apply worker, and the
- * panel's queue view: pickable jobs (resume_ready, or applying with attempts
+ * panel's queue view. Delegates to the pure comparator in
+ * learning/freshness.mjs (T11): default mode 'existing' preserves the legacy
+ * order exactly — pickable jobs (resume_ready, or applying with attempts
  * left), minus held jobs, sorted priority desc → score desc → oldest first.
  * `priority` (bump-to-front) and `held` (bench without parking) are optional
- * job fields set from Mission Control.
+ * job fields set from Mission Control and win in every mode.
  * @param {object[]} jobs
  * @param {number} [maxAttempts]
+ * @param {{mode?: string, now?: Date|(() => Date)}} [options] comparator
+ *   options; pass queueOrderOptions() so all callers share one selection.
  * @returns {object[]}
  */
-export function pickOrder(jobs, maxAttempts = 2) {
-  return jobs
-    .filter((j) => !j.held
-      && (j.stage === 'resume_ready' || (j.stage === 'applying' && (j.attempts || 0) < maxAttempts)))
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0)
-      || (b.score || 0) - (a.score || 0)
-      || (a.timestamps?.at(-1)?.at || '').localeCompare(b.timestamps?.at(-1)?.at || ''));
+export function pickOrder(jobs, maxAttempts = 2, options = null) {
+  return orderJobs(jobs, { maxAttempts, ...(options ?? {}) });
+}
+
+/**
+ * The one queue-ordering selection every caller (orchestrator, apply worker,
+ * panel) passes to pickOrder, so they can never disagree on the comparator.
+ * Default stays 'existing' (T11 activation of a freshness mode is a separate,
+ * reviewed step: set CAREER_OPS_QUEUE_MODE to fit_then_freshness or
+ * freshness_then_fit). An unknown value falls back to 'existing' rather than
+ * crashing the worker mid-cycle.
+ */
+export function queueOrderOptions() {
+  const raw = process.env.CAREER_OPS_QUEUE_MODE || 'existing';
+  return { mode: ORDER_MODES.includes(raw) ? raw : 'existing' };
 }
 
 /** Count of jobs submitted on the given local calendar day (YYYY-MM-DD). */

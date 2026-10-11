@@ -142,7 +142,37 @@ Note: lexical candidate matching = Jaccard >= 0.6 over normalized tokens
 (default, not plan-specified).
 Commit: 6db66fcf
 
-Next task: T08+T09 (additive; pipeline running)
+Task: T08 — durable approval/invalidation (commit 3c6cc32d, 21 tests)
+Task: T09 — context packets (commit a8e6b2fb, 8 tests; cold 1894B/1 call,
+warm 1894B/0 calls; drafts reuse proposals collection — flagged, accepted)
+Task: T10 — worker integration (commit ead66d05, 13 tests)
+Status: all implemented (offline-checked); suites 134/134.
+T10 notes: ALL behavior gated on learning.enabled=false no-op; flag-off
+prompt string-equal to legacy renderPrompt; capture protocol lives in new
+auto/prompts/apply-submit-learning.md appendix (base prompt untouched);
+CONTRACTS J subcommands in learn.mjs (observe-page/resolve-page/checkpoint/
+capture-attempt) with realpath containment + byte caps; run.mjs stale-apply
+recovery finalizes interrupted attempts; incident: run.mjs --self-test
+briefly unlinked live pause flag (restored <1min, no runner activity in gap;
+root-caused and fixed via injectable pauseFlag param).
+
+## Phase 2 review gate — PASSED
+- Question encountered once searchable w/ provenance, reused in 2nd fixture
+  run with 0 model calls. ✓
+- Changed/withdrawn answer stops reuse immediately, survives reload. ✓
+- Unanswered fields + incomplete coverage visible (coverage=incomplete,
+  gaps in packets/manifests). ✓
+- No generated text became approved personal truth (drafts never promote;
+  harness-only approval authority); no private-history prompt dumping
+  (12-candidate/byte caps). ✓
+- No Playwright in capture path; degraded executor -> tool_unavailable, no
+  launch; live executor connection work deferred to activation (T27). ✓
+
+Dispatch note: subagent sessions on this model intermittently die with empty
+results on long first responses (output limit); mitigation = resume with
+task_id or redispatch with chunked-write instructions.
+
+Next task: Phase 3 (03-workflow-dates-and-recovery.md)
 
 Task: T05 — repeatable history backfill (captureAttempt/backfillHistory + learn CLI)
 Status: implemented (purely additive; pipeline stayed running)
@@ -265,4 +295,48 @@ Deviations: (1) evidence.mjs captureAttempt gained allowUnsettled (default
 false) because finalize runs seconds after the executor writes answers.json —
 inside SETTLE_MS — and legacy ingest would otherwise always reject UNSETTLED;
 discovery/backfill paths unchanged. (2) run.mjs pauseFlag parameter, as above.
+Commit: (pending — coordinator commits)
+
+## T11 — Carry actual posting dates into the shared queue (2026-10-11)
+
+Created: auto/learning/freshness.mjs (pure: classifyDateValue, pipelineRowLabels,
+readJobDates, postedAgeDays, freshnessBucket, orderJobs, dateEnrichmentReport,
+ORDER_MODES, FRESHNESS_BUCKETS, exported LABELED_SEGMENT) and
+auto/test/learning-freshness.test.mjs (19 tests, fixture-isolated, synthetic).
+
+Modified: auto/eval-queue.mjs (parsePendingRows keeps labels at cell index >= 3
+in parity with web pipeline-table, retains raw line, never pollutes
+company/role; eval-path createJob passes dates via readJobDates(row.raw));
+auto/state.mjs (createJob stores D4 dates — postedAt/precision/source,
+firstSeenAt distinct from publication, lastCheckedAt, repostedAt; pickOrder
+delegates to orderJobs with mode 'existing' default; queueOrderOptions() is
+the single shared selection, env-gated by CAREER_OPS_QUEUE_MODE, invalid ->
+'existing'); run.mjs:202, apply-worker.mjs pickJob, panel.mjs self-test
+eligibility all pass queueOrderOptions(); panel jobSummaries exposes
+postedAt/repostedAt (display-only).
+
+Semantics: provider modifiedAt never becomes postedAt; tz-less timestamps
+degrade to day precision; future/invalid dates read null; repost requires
+provider-verified publication postdating firstSeen (a late pipeline label is
+not repost evidence); day-precision values compare by calendar day (timestamp
+refinement only when both sides have it); new modes tie-break first-seen asc
+then urlKey — a recent state transition does not reset queue position.
+dateEnrichmentReport is dry-run by default, apply commits per-job via
+updateJob CAS (VERSION_CONFLICT reported, not overwritten), preserves manual
+priority/held, never transitions a job. Default ordering byte-identical to the
+legacy comparator (asserted against an inline verbatim copy).
+
+Tests: 19/19 new; full node --test auto/test/learning-*.test.mjs -> 153 pass,
+0 fail; state (8), run.mjs, apply-worker, panel self-tests pass (panel skipped
+start/stop checks — live cycle running); eval-queue --dry-run --limit 0 parsed
+2662 live pending rows with the new parser.
+
+Deviation: ordering rule said wait for cycle.running=false before live edits;
+after 25+ min the pause WAS honored (run.log "pause requested — stopping",
+then "cycle complete") but pid 64078 stayed alive awaiting its eval-queue
+child, with the watchdog set to restart (desired.running=true). Edits were
+made then: running processes hold their modules in memory, and waiting would
+have pushed edits into the restart window. Each file was edited atomically;
+all suites green before any new cycle could start. Pause sentinel untouched
+(consumed earlier by the runner itself, not by this task).
 Commit: (pending — coordinator commits)

@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listJobs, loadJob, pickOrder, saveJob, transition, updateJob, submittedCountOn, STAGES } from './state.mjs';
+import { listJobs, loadJob, pickOrder, queueOrderOptions, saveJob, transition, updateJob, submittedCountOn, STAGES } from './state.mjs';
 import { AUTO_CONFIG_PATH, loadAutoConfig } from './lib/config.mjs';
 import { loadRadar, saveRadar } from './radar.mjs';
 import { agentFlags, setAgentEnabled } from './lib/agent-flags.mjs';
@@ -160,6 +160,10 @@ export function jobSummaries() {
       stage: j.stage, score: j.score, attempts: j.attempts, evalAttempts: j.evalAttempts || 0, lastError: j.lastError,
       priority: j.priority || 0, held: !!j.held,
       auditDir: j.auditDir, updatedAt: j.timestamps?.at(-1)?.at ?? null,
+      // T11: verified publication metadata (null = honestly unknown; legacy
+      // records have no dates block). Display-only — the queue order itself
+      // comes from the shared comparator via pickOrder + queueOrderOptions.
+      postedAt: j.dates?.postedAt ?? null, repostedAt: j.dates?.repostedAt ?? null,
     }))
     .sort((a, b) =>
       (order[a.stage] ?? 99) - (order[b.stage] ?? 99)
@@ -788,7 +792,7 @@ async function selfTest() {
     const h = await editQueue(job.urlKey, 'hold');
     check('hold benches the job and clears priority',
       h.ok === true && loadJob(job.urlKey).held === true && loadJob(job.urlKey).priority === 0
-      && pickOrder([loadJob(job.urlKey)]).length === 0);
+      && pickOrder([loadJob(job.urlKey)], 2, queueOrderOptions()).length === 0);
     check('release returns it to the pool', (await editQueue(job.urlKey, 'release')).ok === true && loadJob(job.urlKey).held === false);
     check('queue edit rejects unknown action/key',
       (await editQueue(job.urlKey, 'explode')).ok === false && (await editQueue('nonexistent', 'bump')).ok === false);

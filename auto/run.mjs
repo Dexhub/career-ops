@@ -29,7 +29,7 @@ import { acquirePipelineLock } from '../pipeline-lock.mjs';
 import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
-import { listJobs, pickOrder, submittedCountOn, updateJob } from './state.mjs';
+import { listJobs, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 import { learningRuntime, runApply } from './apply-worker.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
@@ -199,7 +199,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
       log(`run: daily soft limit reached (${submittedToday}/${limit}) — stopping applies`);
       break;
     }
-    const next = pickOrder(listJobs(['resume_ready', 'applying']), cfg.max_attempts ?? 2)
+    const next = pickOrder(listJobs(['resume_ready', 'applying']), cfg.max_attempts ?? 2, queueOrderOptions())
       .find((j) => !applied.has(j.urlKey));
     if (!next) {
       // Drained — but a background eval may still be queueing jobs. Wait for

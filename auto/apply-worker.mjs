@@ -29,7 +29,7 @@ import { loadAutoConfig, loadStandingAnswers } from './lib/config.mjs';
 import { createLearningContext, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
-import { allocateAttempt, listJobs, loadJob, pickOrder, updateJob } from './state.mjs';
+import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
@@ -354,7 +354,7 @@ function pickJob(needle) {
   const candidates = listJobs(['resume_ready', 'applying']);
   const pool = needle
     ? candidates.filter(j => j.urlKey.includes(needle) || (j.company || '').includes(needle))
-    : pickOrder(candidates, MAX_ATTEMPTS); // shared order: priority → score → oldest; held excluded
+    : pickOrder(candidates, MAX_ATTEMPTS, queueOrderOptions()); // THE shared comparator + shared options; held excluded
   if (pool.length === 0) return null;
   return loadJob(pool[0].urlKey);
 }
