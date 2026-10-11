@@ -38,13 +38,11 @@
  */
 
 import {
-  appendFileSync,
   closeSync,
   existsSync,
   fchmodSync,
   fsyncSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -68,10 +66,9 @@ import { resolveColumns, parseTrackerRow, normalizeTextKey, extractReqNumber, RE
 import { workdayDedupKey, stripWorkdayRepostSuffix, isWorkdayJobUrl } from './providers/workday.mjs';
 import { normalizeCompany } from './tracker-utils.mjs';
 import { normalizeCompanyName } from './invite-match.mjs';
-import { withPipelineLock } from './pipeline-lock.mjs';
 import { compileKeyword, compilePositiveKeyword, compileContentKeyword, buildTitleFilter, foldAccents } from './title-keywords.mjs';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
-import { withPortalHealthLock } from './portal-health-lock.mjs';
+import * as db from './core/db.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { printScanSummaryHeader } from './lib/scan-summary-marker.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -1918,20 +1915,41 @@ export function collectSeenUrls(sources = {}, policy = {}, { extraTokensFor } = 
   return { seen, recheckEligible };
 }
 
-// Path options mirror mergeIntoPipeline's seam below: the defaults are the
-// CAREER_OPS_ROOT-anchored module constants, and a caller with its own lane
-// (or a test with a fixture) passes explicit paths. Before CAREER_OPS_ROOT the
-// defaults were cwd-relative strings, so callers could retarget them by
-// chdir'ing; an anchored default needs a real parameter instead.
+// ── DB-backed text views ────────────────────────────────────────────
+// Scan history and the pipeline inbox live in data/career-ops.db now
+// (core/db.mjs), but the dedup machinery above (collectSeenUrls,
+// collectSeenCompanyRoles, collectFingerprintHistory, unrecordedOffers) is
+// line-based and encodes years of parsing semantics — expired strikethrough,
+// section headings, positional cells, header detection. Rather than porting
+// each parser to rows, the db rows are serialized back into the exact text
+// shapes the parsers already understand. pipeline_items.raw preserves each
+// item's original markdown line, so pipeline parsing is byte-faithful.
+
+/** Serialize the scan_history table into scan-history.tsv text (header first). */
+export function scanHistoryTextFromDb() {
+  const lines = db.listScanHistory()
+    .map((r) => SCAN_HISTORY_COLUMNS.map((c) => r[c] ?? '').join('\t'));
+  return [SCAN_HISTORY_COLUMNS.join('\t'), ...lines].join('\n') + '\n';
+}
+
+/** Serialize pipeline_items into pipeline.md text (Pending/Processed sections). */
+export function pipelineTextFromDb() {
+  const rawLine = (r) => r.raw || `- [${r.checked ? 'x' : ' '}] ${r.url}`;
+  const pending = db.listPipelineItems({ section: 'pending' }).map(rawLine);
+  const processed = db.listPipelineItems({ section: 'processed' }).map(rawLine);
+  return `# Pipeline — Pending URLs\n\n## Pending\n\n${pending.join('\n')}\n\n## Processed\n\n${processed.join('\n')}\n`;
+}
+
+// The scan-history/pipeline sources come from the db now; the path options
+// remain accepted for signature compatibility but only the applications path
+// (still a markdown file) is read from disk.
 export function loadSeenUrls(policy = {}, {
-  scanHistoryPath = SCAN_HISTORY_PATH,
-  pipelinePath = PIPELINE_PATH,
   applicationsPath = APPLICATIONS_PATH,
   extraTokensFor,
 } = {}) {
   return collectSeenUrls({
-    scanHistoryText: readIfExists(scanHistoryPath),
-    pipelineText: readIfExists(pipelinePath),
+    scanHistoryText: scanHistoryTextFromDb(),
+    pipelineText: pipelineTextFromDb(),
     applicationsText: readIfExists(applicationsPath),
   }, policy, { extraTokensFor });
 }
@@ -2759,12 +2777,12 @@ function readIfExists(filePath) {
 export function loadSeenCompanyRoles(
   appsPath = APPLICATIONS_PATH,
   canonicalize = defaultCompanyNormalizer,
-  { policy = {}, scanHistoryPath = SCAN_HISTORY_PATH, pipelinePath = PIPELINE_PATH, includeLocation = false, locatedBases = null } = {},
+  { policy = {}, includeLocation = false, locatedBases = null } = {},
 ) {
   return collectSeenCompanyRoles({
     applicationsText: readIfExists(appsPath),
-    scanHistoryText: readIfExists(scanHistoryPath),
-    pipelineText: readIfExists(pipelinePath),
+    scanHistoryText: scanHistoryTextFromDb(),
+    pipelineText: pipelineTextFromDb(),
   }, policy, canonicalize, { includeLocation, locatedBases });
 }
 
@@ -2884,7 +2902,11 @@ function postedAtIsoDate(postedAt) {
   if (typeof postedAt !== 'number' || !Number.isFinite(postedAt) || postedAt <= 0) return '';
   return new Date(postedAt).toISOString().slice(0, 10);
 }
-export function formatScanHistoryRow(offer, date, status = 'added') {
+// Build the scan-history record for one offer, with every field passed through
+// sanitizeTsvField — the db row must stay tab/newline-free so the TSV text view
+// (scanHistoryTextFromDb) reparses losslessly, matching rows migrated from the
+// legacy file.
+export function buildScanHistoryRecord(offer, date, status = 'added') {
   const record = {
     url: normalizeScanUrl(offer.url),
     first_seen: date,
@@ -2919,7 +2941,13 @@ export function formatScanHistoryRow(offer, date, status = 'added') {
     requisition_id: typeof offer.requisitionId === 'string' ? offer.requisitionId : '',
     language: typeof offer.language === 'string' ? offer.language : '',
   };
-  return SCAN_HISTORY_COLUMNS.map((name) => sanitizeTsvField(record[name])).join('\t');
+  for (const name of SCAN_HISTORY_COLUMNS) record[name] = sanitizeTsvField(record[name]);
+  return record;
+}
+
+export function formatScanHistoryRow(offer, date, status = 'added') {
+  const record = buildScanHistoryRecord(offer, date, status);
+  return SCAN_HISTORY_COLUMNS.map((name) => record[name]).join('\t');
 }
 
 /**
@@ -2955,8 +2983,8 @@ export function collectFingerprintHistory(scanHistoryText = '') {
  *
  * @param {string} [historyPath] - Override for tests.
  */
-export function loadFingerprintHistory(historyPath = SCAN_HISTORY_PATH) {
-  return collectFingerprintHistory(readIfExists(historyPath));
+export function loadFingerprintHistory() {
+  return collectFingerprintHistory(scanHistoryTextFromDb());
 }
 
 /**
@@ -2981,13 +3009,11 @@ export function loadFingerprintHistory(historyPath = SCAN_HISTORY_PATH) {
 // Same path seam as loadSeenUrls/appendToPipeline: anchored defaults, explicit
 // paths for a caller with its own lane or a test with a fixture.
 export function loadDedupSnapshot(policy = {}, canonicalize = defaultCompanyNormalizer, {
-  scanHistoryPath = SCAN_HISTORY_PATH,
-  pipelinePath = PIPELINE_PATH,
   applicationsPath = APPLICATIONS_PATH,
   includeLocation = false,
 } = {}) {
-  const scanHistoryText = readIfExists(scanHistoryPath);
-  const pipelineText = readIfExists(pipelinePath);
+  const scanHistoryText = scanHistoryTextFromDb();
+  const pipelineText = pipelineTextFromDb();
   const applicationsText = readIfExists(applicationsPath);
   const { seen, recheckEligible } = collectSeenUrls({ scanHistoryText, pipelineText, applicationsText }, policy);
   // Preserve the exported snapshot field for existing callers. The scanner's
@@ -3011,90 +3037,42 @@ export function loadDedupSnapshot(policy = {}, canonicalize = defaultCompanyNorm
   return { seen, recheckEligible, seenCompanyRoles, seenCompanyRoleBases, seenCompanyRoleRequisitions, locatedRequisitionsByBase, seenCompanyRoleLanguages, locatedLanguagesByBase, fingerprintHistory };
 }
 
-// Standard skeleton created on fresh install — matches the format documented
-// in modes/pipeline.md and expected by /career-ops pipeline.
-const PIPELINE_SKELETON = `# Pipeline — Pending URLs
-
-Paste job URLs below as \`- [ ] {url}\` then run \`/career-ops pipeline\`.
-
-## Pending
-
-## Processed
-`;
-
-// Current section names (English). Legacy Spanish names are checked as fallback
-// so existing pipeline.md files created before this change keep working.
-const PENDING_MARKERS = ['## Pending', '## Pendientes'];
-const PROCESSED_MARKERS = ['## Processed', '## Procesadas'];
-
-// Locked (pipeline-lock.mjs) so scan.mjs, scan-ats-full.mjs, and plugins.mjs
-// (pipeline mode) — the three current callers — can never interleave their
-// read-modify-write and silently drop each other's offers.
-// Same seam as loadSeenUrls above: the default is the CAREER_OPS_ROOT-anchored
-// module constant; a caller with its own lane (or a fixture) passes the path.
-export async function appendToPipeline(offers, { pipelinePath = PIPELINE_PATH } = {}) {
+// Offers land in the pipeline_items table (data/career-ops.db). SQLite's own
+// locking (WAL + busy_timeout, core/db.mjs) replaces pipeline-lock.mjs here:
+// scan.mjs, scan-ats-full.mjs, and plugins.mjs (pipeline mode) can no longer
+// interleave a read-modify-write because there is no read-modify-write — each
+// offer is one INSERT, with ON CONFLICT(url) DO NOTHING as the dedup backstop.
+// raw keeps the formatted markdown line so the db-backed text views above (and
+// processed-entry annotations added later) stay byte-faithful. The second
+// parameter carried the pipeline path; accepted and ignored for signature
+// compatibility.
+export async function appendToPipeline(offers, _legacyOptions = {}) {
   if (offers.length === 0) return;
-
-  await withPipelineLock(pipelinePath, async () => {
-    // Auto-create with standard skeleton if missing (fresh-install guard).
-    let text = existsSync(pipelinePath)
-      ? readFileSync(pipelinePath, 'utf-8')
-      : PIPELINE_SKELETON;
-
-    const marker = PENDING_MARKERS.find(m => text.includes(m)) ?? null;
-    const idx = marker !== null ? text.indexOf(marker) : -1;
-
-    if (idx === -1) {
-      // No Pending section found — insert one before Processed (or at end)
-      const procIdx = PROCESSED_MARKERS.reduce((found, m) => {
-        const i = text.indexOf(m);
-        return (found === -1 || (i !== -1 && i < found)) ? i : found;
-      }, -1);
-      const insertAt = procIdx === -1 ? text.length : procIdx;
-      const block = `\n## Pending\n\n` + offers.map(formatPipelineOffer).join('\n') + '\n\n';
-      text = text.slice(0, insertAt) + block + text.slice(insertAt);
-    } else {
-      // Find the end of existing Pending content (next ## or end)
-      const afterMarker = idx + marker.length;
-      const nextSection = text.indexOf('\n## ', afterMarker);
-      const insertAt = nextSection === -1 ? text.length : nextSection;
-
-      const block = '\n' + offers.map(formatPipelineOffer).join('\n') + '\n';
-      text = text.slice(0, insertAt) + block + text.slice(insertAt);
+  db.tx(() => {
+    for (const offer of offers) {
+      db.addPipelineItem({
+        url: sanitizePipelineUrl(offer.url),
+        section: 'pending',
+        checked: 0,
+        raw: formatPipelineOffer(offer),
+      });
     }
-
-    atomicWriteFile(pipelinePath, text);
   });
 }
 
-// data/scan-history.tsv has exactly the same set of concurrent writers as
-// data/pipeline.md — scan.mjs, scan-ats-full.mjs, scan-interamt.mjs and
-// plugins.mjs — so it takes the same lock appendToPipeline does, on its own
-// path. Unlocked, two writers race in two places: the create branch below is a
-// check-then-write, and its writeFileSync truncates, so a scanner that loses
-// the race erases rows the winner already appended; and a multi-row
-// appendFileSync is not atomic, so a concurrent append can interleave mid-line.
-// Both surface as rows that silently stop counting, because every reader skips
-// a malformed line quietly.
+// Scan history lives in the scan_history table (data/career-ops.db), one row
+// per URL (PRIMARY KEY). What used to be an append of another TSV row for the
+// same URL is now an upsert that refreshes the row in place — the dedup
+// readers only ever acted on the net effect per URL, so pinning semantics are
+// unchanged. SQLite's locking replaces pipeline-lock.mjs for the same reason
+// given at appendToPipeline. `status` is parameterized so callers can record
+// verify outcomes (`skipped_expired`, etc.).
 export async function appendToScanHistory(offers, date, status = 'added') {
-  await withPipelineLock(SCAN_HISTORY_PATH, () => {
-    // Ensure file + header exist. The header is SCAN_HISTORY_COLUMNS, the same
-    // list the row writer (formatScanHistoryRow) emits in order. Written ONLY
-    // on fresh-file creation; existing files (including headerless legacy files
-    // and files with an older, shorter header) are never rewritten. All readers
-    // either skip line 0 unconditionally, detect the header by its `url\t`
-    // prefix, or skip non-URL col-0 rows, so widening it stays
-    // backward-compatible. `status` is parameterized so callers can record
-    // verify outcomes (`skipped_expired`, etc.) without the legacy `(expired)`
-    // suffix.
-    if (!existsSync(SCAN_HISTORY_PATH)) {
-      mkdirSync(path.dirname(SCAN_HISTORY_PATH), { recursive: true });
-      atomicWriteFile(SCAN_HISTORY_PATH, `${SCAN_HISTORY_COLUMNS.join('\t')}\n`);
+  if (offers.length === 0) return;
+  db.tx(() => {
+    for (const offer of offers) {
+      db.upsertScanHistory(buildScanHistoryRecord(offer, date, status));
     }
-
-    const lines = offers.map(o => formatScanHistoryRow(o, date, status)).join('\n') + '\n';
-
-    appendFileSync(SCAN_HISTORY_PATH, lines, 'utf-8');
   });
 }
 
@@ -3265,19 +3243,13 @@ export function checkAggregatorRepost(offer, domainsMap = loadAggregatorDomains(
 
 // ── Scan-run persistence (#1604) ────────────────────────────────────
 
-// Anchored for the same reason (#3510), and with a reader to agree with:
-// stats.mjs:36 reads join(DATA_ROOT, 'data', 'scan-runs.tsv'). While this was
-// cwd-relative the writer and the reader could name different files, and the
-// trend stats simply under-reported whatever landed elsewhere.
-const SCAN_RUNS_PATH = path.join(DATA_ROOT, 'data/scan-runs.tsv');
-
 // One row of run counters per non-dry scan — today these numbers are printed
 // once in the summary and lost when the terminal scrolls. Full ISO timestamp
 // (two scans in one day must not collapse). `status` is 'completed' for a
 // finished run; a run that dies after the sweep starts records 'failed' via
 // writeRunFailureRow (#2643) so trend stats can exclude survivorship bias.
-// Consumers MUST parse by header name, never by position — columns may be
-// appended in later versions.
+// Rows live in the scan_runs table now; this header is kept exported for the
+// legacy-TSV tooling that still names it (migrate-scan-runs.mjs).
 export const SCAN_RUNS_HEADER = 'timestamp\tstatus\tcompanies\tboards\tfound\tfiltered_title\tfiltered_tier\tfiltered_location\tfiltered_posting_age\tfiltered_salary\tfiltered_content\tfiltered_cooldown\tdupes\tnew_added\terrors\tfiltered_blacklist\tfiltered_visa\tfiltered_posted_date\tfiltered_country_eligibility\n';
 
 // Failure-path writes (#2643). main() registers a snapshot closure once the
@@ -3292,108 +3264,70 @@ export function registerRunFailureSnapshot(fn) {
   runFailureSnapshot = typeof fn === 'function' ? fn : null;
 }
 
-// NOT locked, deliberately. This runs from the SIGINT handler and the fatal
-// path, which call process.exit() with nothing able to await first, and every
-// lock entry point in pipeline-lock.mjs is async. It is already best-effort and
-// swallows its own errors. So a failure row written while a migration is
-// swapping the file can still be lost; the completed-run path above is the one
-// that is covered. Stated rather than implied, because the alternative is a
-// comment claiming a guarantee this function does not provide.
-export function writeRunFailureRow(status = 'failed', filePath = SCAN_RUNS_PATH) {
+// Synchronous db write, so it remains safe from the SIGINT handler and the
+// fatal path, which call process.exit() with nothing able to await first.
+// Best-effort by design: everything is swallowed, because a failure to record
+// the failure must not mask the original error.
+export function writeRunFailureRow(status = 'failed') {
   const snapshot = runFailureSnapshot;
   runFailureSnapshot = null;
   if (!snapshot) return false;
   try {
-    appendScanRunSummary({ ...snapshot(), status }, filePath);
+    appendScanRunSummary({ ...snapshot(), status });
     return true;
   } catch {
     return false;
   }
 }
 
-export function appendScanRunSummary(c, filePath = SCAN_RUNS_PATH) {
-
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  if (!existsSync(filePath)) writeFileSync(filePath, SCAN_RUNS_HEADER, 'utf-8');
-  // The header is written only on first creation, so a release that appends or inserts a counter
-  // leaves existing files with a header that no longer describes the rows below it. Nothing
-  // migrates it and nothing notices: stats.mjs reads by column NAME, so it silently returns a
-  // neighbouring counter. Surface the mismatch here rather than papering over it — rewriting the
-  // header in place would misalign every historical row instead.
-  if (!existsSync(filePath)) {
-    atomicWriteFile(filePath, SCAN_RUNS_HEADER);
-  } else {
-    const onDisk = (readFileSync(filePath, 'utf-8').split('\n', 1)[0] || '') + '\n';
-    if (onDisk !== SCAN_RUNS_HEADER) {
-      console.error(
-        `Warning: ${filePath} header has ${onDisk.trim().split('\t').length} columns but this build writes `
-        + `${SCAN_RUNS_HEADER.trim().split('\t').length}. Rows below the header are positionally offset and `
-        + `stats.mjs will exclude them. Move ${filePath} aside to start a fresh file — deleting only the header does NOT recover it, because the file still exists and the next run would read the first data row as the header.`,
-      );
-    }
-  }
-  const row = [
-    c.timestamp, c.status ?? 'completed', c.companies, c.boards, c.found,
-    c.filteredTitle, c.filteredTier, c.filteredLocation, c.filteredPostingAge,
-    c.filteredSalary, c.filteredContent, c.filteredCooldown, c.dupes, c.newAdded, c.errors,
-    // filtered_blacklist (#1742) appended at the END, per the header-name
-    // contract above: files created with an older header keep parsing (the
-    // extra trailing cell is simply not named there).
-    c.filteredBlacklist ?? 0,
-    // filtered_visa appended at the END for the same reason.
-    c.filteredVisa ?? 0,
-    // filtered_posted_date appended at the END for the same reason.
-    c.filteredPostedDate ?? 0,
-    // filtered_country_eligibility (#2093) appended at the END for the same reason.
-    c.filteredCountryEligibility ?? 0,
-  ].join('\t') + '\n';
-  appendFileSync(filePath, row, 'utf-8');
+// One scan_runs row per non-dry run (data/career-ops.db). The second parameter
+// carried the TSV path; it is gone — the table's columns ARE the header, so
+// the legacy header-drift warning has nothing left to warn about.
+export function appendScanRunSummary(c) {
+  db.appendScanRun({
+    timestamp: c.timestamp,
+    status: c.status ?? 'completed',
+    companies: c.companies,
+    boards: c.boards,
+    found: c.found,
+    filtered_title: c.filteredTitle,
+    filtered_tier: c.filteredTier,
+    filtered_location: c.filteredLocation,
+    filtered_posting_age: c.filteredPostingAge,
+    filtered_salary: c.filteredSalary,
+    filtered_content: c.filteredContent,
+    filtered_cooldown: c.filteredCooldown,
+    dupes: c.dupes,
+    new_added: c.newAdded,
+    errors: c.errors,
+    filtered_blacklist: c.filteredBlacklist ?? 0,
+    filtered_visa: c.filteredVisa ?? 0,
+    filtered_posted_date: c.filteredPostedDate ?? 0,
+    filtered_country_eligibility: c.filteredCountryEligibility ?? 0,
+  });
 }
 
 // ── Portal health persistence (#1744) ───────────────────────────────
 
-// Anchored to the data root (#3510), read by stats.mjs:39 at the same anchor.
-//
-// This path has moved twice. It was dirname(fileURLToPath(import.meta.url)) —
-// the script's own directory — until 96c578b made it cwd-relative, because a
-// sandboxed run was writing fixture rows into the live data/portal-health.tsv of
-// whatever checkout owned scan.mjs. That problem was real; the mechanism traded
-// one unanchored path for another, and left this file with two different rules
-// for where user data lives. Isolation now comes from CAREER_OPS_ROOT, which is
-// how the rest of the suite already sandboxes writes — see
-// tests/portal-health-path.test.mjs, which still asserts the checkout's own data
-// directory is never touched.
-const PORTAL_HEALTH_PATH = path.join(DATA_ROOT, 'data/portal-health.tsv');
+// Kept exported for compatibility with legacy-TSV tooling; rows live in the
+// portal_health table now.
 export const PORTAL_HEALTH_HEADER = 'timestamp\tcompany\tstatus\n';
 
-// Locked (portal-health-lock.mjs) so a concurrent read-modify-write of this
-// same file — e.g. tests/portal-health-guard.mjs's regression-cleanup path —
-// can never interleave with this append and silently discard one side.
-export async function appendPortalHealth(healthRecords, filePath = PORTAL_HEALTH_PATH) {
-  await withPortalHealthLock(filePath, async () => {
-    mkdirSync(path.dirname(filePath), { recursive: true });
-    if (!existsSync(filePath)) atomicWriteFile(filePath, PORTAL_HEALTH_HEADER);
-    let lines = '';
+// Portal health lives in the portal_health table (data/career-ops.db).
+// SQLite's locking replaces portal-health-lock.mjs: each record is one INSERT,
+// so there is no read-modify-write left to interleave.
+export async function appendPortalHealth(healthRecords) {
+  if (healthRecords.length === 0) return;
+  db.tx(() => {
     for (const r of healthRecords) {
-      lines += [r.timestamp, r.company, r.status].join('\t') + '\n';
+      db.appendPortalHealth({ timestamp: r.timestamp, company: r.company, status: r.status });
     }
-    if (lines) appendFileSync(filePath, lines, 'utf-8');
   });
 }
 
-export function loadPortalHealth(filePath = PORTAL_HEALTH_PATH) {
-  if (!existsSync(filePath)) return [];
-  const lines = readFileSync(filePath, 'utf-8').split('\n');
-  const records = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    const parts = line.split('\t');
-    if (parts.length >= 3) {
-      records.push({ timestamp: parts[0], company: parts[1], status: parts[2] });
-    }
-  }
-  return records;
+export function loadPortalHealth() {
+  return db.listPortalHealth()
+    .map(({ timestamp, company, status }) => ({ timestamp, company, status }));
 }
 
 export function computeConsecutiveFailures(healthRecords) {
@@ -4240,7 +4174,7 @@ async function main() {
   // the same posting once it moves.
   // Each posting is recorded once per status, not once per scan.
   if (!dryRun && (locationFilteredOffers.length > 0 || ageFilteredOffers.length > 0)) {
-    const historyText = readIfExists(SCAN_HISTORY_PATH);
+    const historyText = scanHistoryTextFromDb();
     const newLocationRows = unrecordedOffers(locationFilteredOffers, 'skipped_location', historyText);
     const newAgeRows = unrecordedOffers(ageFilteredOffers, 'skipped_age', historyText);
     if (newLocationRows.length > 0) await appendToScanHistory(newLocationRows, date, 'skipped_location');
@@ -4502,7 +4436,7 @@ async function main() {
     if (dryRun) {
       console.log('\n(dry run — run without --dry-run to save results)');
     } else {
-      console.log(`\nResults saved to ${PIPELINE_PATH} and ${SCAN_HISTORY_PATH}`);
+      console.log(`\nResults saved to ${db.resolveDbPath()}`);
     }
   }
 
@@ -4510,14 +4444,7 @@ async function main() {
   // writes; a --dry-run must leave no trace.
   if (!dryRun) {
     await appendPortalHealth(healthRecords);
-    // Locked on the same file the migration locks, for the reason the sibling
-    // append at appendToScanHistory already gives: two writers interleaving a
-    // read-modify-write on an append-only TSV silently drop each other's rows.
-    // migrate-scan-runs.mjs rewrites this file wholesale, so without the lock a
-    // run finishing mid-migration is written into a file that is then replaced
-    // by a snapshot taken before it, and the row is gone from the live file and
-    // from the .bak. Measured at ~9ms of exposure, and reproduced.
-    await withPipelineLock(SCAN_RUNS_PATH, () => appendScanRunSummary({
+    appendScanRunSummary({
       timestamp: new Date().toISOString(), status: 'completed',
       companies: summaryCompanies, boards: summaryBoards, found: totalFound,
       filteredTitle: totalFilteredTitle, filteredTier: totalFilteredTier,
@@ -4529,7 +4456,7 @@ async function main() {
       filteredVisa: totalFilteredVisa,
       filteredPostedDate: totalFilteredPostedDate,
       filteredCountryEligibility: totalFilteredCountryEligibility,
-    }));
+    });
   }
   // The run completed (or was a dry run) — disarm the failure row.
   registerRunFailureSnapshot(null);

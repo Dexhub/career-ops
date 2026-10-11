@@ -70,9 +70,9 @@ import { normalizeCompanyName } from './invite-match.mjs';
 import { flagValue, validateFlags, safeIntFlag } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { parseScanHistoryLine, scanHistoryLineHasColumn } from './lib/scan-history-columns.mjs';
+import * as db from './core/db.mjs';
 
 const CAREER_OPS = getCareerOpsRoot();
-const SCAN_HISTORY_PATH = join(CAREER_OPS, 'data/scan-history.tsv');
 // Same resolution scan.mjs uses, so a sandboxed run overrides both together.
 const PORTALS_PATH = process.env.CAREER_OPS_PORTALS || join(CAREER_OPS, 'portals.yml');
 const DEFAULT_WINDOW_DAYS = 90;
@@ -286,9 +286,29 @@ export function titleIdentityKey(title) {
   return [...new Set(words)].sort().join(' ');
 }
 
-function loadScanHistory(path = SCAN_HISTORY_PATH) {
-  if (!existsSync(path)) return [];
-  return parseScanHistory(readFileSync(path, 'utf-8'));
+// Scan history now lives in the scan_history table (core/db.mjs), one row per
+// URL — upserts refresh a URL's row in place, where the TSV appended a new
+// line per sighting. Detection is unaffected: a cluster needs 2+ DISTINCT
+// URLs, and buildRepostCluster already collapsed same-URL rows to one.
+function loadScanHistory() {
+  const rows = [];
+  for (const r of db.listScanHistory()) {
+    const date = parseDate(r.first_seen);
+    if (!String(r.url || '').trim() || !date) continue;
+    if (!String(r.company || '').trim()) continue;
+    rows.push({
+      url: r.url.trim(),
+      date,
+      dateStr: r.first_seen.trim(),
+      portal: String(r.portal || '').trim(),
+      title: String(r.title || '').trim(),
+      company: r.company.trim(),
+      status: String(r.status || 'added').trim(),
+      location: String(r.location || '').trim(),
+      normCompany: String(r.normalized_company || '').trim(),
+    });
+  }
+  return rows;
 }
 
 // --- Core detection ---

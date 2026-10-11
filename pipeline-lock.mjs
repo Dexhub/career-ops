@@ -691,7 +691,16 @@ export async function acquirePipelineLock(pipelinePath, options = {}) {
   }
 }
 
-/** Acquires the lock on `pipelinePath`, runs fn, and always releases it. */
+/**
+ * Acquires the lock on `pipelinePath`, runs fn, and always releases it.
+ *
+ * Note: pipeline/scan-history/scan-runs storage moved to SQLite
+ * (data/career-ops.db, core/db.mjs), whose WAL journal + busy_timeout cover
+ * those writers — scan.mjs no longer takes this lock. It remains the live
+ * mutual-exclusion mechanism for the file-backed stores that stayed files:
+ * agent-inbox.md (agent-inbox.mjs, web/src/lib/inbox-skip.mjs),
+ * career-profile (career-profile.mjs) and contacts (contact-extract.mjs).
+ */
 export async function withPipelineLock(pipelinePath, fn, options = {}) {
   const lock = await acquirePipelineLock(pipelinePath, options);
   try {

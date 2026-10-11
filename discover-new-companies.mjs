@@ -35,10 +35,9 @@ import { join } from 'node:path';
 import * as yaml from 'js-yaml';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { buildCompanyCanonicalizer } from './scan.mjs';
-import { parseScanHistoryLine, scanHistoryLineHasColumn } from './lib/scan-history-columns.mjs';
+import * as db from './core/db.mjs';
 
 const DATA_ROOT = getCareerOpsRoot();
-const HISTORY_PATH = process.env.CAREER_OPS_SCAN_HISTORY || join(DATA_ROOT, 'data', 'scan-history.tsv');
 const PORTALS_PATH = process.env.CAREER_OPS_PORTALS || join(DATA_ROOT, 'portals.yml');
 
 const args = process.argv.slice(2);
@@ -60,8 +59,8 @@ const val = (f, d = null) => {
 if (has('--help')) {
   console.log(`Usage: node discover-new-companies.mjs [options]
 
-Reads data/scan-history.tsv, subtracts every company already tracked in
-portals.yml, and emits the remainder as a discover-ats.mjs input file.
+Reads the scan history (data/career-ops.db), subtracts every company already
+tracked in portals.yml, and emits the remainder as a discover-ats.mjs input file.
 
 Options:
   --since <n>       Only companies first seen in the last N days (default: 30)
@@ -94,8 +93,9 @@ for (const [flag, v] of [['--since', SINCE_DAYS], ['--min-rows', MIN_ROWS], ['--
   }
 }
 
-if (!existsSync(HISTORY_PATH)) {
-  console.error(`ERROR: ${HISTORY_PATH} not found — run a scan first.`);
+const historyRows = db.listScanHistory();
+if (!historyRows.length) {
+  console.error(`ERROR: no scan history in ${db.resolveDbPath()} — run a scan first.`);
   process.exit(1);
 }
 
@@ -115,25 +115,16 @@ for (const entry of portalsRaw.tracked_companies || []) {
 }
 
 // ── Walk the history ────────────────────────────────────────────────────────
-// Legacy headerless scan-history.tsv files exist and are never rewritten (see
-// appendToScanHistory in scan.mjs), so detect the header instead of assuming
-// row 0 is one — the same guard parseScanHistory (detect-reposts.mjs) uses.
-// An unconditional skip would silently drop the first company in a headerless
-// file. Columns are read by name through lib/scan-history-columns.mjs, whose
-// order is fixed whatever header (if any) the file carries.
-const rows = readFileSync(HISTORY_PATH, 'utf-8').split('\n');
-const hasHeader = /^\s*url\s*\t/i.test(rows[0] ?? '');
-
+// Scan history lives in the scan_history table (core/db.mjs), one row per URL.
+// `rows` per company therefore counts distinct URLs seen, not raw sightings —
+// repeat scans of the same URL refresh its row instead of appending a line.
 const cutoffMs = SINCE_DAYS > 0 ? Date.now() - SINCE_DAYS * 86_400_000 : null;
 
 /** @type {Map<string, {name:string, rows:number, added:number, lastSeen:string, titles:Set<string>, hosts:Set<string>}>} */
 const found = new Map();
 
-for (let i = hasHeader ? 1 : 0; i < rows.length; i++) {
-  if (!scanHistoryLineHasColumn(rows[i], 'status')) continue;
-  const row = parseScanHistoryLine(rows[i]);
-
-  const rawName = row.company.trim();
+for (const row of historyRows) {
+  const rawName = String(row.company || '').trim();
   if (!rawName) continue;
 
   const seen = row.first_seen.trim();

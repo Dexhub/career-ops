@@ -1,25 +1,26 @@
 // Persistent board-existence memory for reverse ATS sweeps (#2840).
 // Only a real HTTP 404 may advance a miss counter. Throttles, transport
 // failures and DNS errors mean "unknown", never "dead".
+//
+// Storage moved from data/dead-boards.tsv to the dead_boards table in
+// data/career-ops.db (core/db.mjs). loadDeadBoards/saveDeadBoards keep their
+// file-path parameter for signature compatibility with scan-ats-full.mjs, but
+// the path is ignored — the db is the single source of truth.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import * as db from './core/db.mjs';
 
-export const DEAD_BOARD_HEADER = 'ats\tboard\tmisses\tlast_checked';
 export const DEAD_BOARD_MISSES = 3;
 export const DEAD_BOARD_RECHECK_DAYS = 30;
 
 function key(ats, board) { return `${ats}\t${board}`; }
 
-export function loadDeadBoards(file, now = Date.now()) {
+export function loadDeadBoards(_file, now = Date.now()) {
   const rows = new Map();
-  if (!existsSync(file)) return rows;
-  for (const line of readFileSync(file, 'utf8').split(/\r?\n/).slice(1)) {
-    const [ats, board, missesRaw, checked] = line.split('\t');
-    const misses = Number(missesRaw);
-    const lastChecked = Date.parse(checked || '');
-    if (!ats || !board || !Number.isInteger(misses) || misses < 1 || !Number.isFinite(lastChecked)) continue;
-    rows.set(key(ats, board), { ats, board, misses, lastChecked, now });
+  for (const r of db.listDeadBoards()) {
+    const misses = Number(r.misses);
+    const lastChecked = Date.parse(r.last_checked || '');
+    if (!r.ats || !r.board || !Number.isInteger(misses) || misses < 1 || !Number.isFinite(lastChecked)) continue;
+    rows.set(key(r.ats, r.board), { ats: r.ats, board: r.board, misses, lastChecked, now });
   }
   return rows;
 }
@@ -52,12 +53,21 @@ export function recordBoardResult(rows, ats, board, status, now = Date.now()) {
   rows.set(rowKey, { ats, board, misses, lastChecked: now });
 }
 
-export function saveDeadBoards(file, rows) {
-  mkdirSync(dirname(file), { recursive: true });
-  const body = [...rows.values()]
-    .sort((a, b) => a.ats.localeCompare(b.ats) || a.board.localeCompare(b.board))
-    .map((row) => `${row.ats}\t${row.board}\t${row.misses}\t${new Date(row.lastChecked).toISOString()}`);
-  const tmp = `${file}.tmp`;
-  writeFileSync(tmp, `${DEAD_BOARD_HEADER}\n${body.length ? `${body.join('\n')}\n` : ''}`, 'utf8');
-  renameSync(tmp, file);
+// Reconcile the in-memory Map back into the dead_boards table: rows deleted
+// from the Map (a board came back with 200, or a non-404 cleared a low miss
+// count) are deleted from the table, everything else is upserted.
+export function saveDeadBoards(_file, rows) {
+  db.tx(() => {
+    for (const existing of db.listDeadBoards()) {
+      if (!rows.has(key(existing.ats, existing.board))) db.deleteDeadBoard(existing.ats, existing.board);
+    }
+    for (const row of rows.values()) {
+      db.upsertDeadBoard({
+        ats: row.ats,
+        board: row.board,
+        misses: row.misses,
+        last_checked: new Date(row.lastChecked).toISOString(),
+      });
+    }
+  });
 }

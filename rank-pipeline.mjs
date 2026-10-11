@@ -29,19 +29,16 @@
  *   node rank-pipeline.mjs --self-test         # in-memory suite; spawns no subprocess
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { execFileSync } from 'child_process';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
 import { sanitizeMarkdownField } from './scan.mjs';
-import { withPipelineLock } from './pipeline-lock.mjs';
+import * as db from './core/db.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 
-const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
-const PIPELINE_PATH = join(DATA_ROOT, 'data', 'pipeline.md');
 const CV_PATH = join(DATA_ROOT, 'cv.md');
 
 const DEFAULT_LIMIT = 20;
@@ -271,8 +268,9 @@ async function main(args) {
     return 1;
   }
 
-  if (!existsSync(PIPELINE_PATH)) {
-    console.log('No data/pipeline.md yet — run a scan first. Nothing to rank.');
+  const pipelineRows = db.listPipelineItems();
+  if (!pipelineRows.length) {
+    console.log('Pipeline is empty — run a scan first. Nothing to rank.');
     return 0;
   }
 
@@ -285,7 +283,7 @@ async function main(args) {
     return 1;
   }
 
-  const pending = parsePendingEntries(readFileSync(PIPELINE_PATH, 'utf-8'));
+  const pending = parsePendingEntries(pipelineRows.map(r => r.raw).join('\n'));
   if (!pending.length) {
     console.log('No unranked pending entries. Nothing to do.');
     return 0;
@@ -340,15 +338,20 @@ async function main(args) {
 
   let written = 0;
   if (annotations.length) {
-    // Re-read inside the lock: scan.mjs, scan-ats-full.mjs and a concurrent run of
-    // this script all write data/pipeline.md, so the file may have moved since the
-    // read above. Matching on the original raw line makes a stale target a no-op
-    // rather than a corrupted row.
-    await withPipelineLock(PIPELINE_PATH, () => {
-      const current = readFileSync(PIPELINE_PATH, 'utf-8');
-      const result = applyAnnotations(current, annotations);
-      written = result.written;
-      if (written) writeFileSync(PIPELINE_PATH, result.text);
+    // Re-read each row inside the transaction: scan.mjs, scan-ats-full.mjs and a
+    // concurrent run of this script all write the pipeline, so a row may have
+    // moved since the read above. Matching on the original raw line makes a
+    // stale target a no-op rather than a corrupted row.
+    db.tx(() => {
+      for (const a of annotations) {
+        const row = db.get(
+          'SELECT url, raw FROM pipeline_items WHERE raw = ? LIMIT 1',
+          [a.raw],
+        );
+        if (!row || row.raw.includes(RANK_LABEL)) continue;
+        db.updatePipelineItem(row.url, { raw: `${row.raw} | ${a.segment}` });
+        written += 1;
+      }
     });
   }
 

@@ -238,7 +238,13 @@ export async function acquirePortalHealthLock(filePath, options = {}) {
   }
 }
 
-/** Acquires the lock on `filePath`, runs fn, and always releases it. */
+/**
+ * Acquires the lock on `filePath`, runs fn, and always releases it.
+ *
+ * Note: portal-health storage moved to SQLite (data/career-ops.db,
+ * core/db.mjs), so scan.mjs no longer takes this lock; it is kept for
+ * signature compatibility with any remaining external callers.
+ */
 export async function withPortalHealthLock(filePath, fn, options = {}) {
   const lock = await acquirePortalHealthLock(filePath, options);
   try {

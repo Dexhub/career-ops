@@ -18,84 +18,40 @@
  * an entry already present in Procesadas is dropped from Pendientes without a
  * second copy. Safe to run after every batch.
  *
- * Run: node reconcile-pipeline.mjs [--dry-run] [--state <path>] [--pipeline <path>]
+ * Run: node reconcile-pipeline.mjs [--dry-run]
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, copyFileSync, realpathSync, statSync } from 'fs';
-import { join, dirname, resolve, relative, isAbsolute } from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 import { normalizeReportLink } from './tracker-links.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
-import { flagValue, validateFlags } from './lib/cli-flags.mjs';
+import { validateFlags } from './lib/cli-flags.mjs';
+import * as db from './core/db.mjs';
 
 const CAREER_OPS = getCareerOpsRoot();
 
-const KNOWN_FLAGS = ['--dry-run', '--pipeline', '--state', '--help', '-h'];
-const VALUE_FLAGS = ['--pipeline', '--state'];
-const USAGE = `Usage: node reconcile-pipeline.mjs [--dry-run] [--state <path>] [--pipeline <path>]
-  Moves batch-processed offers out of pipeline.md "Pendientes" into "Procesadas".`;
+const KNOWN_FLAGS = ['--dry-run', '--help', '-h'];
+const USAGE = `Usage: node reconcile-pipeline.mjs [--dry-run]
+  Moves batch-processed offers out of the pipeline's "Pendientes" into "Procesadas".`;
 
 // An unrecognized flag (typo'd --dry-run, say) used to be silently ignored
-// and fall through to a LIVE run that writes pipeline.md — the caller
+// and fall through to a LIVE run that writes the pipeline — the caller
 // believed they were in dry-run mode and were not. Fail fast instead.
 const args = process.argv.slice(2);
-validateFlags(args, KNOWN_FLAGS, USAGE, { valueFlags: VALUE_FLAGS, requireOperand: true });
+validateFlags(args, KNOWN_FLAGS, USAGE, { requireOperand: true });
 
 const DRY_RUN = args.includes('--dry-run');
 
-// Constrain user-supplied --state/--pipeline paths to the repository tree, so a
-// crafted path cannot read from or overwrite files outside the project.
-// Symlinks are resolved first (realpathSync) so an in-repo symlink cannot
-// smuggle the real target outside the tree past a purely lexical check.
-function resolveInsideRepo(inputPath, fallbackPath, flag) {
-  const abs = resolve(inputPath || fallbackPath);
-  let repoReal, targetReal;
-  try {
-    repoReal = realpathSync(CAREER_OPS);
-    // The target may not exist yet (e.g. a fresh --pipeline path); fall back to
-    // its parent directory so the symlink-resolved boundary check still applies.
-    targetReal = existsSync(abs) ? realpathSync(abs) : realpathSync(dirname(abs));
-  } catch {
-    console.error(`Invalid ${flag}: cannot resolve path (${abs})`);
-    process.exit(1);
-  }
-  const rel = relative(repoReal, targetReal);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    console.error(`Invalid ${flag}: path must stay inside the repository (${abs})`);
-    process.exit(1);
-  }
-  // Reject a directory target early — otherwise readFileSync/copyFileSync would
-  // throw an unhandled EISDIR later instead of failing with a clear message.
-  if (existsSync(abs) && statSync(abs).isDirectory()) {
-    console.error(`Invalid ${flag}: expected a file, not a directory (${abs})`);
-    process.exit(1);
-  }
-  return abs;
-}
-
-const defaultPipeline = existsSync(join(CAREER_OPS, 'data/pipeline.md'))
-  ? join(CAREER_OPS, 'data/pipeline.md')
-  : join(CAREER_OPS, 'pipeline.md');
-const PIPELINE_FILE = resolveInsideRepo(flagValue(args, '--pipeline'), defaultPipeline, '--pipeline');
-const STATE_FILE = resolveInsideRepo(flagValue(args, '--state'), join(CAREER_OPS, 'batch/batch-state.tsv'), '--state');
 const REPORTS_DIR = join(CAREER_OPS, 'reports');
+// Report links were historically written relative to data/pipeline.md; keep the
+// same base so link text in the db stays byte-compatible with the old rows.
+const PIPELINE_LINK_BASE = join(CAREER_OPS, 'data');
 
-// ---- guards ----
-if (!existsSync(STATE_FILE)) {
-  console.log('No batch-state.tsv found — nothing to reconcile.');
-  process.exit(0);
-}
-if (!existsSync(PIPELINE_FILE)) {
-  console.log('No pipeline.md found — nothing to reconcile.');
-  process.exit(0);
-}
-
-// ---- parse batch-state.tsv ----
-// columns: id  url  status  started_at  completed_at  report_num  score  error  retries
+// ---- read batch state (batch_state table; `row` holds the original TSV line) ----
+// row columns: id  url  status  started_at  completed_at  report_num  score  error  retries
 const DONE = new Map(); // url -> { reportNum, score }
-for (const line of readFileSync(STATE_FILE, 'utf-8').split(/\r?\n/)) {
-  if (!line.trim() || line.startsWith('id\t')) continue;
-  const c = line.split('\t');
+for (const rec of db.listBatchState()) {
+  const c = String(rec.row || '').split('\t');
   if (c.length < 7) continue;
   const [, url, status, , , reportNum, score] = c;
   // "completed" and "skipped" (below --min-score) both produced a report.
@@ -105,7 +61,7 @@ for (const line of readFileSync(STATE_FILE, 'utf-8').split(/\r?\n/)) {
 }
 
 if (DONE.size === 0) {
-  console.log('No completed batch entries in batch-state.tsv — nothing to reconcile.');
+  console.log('No completed batch entries in batch state — nothing to reconcile.');
   process.exit(0);
 }
 
@@ -166,12 +122,7 @@ function resolvePdf(reportFile) {
   return /not generated/i.test(rep) ? '❌' : '✅';
 }
 
-// ---- parse pipeline.md ----
-const lines = readFileSync(PIPELINE_FILE, 'utf-8').split(/\r?\n/);
-
-const PENDING_RE = /^##\s+(Pendientes|Pending)\s*$/i;
-const PROCESSED_RE = /^##\s+(Procesadas|Processed)\s*$/i;
-const SECTION_RE = /^##\s+/;
+// ---- read the pipeline from the db ----
 const PENDING_ITEM_RE = /^- \[ \]\s+/;
 
 function lineUrl(body) {
@@ -180,54 +131,40 @@ function lineUrl(body) {
   return (i >= 0 ? body.slice(0, i) : body).trim();
 }
 
-let pendStart = -1, procStart = -1;
-for (let i = 0; i < lines.length; i++) {
-  if (pendStart < 0 && PENDING_RE.test(lines[i])) pendStart = i;
-  else if (procStart < 0 && PROCESSED_RE.test(lines[i])) procStart = i;
-}
-
-if (pendStart < 0) {
-  console.log('No "Pendientes" section in pipeline.md — nothing to reconcile.');
+const pipelineRows = db.listPipelineItems();
+if (!pipelineRows.length) {
+  console.log('Pipeline is empty — nothing to reconcile.');
   process.exit(0);
 }
-
-function sectionEnd(start) {
-  for (let i = start + 1; i < lines.length; i++) {
-    if (SECTION_RE.test(lines[i])) return i;
-  }
-  return lines.length;
-}
-const pendEnd = sectionEnd(pendStart);
-const procEnd = procStart >= 0 ? sectionEnd(procStart) : -1;
+const pendingRows = pipelineRows.filter(r => r.section === 'pending');
+const processedRows = pipelineRows.filter(r => r.section === 'processed');
 
 // URLs already in Procesadas — guards against a double copy on re-runs.
 const procUrls = new Set();
-if (procStart >= 0) {
-  for (let i = procStart + 1; i < procEnd; i++) {
-    const m = lines[i].match(/^- \[x\]\s+(.+)$/i);
-    if (!m) continue;
-    // "[num](path) | url | company | role | score | PDF x" — url is field 2
-    const parts = m[1].split('|').map(s => s.trim());
-    if (parts[1]) procUrls.add(parts[1]);
-  }
+for (const row of processedRows) {
+  const m = row.raw.match(/^- \[x\]\s+(.+)$/i);
+  if (!m) continue;
+  // "[num](path) | url | company | role | score | PDF x" — url is field 2
+  const parts = m[1].split('|').map(s => s.trim());
+  if (parts[1]) procUrls.add(parts[1]);
 }
 
 // ---- walk Pendientes, decide keep vs. move ----
-const removeIdx = new Set();
-const movedProcLines = [];
+const moves = []; // { dbUrl, procLine }
+const dupDrops = []; // db urls of stale Pendientes copies
 const moved = [];
 const skippedNoReport = [];
 
-for (let i = pendStart + 1; i < pendEnd; i++) {
-  if (!PENDING_ITEM_RE.test(lines[i])) continue; // blank lines, "- [!]" errors → keep
-  const body = lines[i].replace(PENDING_ITEM_RE, '');
+for (const row of pendingRows) {
+  if (!PENDING_ITEM_RE.test(row.raw)) continue; // "- [!]" errors → keep
+  const body = row.raw.replace(PENDING_ITEM_RE, '');
   const url = lineUrl(body);
   const done = DONE.get(url);
   if (!done) continue; // not processed → keep in Pendientes
 
   if (procUrls.has(url)) {
     // Already recorded in Procesadas — just drop the stale Pendientes copy.
-    removeIdx.add(i);
+    dupDrops.push(row.url);
     moved.push({ url, role: '(already in Procesadas)', dup: true });
     continue;
   }
@@ -246,64 +183,32 @@ for (let i = pendStart + 1; i < pendEnd; i++) {
   const pdf = resolvePdf(reportFile);
   const num = parseInt(done.reportNum, 10);
 
-  const reportLink = normalizeReportLink(`[${num}](reports/${reportFile})`, dirname(PIPELINE_FILE), CAREER_OPS);
-  movedProcLines.push(`- [x] ${reportLink} | ${url} | ${company} | ${role} | ${score} | PDF ${pdf}`);
+  const reportLink = normalizeReportLink(`[${num}](reports/${reportFile})`, PIPELINE_LINK_BASE, CAREER_OPS);
+  moves.push({
+    dbUrl: row.url,
+    procLine: `- [x] ${reportLink} | ${url} | ${company} | ${role} | ${score} | PDF ${pdf}`,
+  });
   moved.push({ url, company, role, num, score });
   procUrls.add(url);
-  removeIdx.add(i);
 }
 
 // ---- report & exit early if nothing changed ----
-console.log('=== Reconcile pipeline.md ===');
+console.log('=== Reconcile pipeline ===');
 for (const s of skippedNoReport) {
   console.warn(`⚠️  ${s.url} — batch reports report #${s.reportNum} but no reports/${s.reportNum}-*.md found; left in Pendientes.`);
 }
 
-if (removeIdx.size === 0) {
-  console.log('✅ pipeline.md already in sync — nothing to reconcile.');
+if (moves.length === 0 && dupDrops.length === 0) {
+  console.log('✅ pipeline already in sync — nothing to reconcile.');
   process.exit(0);
 }
-
-// ---- rebuild the file ----
-const out = [];
-let skipBlankAfterProc = false;
-for (let i = 0; i < lines.length; i++) {
-  if (removeIdx.has(i)) continue;
-  if (skipBlankAfterProc) {
-    skipBlankAfterProc = false;
-    if (lines[i].trim() === '') continue; // drop the original blank after "## Procesadas"
-  }
-  out.push(lines[i]);
-  if (i === procStart && movedProcLines.length > 0) {
-    out.push('', ...movedProcLines);
-    skipBlankAfterProc = true;
-  }
-}
-// No Procesadas section yet — create one at the end of the file, matching the
-// language the pending section header already uses.
-if (procStart < 0 && movedProcLines.length > 0) {
-  const processedHeader = /Pending/i.test(lines[pendStart]) ? '## Processed' : '## Procesadas';
-  if (out.length && out[out.length - 1].trim() !== '') out.push('');
-  out.push(processedHeader, '', ...movedProcLines);
-}
-
-const newContent = out.join('\n');
-
-const newCount = (() => {
-  let n = 0, inPend = false;
-  for (const l of out) {
-    if (PENDING_RE.test(l)) { inPend = true; continue; }
-    if (SECTION_RE.test(l)) { inPend = false; continue; }
-    if (inPend && PENDING_ITEM_RE.test(l)) n++;
-  }
-  return n;
-})();
 
 const realMoves = moved.filter(m => !m.dup);
 console.log(`🔄 ${realMoves.length} processed entr${realMoves.length === 1 ? 'y' : 'ies'} moved Pendientes → Procesadas:`);
 for (const m of realMoves) console.log(`   + #${m.num} ${m.company} — ${m.role} (${m.score})`);
 const dups = moved.filter(m => m.dup);
 if (dups.length) console.log(`🧹 ${dups.length} stale Pendientes entr${dups.length === 1 ? 'y' : 'ies'} dropped (already in Procesadas).`);
+const newCount = pendingRows.length - moves.length - dupDrops.length;
 console.log(`📋 Pendientes now: ${newCount} entr${newCount === 1 ? 'y' : 'ies'}`);
 
 if (DRY_RUN) {
@@ -311,6 +216,10 @@ if (DRY_RUN) {
   process.exit(0);
 }
 
-copyFileSync(PIPELINE_FILE, `${PIPELINE_FILE}.pre-reconcile.bak`);
-writeFileSync(PIPELINE_FILE, newContent);
-console.log(`✅ pipeline.md updated (backup: ${PIPELINE_FILE}.pre-reconcile.bak)`);
+db.tx(() => {
+  for (const mv of moves) {
+    db.updatePipelineItem(mv.dbUrl, { section: 'processed', checked: 1, raw: mv.procLine });
+  }
+  for (const staleUrl of dupDrops) db.deletePipelineItem(staleUrl);
+});
+console.log(`✅ pipeline updated (${db.resolveDbPath()})`);

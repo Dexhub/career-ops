@@ -22,7 +22,7 @@ The User Layer location (Data Root) is resolved dynamically using the following 
 3. **Repository Default:** If neither is present, the repository root directory itself is used.
 
 **Single Data Store (db-migration branch — CRITICAL):**
-All tracking/state data lives in ONE SQLite database: `{DATA_ROOT}/data/career-ops.db`, accessed exclusively through `core/db.mjs` (node:sqlite, WAL). `CAREER_OPS_DB` overrides the path (tests). The former file stores are RETIRED and must not be read or written: `data/applications.md`, `data/pipeline.md`, `data/follow-ups.md`, `data/status-log.tsv`, `data/scan-history.tsv`, `data/scan-runs.tsv`, `data/portal-health.tsv`, `data/dead-boards.tsv`, `data/pdf-index.tsv`, `batch/batch-state.tsv`, `data/auto/jobs/*.json`. One-time import: `migrate-to-db.mjs`. Reports (`reports/*.md`), PDFs (`output/`), config YAMLs, audit dirs, and logs remain ordinary files. The old directory-lock protocols (tracker lock, pipeline lock) are obsolete — SQLite WAL + `db.tx()` handle concurrency. `CAREER_OPS_TRACKER` is obsolete.
+All tracking/state data lives in ONE SQLite database: `{DATA_ROOT}/data/career-ops.db`, accessed exclusively through `core/db.mjs` (node:sqlite, WAL). `CAREER_OPS_DB` overrides the path (tests). The former file stores are RETIRED and must not be read or written: `data/applications.md`, `data/pipeline.md`, `data/follow-ups.md`, `data/status-log.tsv`, `data/scan-history.tsv`, `data/scan-runs.tsv`, `data/portal-health.tsv`, `data/dead-boards.tsv`, `data/pdf-index.tsv`, `batch/batch-state.tsv`, `data/auto/jobs/*.json`. One-time import: `migrate-to-db.mjs`. Reports (`reports/*.md`), PDFs (`output/`), config YAMLs, audit dirs, and logs remain ordinary files. For db-backed stores the old directory-lock protocols are obsolete — SQLite WAL + `db.tx()` handle concurrency; `pipeline-lock.mjs` remains live only for the stores that stayed files (`data/agent-inbox.md`, career profile, contacts). `CAREER_OPS_TRACKER` is obsolete.
 
 ## Source-of-Truth Boundary (CRITICAL)
 
@@ -109,9 +109,9 @@ AI-powered, CLI-agnostic job search automation: pipeline tracking, offer evaluat
 |------|----------|
 | `data/applications.md` | Application tracker |
 | `data/career-profile.yml` | Source-backed Master Career Profile (created after explicit CV-fact review) |
-| `data/pipeline.md` | Inbox of pending URLs |
-| `data/scan-history.tsv` | Scanner dedup history |
-| `data/scan-runs.tsv` | Per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
+| `pipeline_items` (db) | Inbox of pending URLs |
+| `scan_history` (db) | Scanner dedup history (one row per URL, upserted) |
+| `scan_runs` (db) | Per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
 | `data/follow-ups.md` | Follow-up history tracker |
 | `data/blacklist.md` | Do-not-apply companies (user layer, opt-in, never auto-populated; respected by `scan.mjs` and the `auto-pipeline`/`oferta`/`apply` gates) |
 | `data/salary-observations.tsv` | Append-only salary observation log (user layer) |
@@ -145,7 +145,7 @@ AI-powered, CLI-agnostic job search automation: pipeline tracking, offer evaluat
 | `company-history.mjs` | Read-only per-company evidence card joining the tracker, follow-ups, scan history and the status-log (JSON or `--summary`) |
 | `followup-cadence.mjs` | Follow-up cadence calculator (JSON) |
 | `followup-seed.mjs` | Seeds `data/follow-ups.md` with a pinned first follow-up date when a row turns Applied (JSON) |
-| `detect-reposts.mjs` | Flags roles re-listed 2+ times in 90 days from `scan-history.tsv` — requires 2+ distinct URLs seen on 2+ distinct scan dates (`--min-span`) with the same title identity, so concurrent per-city/country/segment openings are not mistaken for reposts (JSON or `--summary`) |
+| `detect-reposts.mjs` | Flags roles re-listed 2+ times in 90 days from the `scan_history` table — requires 2+ distinct URLs seen on 2+ distinct scan dates (`--min-span`) with the same title identity, so concurrent per-city/country/segment openings are not mistaken for reposts (JSON or `--summary`) |
 | `check-table-freshness.mjs` | Staleness validator for jurisdiction data tables — flags `expired` rows (past `next_effective` without re-verification, exit 1) and `review-due` rows (`as_of` older than 12 months, soft); discovers any `templates/*.yml` with `as_of` rows automatically (JSON or `--summary` table output) |
 | `process-quality.mjs` | Per-company recruiting-friction rate from `[process-friction]` tags in `data/active-interviews.md` Notes (JSON or `--summary`) |
 | `rejection-latency.mjs` | Post-interview response-latency signal — flags companies still in `Interview` state whose silence since the last `data/active-interviews.md` round exceeds a courtesy (30d default, configurable) threshold, with a ready-to-copy `data/blacklist.md` suggestion row; suggestion-only, never writes (JSON or `--summary` table output) |
@@ -461,7 +461,7 @@ Job aggregators keep stale, filled, and ghost listings live long after the emplo
 
 1. Identify the employer, then locate the same role on the **employer's own careers page / ATS** (Greenhouse, Lever, Ashby, Workday, or the company's `/careers`). Same Playwright discipline as above.
 2. **Found at the employer → the employer URL is canonical.** Use it as the report `**URL:**` and apply direct, never through the aggregator.
-3. **Not found at the employer → treat as stale.** Do not apply and do not present it as live. Mark it in `data/scan-history.tsv`; if it is already in the tracker, run `node set-status.mjs <report#|company> Discarded --note "not found at employer"` — never silently delete the record, since that is what stops it being re-added as new on the next scan.
+3. **Not found at the employer → treat as stale.** Do not apply and do not present it as live. Mark it in the `scan_history` table; if it is already in the tracker, run `node set-status.mjs <report#|company> Discarded --note "not found at employer"` — never silently delete the record, since that is what stops it being re-added as new on the next scan.
 4. **Employer has no careers page / ATS you can find → leave it UNCONFIRMED, not stale.** Keep the aggregator URL and tell the user the role could not be confirmed at the employer.
 5. **Employer unidentifiable** (some aggregator and agency posts hide the company) → that is a **Block G posting-legitimacy signal**, not a research gap. Report it and stop. NEVER infer, guess, or invent the employer.
 
