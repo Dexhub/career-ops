@@ -34,12 +34,12 @@ assert.deepEqual(panelOrder(ranked), workerOrder(ranked));
 **Modify:** `auto/lib/config.mjs`, `auto/run.mjs`, `auto/apply-worker.mjs`, `auto/panel.mjs`; **Create:** `auto/test/learning-policy.test.mjs`.
 **Consumes:** existing score/ATS/retry/time settings and new learning config.
 
-- [ ] Add tests showing the current timeout-path and hardcoded-attempt bugs: changing `agent.timeout_minutes` and `max_attempts` must affect actual injected executor arguments and picking/finalization.
-- [ ] Resolve policy once per attempt, validate its schema/ranges, calculate a stable version digest, and persist the version before execution. Read timeout from `agent.timeout_minutes`; remove competing worker constants that ignore configurable limits.
-- [ ] Enforce the configured ATS allowlist, score threshold, fact-gated resume, daily cap, pause/hold state, source availability and browser capabilities in the actual dispatcher/worker path. Reject a changed or missing required source before spending browser time.
-- [ ] Preview how enforcement changes the existing backlog, including Workday jobs that may have historical authorization but are absent from the current config. Ask the operator to reconcile intent with config during activation. Do not silently expand the allowlist or claim those historical applications were unauthorized.
-- [ ] Pin settings for a running attempt. New limits take effect at safe boundaries; shrinking a limit must not silently terminate a potentially submitted operation and requeue it. Surface a pending policy change.
-- [ ] Run `node --test auto/test/learning-policy.test.mjs`. Expected: UI control, dispatcher, worker and recorded policy agree; invalid or unsupported values produce explicit refusal, not defaults that contradict the saved choice.
+- [x] Add tests showing the current timeout-path and hardcoded-attempt bugs: changing `agent.timeout_minutes` and `max_attempts` must affect actual injected executor arguments and picking/finalization.
+- [x] Resolve policy once per attempt, validate its schema/ranges, calculate a stable version digest, and persist the version before execution. Read timeout from `agent.timeout_minutes`; remove competing worker constants that ignore configurable limits.
+- [x] Enforce the configured ATS allowlist, score threshold, fact-gated resume, daily cap, pause/hold state, source availability and browser capabilities in the actual dispatcher/worker path. Reject a changed or missing required source before spending browser time.
+- [x] Preview how enforcement changes the existing backlog, including Workday jobs that may have historical authorization but are absent from the current config. Ask the operator to reconcile intent with config during activation. Do not silently expand the allowlist or claim those historical applications were unauthorized.
+- [x] Pin settings for a running attempt. New limits take effect at safe boundaries; shrinking a limit must not silently terminate a potentially submitted operation and requeue it. Surface a pending policy change.
+- [x] Run `node --test auto/test/learning-policy.test.mjs`. Expected: UI control, dispatcher, worker and recorded policy agree; invalid or unsupported values produce explicit refusal, not defaults that contradict the saved choice.
 
 ## T13. Persist answer blockers and account-verification waits
 

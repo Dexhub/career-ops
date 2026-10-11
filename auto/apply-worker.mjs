@@ -25,19 +25,19 @@ import { flagValue, hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 import { getCareerOpsRoot } from '../path-resolver.mjs';
-import { loadAutoConfig, loadStandingAnswers } from './lib/config.mjs';
+import { loadAutoConfig, loadStandingAnswers, resolveExecutionPolicy } from './lib/config.mjs';
 import { createLearningContext, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
-import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, updateJob } from './state.mjs';
+import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
 const LEARNING_PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit-learning.md');
 const CHROME_PROFILE = join(ROOT, 'data', 'auto', 'chrome-profile');
 const ACCOUNTS_FILE = join(ROOT, 'data', 'auto', 'accounts.json'); // gitignored (data/*)
-const DEFAULT_TIMEOUT_MINS = 25;
-const MAX_ATTEMPTS = 2;
+// Timeout and attempt budget come from the resolved execution policy
+// (config/auto.yml via resolveExecutionPolicy) — no competing constants.
 
 // ---------------------------------------------------------------------------
 // Prompt rendering
@@ -350,17 +350,50 @@ function appKey(job) {
   return `${num}-${slugifySegment(job.company)}-${slugifySegment(job.role, 'role')}`;
 }
 
-function pickJob(needle) {
+function pickJob(needle, maxAttempts) {
   const candidates = listJobs(['resume_ready', 'applying']);
   const pool = needle
     ? candidates.filter(j => j.urlKey.includes(needle) || (j.company || '').includes(needle))
-    : pickOrder(candidates, MAX_ATTEMPTS, queueOrderOptions()); // THE shared comparator + shared options; held excluded
+    : pickOrder(candidates, maxAttempts, queueOrderOptions()); // THE shared comparator + shared options; held excluded
   if (pool.length === 0) return null;
   return loadJob(pool[0].urlKey);
 }
 
+/**
+ * T12 dispatch gate, evaluated at execution grain in the REAL worker path
+ * before any attempt is allocated or any executor/browser time is spent.
+ * Returns a human-readable refusal reason, or null when dispatch is allowed.
+ * ATS allowlist and holds gate every run (dry runs drive a browser too);
+ * score/daily-cap/pause gate submissions only. Never mutates the job and
+ * never consumes the pause sentinel.
+ */
+export function dispatchPolicyBlock(job, policy, { dataRoot, submit = true, now = new Date() } = {}) {
+  if (job.held) return `policy: job is held (${job.urlKey})`;
+  const ats = (job.ats || '').trim();
+  if (!policy.atsAllowlist.includes(ats)) {
+    return `policy: ats "${ats || 'unknown'}" is not in the allowlist [${policy.atsAllowlist.join(', ')}]`;
+  }
+  if (!submit) return null;
+  if (job.score != null && Number(job.score) < policy.scoreThreshold) {
+    return `policy: score ${job.score} below threshold ${policy.scoreThreshold}`;
+  }
+  const today = now.toISOString().slice(0, 10);
+  const submitted = submittedCountOn(today);
+  if (submitted >= policy.dailySoftLimit) {
+    return `policy: daily soft limit reached (${submitted}/${policy.dailySoftLimit})`;
+  }
+  if (existsSync(join(dataRoot, 'data', 'auto', 'pause-requested'))) {
+    return 'policy: pause requested — not dispatching';
+  }
+  return null;
+}
+
 export async function runApply({ needle, submit = true, agent = 'claude', timeoutMins, executor = null, log = console.log } = {}) {
-  const cfg = loadAutoConfig();
+  const cfg = loadAutoConfig({ fresh: true });
+  // T12: resolve + validate the ONE execution policy up front. Garbled or
+  // out-of-range config is an explicit refusal (POLICY_INVALID) before any
+  // job is picked — never a silent fallback to defaults.
+  const policy = resolveExecutionPolicy({ cfg });
   const standing = loadStandingAnswers();
   if (!standing || standing.filled_in_by_user !== true) {
     throw new Error('apply-worker: config/standing-answers.yml missing or filled_in_by_user is not true — refusing to start');
@@ -372,11 +405,42 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   // it differs only under test fixtures with CAREER_OPS_ROOT redirected.
   const dataRoot = learning ? learning.ctx.dataRoot : ROOT;
 
-  let job = pickJob(needle);
+  let job = pickJob(needle, policy.maxAttempts);
   if (!job) { log('apply-worker: no resume_ready job found'); return null; }
-  if (!job.resumePdf || !existsSync(job.resumePdf)) {
-    throw new Error(`apply-worker: resume PDF missing for ${job.company}: ${job.resumePdf}`);
+
+  // Dispatch gate BEFORE preflight, allocation, and any browser/agent time.
+  // A refusal mutates nothing: the job stays where it is, visibly, and the
+  // backlog preview (panel /api/auto/policy-preview) explains why.
+  const blocked = dispatchPolicyBlock(job, policy, { dataRoot, submit });
+  if (blocked) {
+    log(`apply-worker: ${blocked} — refusing to dispatch ${job.company}`);
+    return { job, auditDir: null, verdict: { ok: false, status: 'policy_blocked', reason: blocked } };
   }
+
+  // Required sources read (and hashed) BEFORE allocating or claiming the
+  // attempt: a changed-on-disk resume or a missing profile/CV/standing file
+  // refuses the launch without burning an attempt or creating an audit dir.
+  if (!job.resumePdf || !existsSync(job.resumePdf)) {
+    throw new Error(`apply-worker: required source missing or unreadable — resume PDF for ${job.company}: ${job.resumePdf}`);
+  }
+  let sources;
+  try {
+    sources = {
+      profileYaml: readFileSync(join(dataRoot, 'config', 'profile.yml'), 'utf8'),
+      standingYaml: readFileSync(join(dataRoot, 'config', 'standing-answers.yml'), 'utf8'),
+      cvText: readFileSync(join(dataRoot, 'cv.md'), 'utf8'),
+      resumePdf: readFileSync(job.resumePdf),
+    };
+  } catch (err) {
+    throw new Error(`apply-worker: required source missing or unreadable — refusing before launch: ${err.message}`);
+  }
+  const resumeSha = createHash('sha256').update(sources.resumePdf).digest('hex');
+  const sourceVersion = `src1-${createHash('sha256').update(JSON.stringify({
+    profile: createHash('sha256').update(sources.profileYaml).digest('hex'),
+    standing: createHash('sha256').update(sources.standingYaml).digest('hex'),
+    cv: createHash('sha256').update(sources.cvText).digest('hex'),
+    resume: resumeSha,
+  })).digest('hex').slice(0, 16)}`;
 
   if (learning) {
     // Executor preflight BEFORE claiming the attempt: a missing capability is
@@ -396,7 +460,10 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   let attempt = null;
   let auditDir;
   if (submit) {
-    attempt = allocateAttempt({ job, auditRoot });
+    // Pin the policy and source versions onto the immutable attempt: the
+    // attempt runs under the policy it started with, and later config edits
+    // surface as a pending policy change instead of rewriting history.
+    attempt = allocateAttempt({ job, auditRoot, policyVersion: policy.policyVersion, sourceVersion });
     auditDir = attempt.auditDir;
   } else {
     auditDir = join(auditRoot, `attempt-dryrun-${Date.now()}`);
@@ -407,14 +474,14 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     job,
     submit,
     auditDir,
-    profileYaml: readFileSync(join(dataRoot, 'config', 'profile.yml'), 'utf8'),
-    standingYaml: readFileSync(join(dataRoot, 'config', 'standing-answers.yml'), 'utf8'),
-    cvText: readFileSync(join(dataRoot, 'cv.md'), 'utf8'),
-    resumeSha: createHash('sha256').update(readFileSync(job.resumePdf)).digest('hex'),
+    profileYaml: sources.profileYaml,
+    standingYaml: sources.standingYaml,
+    cvText: sources.cvText,
+    resumeSha,
   }, { learning, attemptId: attempt?.attemptId ?? null });
   // resume.txt per the audit contract: variant + sha of the exact PDF.
   writeFileSync(join(auditDir, 'resume.txt'),
-    `variant: ${job.resumeVariant}\npdf: ${job.resumePdf}\nsha256: ${createHash('sha256').update(readFileSync(job.resumePdf)).digest('hex')}\n`);
+    `variant: ${job.resumeVariant}\npdf: ${job.resumePdf}\nsha256: ${resumeSha}\n`);
   if (learning) {
     // Trusted identity binding for the attempt subcommands (learn.mjs reads
     // this, never the executor's own claims).
@@ -447,6 +514,10 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
             policyVersion: attempt.policyVersion,
             sourceVersion: attempt.sourceVersion,
             procedureVersion: attempt.procedureVersion,
+            // The concrete limits this attempt runs under, pinned for the
+            // recovery path: a later shrink of max_attempts surfaces as a
+            // pending policy change instead of silently failing the job.
+            pinnedPolicy: { maxAttempts: policy.maxAttempts, timeoutMinutes: policy.timeoutMinutes },
           },
         },
       });
@@ -471,12 +542,12 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     ? await runInjectedExecutor({
       executor, prompt, auditDir, job,
       attemptId: attempt?.attemptId ?? null, submit,
-      timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
+      timeoutMins: timeoutMins ?? policy.timeoutMinutes,
       log,
     })
     : runAgent({
       agent: agentUsed, prompt, auditDir,
-      timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
+      timeoutMins: timeoutMins ?? policy.timeoutMinutes,
       model: agentUsed === 'codex' ? agentCfg.codex_model : agentCfg.claude_model,
       smallFastModel: agentCfg.claude_small_fast_model,
       log,
@@ -519,7 +590,7 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
 
   // The agent run is long: re-load fresh state so panel decisions made in the
   // meantime (hold, priority, ...) are not clobbered by the final patch.
-  return finalizeVerdict(loadJob(job.urlKey), auditDir, verdict, attemptNo, log);
+  return finalizeVerdict(loadJob(job.urlKey), auditDir, verdict, attemptNo, policy.maxAttempts, log);
 }
 
 /** Mark the job Applied in the web tracker (data/applications.md) so the
@@ -560,7 +631,7 @@ export function syncTrackerApplied(job, auditDir, log = console.log) {
   return true;
 }
 
-async function finalizeVerdict(job, auditDir, verdict, attemptNo, log = console.log) {
+async function finalizeVerdict(job, auditDir, verdict, attemptNo, maxAttempts, log = console.log) {
   // Narrow patches on the fresh record inside one transaction: concurrent
   // panel edits (held/priority) survive the worker's final write.
   let updated;
@@ -569,7 +640,7 @@ async function finalizeVerdict(job, auditDir, verdict, attemptNo, log = console.
     syncTrackerApplied(updated, auditDir, log);
   } else if (verdict.ok && verdict.status === 'parked') {
     updated = await updateJob(job.urlKey, { transitionTo: 'parked', patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
-  } else if (attemptNo >= MAX_ATTEMPTS) {
+  } else if (attemptNo >= maxAttempts) {
     updated = await updateJob(job.urlKey, { transitionTo: 'failed', patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
   } else {
     // stay in applying; next cycle retries once more

@@ -340,3 +340,58 @@ have pushed edits into the restart window. Each file was edited atomically;
 all suites green before any new cycle could start. Pause sentinel untouched
 (consumed earlier by the runner itself, not by this task).
 Commit: (pending — coordinator commits)
+
+## 2026-10-11 — T12 Resolve and enforce one execution policy
+
+Files: auto/lib/config.mjs (+POLICY_RANGES, resolveExecutionPolicy,
+previewPolicyEnforcement), auto/apply-worker.mjs (dispatchPolicyBlock, policy
+pinning, source-version gate, constants removed), auto/run.mjs (policy-based
+recovery/limits, pending-policy-change surfacing, no jitter after refusals),
+auto/panel.mjs (EDITABLE_CONFIG derives from POLICY_RANGES, agent.timeout_minutes
+editable, GET /api/auto/policy-preview), auto/test/learning-policy.test.mjs
+(NEW, 17 tests), auto/test/learning-worker-integration.test.mjs (fixture
+auto.yml now allowlists its synthetic ATS — required by the new enforcement,
+assertions unchanged).
+
+Bugs fixed: (1) worker read cfg.apply?.timeout_minutes (never set) so
+agent.timeout_minutes was ignored in favor of DEFAULT_TIMEOUT_MINS=25;
+(2) picking + finalization used hardcoded MAX_ATTEMPTS=2, ignoring
+config max_attempts. Both constants removed; policy is the only source.
+
+One policy: resolveExecutionPolicy validates schema/ranges (shared table
+POLICY_RANGES, reused verbatim by the panel) and digests the enforced values
+into policyVersion (p1-<sha256/16>). Garbled/out-of-range config -> explicit
+POLICY_INVALID refusal, never silent defaults. Per attempt: policyVersion +
+sourceVersion (digest of profile/standing/cv/resume bytes, read BEFORE
+allocation) + pinnedPolicy{maxAttempts,timeoutMinutes} persist in the CAS
+claim before launch. Recovery honors pinned max: shrinking max_attempts logs
+"policy change pending" and leaves the job in applying for reconciliation
+instead of retro-failing it.
+
+Enforcement (real worker path, before preflight/allocation/browser): held,
+ATS allowlist (empty/unknown ats refused; allowlist+hold gate dry runs too),
+score threshold, daily cap, pause sentinel (checked, NEVER consumed), missing
+sources (throw before any attempt dir). run.mjs skips the jitter sleep after
+a policy_blocked verdict so a blocked backlog doesn't stall the cycle.
+
+Backlog preview vs LIVE data (read-only): 37/50 actionable jobs are workday
+-> would now be refused dispatch (allowlist comment always claimed this);
+23/73 submitted used workday — surfaced via historicalOutsideAllowlist for
+operator reconciliation, explicitly NOT retro-labeled, allowlist unchanged.
+0 below threshold, 0 held, 0 over attempts. THIS IS THE ONE INTENDED
+BEHAVIOR CHANGE beyond the two bug fixes: operator must either extend
+ats_allowlist (e.g. add workday) or park those 37 jobs during activation.
+
+Tests: 17/17 new; full node --test auto/test/learning-*.test.mjs -> 170 pass
+0 fail; state/run/apply-worker/panel self-tests pass; node --check clean.
+
+INCIDENT (pre-existing hazard, repaired): panel.mjs --self-test, when no
+cycle is running, exercises requestPause()/cancelPause() against the LIVE
+data/auto/pause-requested sentinel and consumed the operator's pause flag
+(same class as the 2026-10-09 run.mjs incident; the live cycle had exited
+minutes earlier so the guard "skip when running" did not trip). Flag restored
+immediately (pauseRequested:true, desired running:false, no cycle started —
+the self-test's /bin/sleep stand-in was stopped by its own stopCycle check).
+Recommended follow-up (not in T12 scope): give panel selfTest an injectable
+pause flag/desired file like run.mjs already has.
+Commit: (pending — coordinator commits)

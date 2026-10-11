@@ -24,7 +24,7 @@ import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileS
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { listJobs, loadJob, pickOrder, queueOrderOptions, saveJob, transition, updateJob, submittedCountOn, STAGES } from './state.mjs';
-import { AUTO_CONFIG_PATH, loadAutoConfig } from './lib/config.mjs';
+import { AUTO_CONFIG_PATH, loadAutoConfig, POLICY_RANGES, previewPolicyEnforcement, resolveExecutionPolicy } from './lib/config.mjs';
 import { loadRadar, saveRadar } from './radar.mjs';
 import { agentFlags, setAgentEnabled } from './lib/agent-flags.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
@@ -279,12 +279,16 @@ export async function editQueue(urlKey, action) {
 
 // ---------- config editing (whitelisted auto.yml fields) ----------
 
+// Policy fields take their kind/min/max from POLICY_RANGES — the SAME table
+// resolveExecutionPolicy() validates against (T12), so the panel can never
+// accept a value the dispatcher refuses, or vice versa.
 export const EDITABLE_CONFIG = Object.freeze({
-  score_threshold:        { kind: 'number', min: 0, max: 5,    label: 'Score threshold', help: 'jobs scoring ≥ this are queued to apply' },
-  daily_soft_limit:       { kind: 'int',    min: 1, max: 1000, label: 'Daily submit limit', help: 'applies stop for the day once reached' },
-  jitter_min_minutes:     { kind: 'int',    min: 0, max: 120,  label: 'Jitter min (minutes)', help: 'random pause between applies, lower bound' },
-  jitter_max_minutes:     { kind: 'int',    min: 0, max: 240,  label: 'Jitter max (minutes)', help: 'random pause between applies, upper bound' },
-  max_attempts:           { kind: 'int',    min: 1, max: 5,    label: 'Max apply attempts', help: 'after this many errors a job is failed/parked' },
+  score_threshold:        { ...POLICY_RANGES.score_threshold,         label: 'Score threshold', help: 'jobs scoring ≥ this are queued to apply' },
+  daily_soft_limit:       { ...POLICY_RANGES.daily_soft_limit,        label: 'Daily submit limit', help: 'applies stop for the day once reached' },
+  jitter_min_minutes:     { ...POLICY_RANGES.jitter_min_minutes,      label: 'Jitter min (minutes)', help: 'random pause between applies, lower bound' },
+  jitter_max_minutes:     { ...POLICY_RANGES.jitter_max_minutes,      label: 'Jitter max (minutes)', help: 'random pause between applies, upper bound' },
+  max_attempts:           { ...POLICY_RANGES.max_attempts,            label: 'Max apply attempts', help: 'after this many errors a job is failed/parked' },
+  'agent.timeout_minutes': { ...POLICY_RANGES['agent.timeout_minutes'], label: 'Apply timeout (minutes)', help: 'hard wall-clock cap per apply attempt' },
   'eval.model':           { kind: 'string', pattern: '^[\\w./:@-]+$', label: 'Eval model', help: 'model id on the local eval endpoint' },
   'eval.limit_per_cycle': { kind: 'int',    min: 1, max: 500,  label: 'Evals per cycle', help: 'max new postings ranked each cycle' },
 });
@@ -696,6 +700,17 @@ export function createPanelServer() {
           return send(res, 200, await editQueue(body.key, body.action));
         }
         if (req.method === 'GET' && p === '/api/auto/config') return send(res, 200, configPayload());
+        if (req.method === 'GET' && p === '/api/auto/policy-preview') {
+          // Read-only: what the current policy would block in the existing
+          // backlog, plus historical submissions outside the allowlist
+          // (surfaced for reconciliation, never retro-labeled).
+          try {
+            const policy = resolveExecutionPolicy({ cfg: loadAutoConfig({ fresh: true }) });
+            return send(res, 200, { policy, preview: previewPolicyEnforcement(listJobs(), policy) });
+          } catch (err) {
+            return send(res, 500, { error: err.message, code: err.code ?? null });
+          }
+        }
         if (req.method === 'POST' && p === '/api/auto/config') {
           const body = await readBody(req);
           return send(res, 200, updateConfig(body.patch ?? body));

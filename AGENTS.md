@@ -542,7 +542,13 @@ Rules for agents working here:
   (unlinks) the pause flag when it honors it, so library callers — including
   `node auto/run.mjs --self-test` — must pass their own `pauseFlag` path to
   `runCycle` or they will eat a live pause request (happened 2026-10-09 and
-  again 2026-10-11; the self-test now injects a tmp path).
+  again 2026-10-11; the self-test now injects a tmp path). Same hazard,
+  different door: `node auto/panel.mjs --self-test` runs its start/stop checks
+  (incl. `requestPause()`/`cancelPause()` on the LIVE sentinel) whenever no
+  cycle is running — it cleared a live pause flag on 2026-10-11. Do not run
+  the panel self-test while an operator pause is meant to stay set, or
+  restore `data/auto/pause-requested` afterward (unfixed; needs an injectable
+  flag path like run.mjs).
 - The upstream web UI still runs as an always-on service
   (`io.career-ops.web-ui`, http://127.0.0.1:3003, production build) behind the
   proxy (port overridable via `CAREER_OPS_WEB_PORT`). Serving the UI is fine;
@@ -588,6 +594,24 @@ draft proposal, never a personal fact. Rules: nothing executes at import
 time; learning modules never import `core/db.mjs` (the `learn.mjs` CLI is
 allowed read-only db access for discovery but currently needs only
 `path-resolver.mjs`); no new dependencies.
+Execution policy (T12): `auto/lib/config.mjs` exports `POLICY_RANGES` (one
+validation table shared with the panel's Settings whitelist),
+`resolveExecutionPolicy()` (frozen, digested `policyVersion`; garbled or
+out-of-range config throws `POLICY_INVALID` — never silent defaults) and
+`previewPolicyEnforcement()` (pure backlog preview; panel `GET
+/api/auto/policy-preview`). `apply-worker.mjs` enforces held/ATS-allowlist
+(dry runs too) and score/daily-cap/pause (submit path) via
+`dispatchPolicyBlock` BEFORE preflight or attempt allocation; required
+sources are read+hashed before `allocateAttempt`, and each attempt pins
+`policyVersion`/`sourceVersion`/`execution.pinnedPolicy`. Fixed bugs:
+`agent.timeout_minutes` now reaches the executor (was hardcoded 25 via a
+dead `cfg.apply.*` read) and `max_attempts` is honored in picking,
+finalization and recovery (was hardcoded 2). Recovery leaves a stale
+applying job whose pinned maxAttempts still has budget in `applying`
+("policy change pending") instead of retro-failing it. Note: the default
+allowlist excludes Workday, so Workday backlog jobs are now refused dispatch
+until the operator reconciles `ats_allowlist` (historical Workday
+submissions are surfaced by the preview, not retro-labeled).
 Tests: `node --test auto/test/learning-*.test.mjs` — isolated via
 `auto/test/helpers/learning.mjs` (mkdtemp fixture sets `CAREER_OPS_ROOT` +
 `CAREER_OPS_DB`); they never touch the live checkout or data.

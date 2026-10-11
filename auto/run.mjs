@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { acquirePipelineLock } from '../pipeline-lock.mjs';
 import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
-import { loadAutoConfig } from './lib/config.mjs';
+import { loadAutoConfig, resolveExecutionPolicy } from './lib/config.mjs';
 import { listJobs, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 import { learningRuntime, runApply } from './apply-worker.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
@@ -149,9 +149,20 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   // Recovery: a job left in `applying` at max attempts (e.g. the worker was
   // killed mid-apply on its last try) can never complete — mark it failed so
   // it stops shadowing the queue and shows up in the digest.
+  const policy = resolveExecutionPolicy({ cfg }); // T12: explicit refusal on garbled config
   const learning = learningRuntime(log); // null unless config/learning.yml enables it
   for (const stale of listJobs('applying')) {
-    if ((stale.attempts || 0) >= (cfg.max_attempts ?? 2)) {
+    if ((stale.attempts || 0) >= policy.maxAttempts) {
+      // Shrink safety: an in-flight attempt keeps the policy it started
+      // with. When the recorded (pinned) max_attempts still has budget, the
+      // limit change surfaces as pending reconciliation — never a silent
+      // retro-fail under the new, narrower policy.
+      const pinnedMax = stale.execution?.pinnedPolicy?.maxAttempts;
+      if (Number.isInteger(pinnedMax) && (stale.attempts || 0) < pinnedMax) {
+        log(`run: policy change pending for ${stale.company} — ${stale.attempts} attempt(s) within pinned max ${pinnedMax},`
+          + ` current limit ${policy.maxAttempts}; leaving in applying for operator reconciliation`);
+        continue;
+      }
       const job = await updateJob(stale.urlKey, {
         transitionTo: 'failed',
         patch: { lastError: stale.lastError || 'exhausted attempts (stale applying)' },
@@ -174,7 +185,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
     }
   }
 
-  const limit = cfg.daily_soft_limit ?? 100;
+  const limit = policy.dailySoftLimit;
   const applied = new Set(); // one attempt per job per cycle
   for (;;) {
     if (existsSync(pauseFlag)) {
@@ -199,7 +210,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
       log(`run: daily soft limit reached (${submittedToday}/${limit}) — stopping applies`);
       break;
     }
-    const next = pickOrder(listJobs(['resume_ready', 'applying']), cfg.max_attempts ?? 2, queueOrderOptions())
+    const next = pickOrder(listJobs(['resume_ready', 'applying']), policy.maxAttempts, queueOrderOptions())
       .find((j) => !applied.has(j.urlKey));
     if (!next) {
       // Drained — but a background eval may still be queueing jobs. Wait for
@@ -213,11 +224,15 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
     }
     applied.add(next.urlKey);
 
+    let applyRes = null;
     try {
-      await apply({ needle: next.urlKey, agent: cfg.agent?.primary ?? 'claude', log });
+      applyRes = await apply({ needle: next.urlKey, agent: cfg.agent?.primary ?? 'claude', log });
     } catch (err) {
       console.warn(`run: apply error for ${next.company}: ${err.message} — continuing`);
     }
+    // A policy refusal spent no browser time: move straight to the next
+    // candidate instead of jitter-sleeping through a blocked backlog.
+    if (applyRes?.verdict?.status === 'policy_blocked') continue;
 
     const more = listJobs(['resume_ready']).some((j) => !applied.has(j.urlKey));
     if (more && submittedCountOn(today) < limit) {

@@ -164,7 +164,10 @@ function makeExecutor({ pages, outcome = 'submitted', failAfterPages = Infinity,
 before(async () => {
   fixture = createLearningFixture();
   // Config BEFORE any import that resolves roots at module load.
-  writeFileSync(join(fixture.dataRoot, 'config', 'auto.yml'), 'score_threshold: 4.0\n');
+  // T12: the dispatch policy now enforces the ATS allowlist in runApply, so
+  // the fixture's synthetic ATS family must be allowlisted for jobs to run.
+  writeFileSync(join(fixture.dataRoot, 'config', 'auto.yml'),
+    'score_threshold: 4.0\nats_allowlist:\n  - synthetic\n');
   writeFileSync(join(fixture.dataRoot, 'config', 'learning.yml'), LEARNING_YML_ON);
   writeFileSync(join(fixture.dataRoot, 'config', 'standing-answers.yml'), STANDING_YML);
   writeFileSync(join(fixture.dataRoot, 'config', 'profile.yml'), 'name: Fixture Person\n');
