@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS follow_up_next (
   set_date  TEXT NOT NULL DEFAULT ''
 );
 
+-- Retire directives (follow-ups.md "- cleared #N DATE" replacement): drops one
+-- application out of the follow-up cadence until a follow-up logged after
+-- set_date revives it. Follow-up loop only — never closes the application.
+CREATE TABLE IF NOT EXISTS follow_up_cleared (
+  app_num  INTEGER PRIMARY KEY,
+  set_date TEXT NOT NULL DEFAULT ''
+);
+
 -- data/pipeline.md replacement. section: 'pending' | 'processed'.
 -- raw preserves the original annotated line for processed entries.
 CREATE TABLE IF NOT EXISTS pipeline_items (
@@ -318,6 +326,7 @@ export function deleteApplication(num) {
     run('DELETE FROM status_events WHERE app_num = ?', [num]);
     run('DELETE FROM follow_ups WHERE app_num = ?', [num]);
     run('DELETE FROM follow_up_next WHERE app_num = ?', [num]);
+    run('DELETE FROM follow_up_cleared WHERE app_num = ?', [num]);
   });
 }
 
@@ -351,6 +360,13 @@ export function setFollowUpNext(appNum, nextDate, setDate) {
     [appNum, nextDate, setDate]);
 }
 export function clearFollowUpNext(appNum) { run('DELETE FROM follow_up_next WHERE app_num = ?', [appNum]); }
+export function listFollowUpCleared() { return all('SELECT * FROM follow_up_cleared ORDER BY app_num'); }
+export function setFollowUpCleared(appNum, setDate) {
+  run(`INSERT INTO follow_up_cleared (app_num, set_date) VALUES (?, ?)
+       ON CONFLICT(app_num) DO UPDATE SET set_date=excluded.set_date`,
+    [appNum, setDate]);
+}
+export function clearFollowUpCleared(appNum) { run('DELETE FROM follow_up_cleared WHERE app_num = ?', [appNum]); }
 
 // ---------- pipeline items (inbox) ----------
 export function listPipelineItems({ section, checked } = {}) {

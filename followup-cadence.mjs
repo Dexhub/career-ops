@@ -2,8 +2,10 @@
 /**
  * followup-cadence.mjs — Follow-up Cadence Tracker for career-ops
  *
- * Parses applications.md + follow-ups.md, calculates follow-up cadence
- * for active applications, extracts contacts, and flags overdue entries.
+ * Reads applications + follow-ups from data/career-ops.db (core/db.mjs),
+ * calculates follow-up cadence for active applications, extracts contacts,
+ * and flags overdue entries. The content-based parsers (parseFollowups,
+ * parseNextOverrides, …) remain exported for tests and legacy content.
  *
  * Run: node followup-cadence.mjs             (JSON to stdout)
  *      node followup-cadence.mjs --summary   (human-readable dashboard)
@@ -18,6 +20,7 @@ import * as yaml from 'js-yaml';
 import { loadCanonicalStates, foldStatusInput } from './tracker-utils.mjs';
 import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { listApplications, listFollowUps, listFollowUpNext, listFollowUpCleared } from './core/db.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { flagValue, validateFlags } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -28,7 +31,6 @@ const CODEBASE_ROOT = dirname(fileURLToPath(import.meta.url));
 const CAREER_OPS = getCareerOpsRoot();
 const APPS_FILE = resolveTrackerPath(CAREER_OPS);
 
-const FOLLOWUPS_FILE = join(CAREER_OPS, 'data/follow-ups.md');
 const PROFILE_FILE = process.env.CAREER_OPS_PROFILE || join(CAREER_OPS, 'config/profile.yml');
 
 
@@ -827,7 +829,20 @@ export function computeNextFollowupDate(status, appDate, lastFollowupDate, follo
 // no error, no guessing, matching the same "absent optional file = pass
 // through" convention used elsewhere in this project.
 export function analyzeFromContent(trackerContent, followupsContent = '') {
-  const apps = parseTrackerContent(trackerContent);
+  return analyzeFromData(
+    parseTrackerContent(trackerContent),
+    parseFollowups(followupsContent),
+    parseNextOverrides(String(followupsContent ?? '')),
+    parseClearedDirectives(followupsContent),
+  );
+}
+
+// Data-based core: same cadence/urgency math over already-structured rows.
+// `apps` rows carry the parseTrackerRow field names (num, date, company, via,
+// role, score, status, pdf, report, notes) — exactly what the applications
+// table stores — so the DB-backed analyze() and the content-based wrapper
+// above feed the identical shape.
+export function analyzeFromData(apps, followups = [], overrides = new Map(), cleared = new Map()) {
   if (apps.length === 0) {
     // cadenceDefaults rides along on the error. It is a constant, so it is just
     // as valid with no applications as with a hundred, and this is the ONE
@@ -836,10 +851,6 @@ export function analyzeFromContent(trackerContent, followupsContent = '') {
     // withholding it renders six empty fields with nothing to type back in.
     return { error: 'No applications found in tracker.', cadenceDefaults: DEFAULT_CADENCE };
   }
-
-  const followups = parseFollowups(followupsContent);
-  const overrides = parseNextOverrides(String(followupsContent ?? ''));
-  const cleared = parseClearedDirectives(followupsContent);
 
   // Group follow-ups by app number
   const followupsByApp = new Map();
@@ -969,11 +980,30 @@ export function analyzeFromContent(trackerContent, followupsContent = '') {
   };
 }
 
-// --- Main analysis (disk-backed CLI entry point) ---
+// --- Main analysis (DB-backed CLI entry point) ---
+// data/career-ops.db is the single data store (core/db.mjs): applications,
+// follow_ups, follow_up_next (pins), follow_up_cleared (retire directives).
 function analyze() {
-  const trackerContent = existsSync(APPS_FILE) ? readFileSync(APPS_FILE, 'utf-8') : '';
-  const followupsContent = existsSync(FOLLOWUPS_FILE) ? readFileSync(FOLLOWUPS_FILE, 'utf-8') : '';
-  return analyzeFromContent(trackerContent, followupsContent);
+  const apps = listApplications();
+  const followups = listFollowUps().map((f) => ({
+    num: f.num,
+    appNum: f.app_num,
+    date: f.date,
+    company: f.company,
+    role: f.role,
+    channel: f.channel,
+    contact: f.contact,
+    notes: f.notes,
+  }));
+  const overrides = new Map(listFollowUpNext().map((r) => [
+    r.app_num,
+    { appNum: r.app_num, date: r.next_date, setDate: r.set_date || r.next_date },
+  ]));
+  const cleared = new Map(listFollowUpCleared().map((r) => [
+    r.app_num,
+    { appNum: r.app_num, setDate: r.set_date },
+  ]));
+  return analyzeFromData(apps, followups, overrides, cleared);
 }
 
 // --- Summary mode ---
