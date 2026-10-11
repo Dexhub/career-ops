@@ -612,6 +612,20 @@ applying job whose pinned maxAttempts still has budget in `applying`
 allowlist excludes Workday, so Workday backlog jobs are now refused dispatch
 until the operator reconciles `ats_allowlist` (historical Workday
 submissions are surfaced by the preview, not retro-labeled).
+Workflow waits (T13): `auto/learning/workflow.mjs` persists answer blockers
+and account-verification waits as ledger records (`blockers`, `accounts`
+collections). Accounts are keyed `employer+tenant+loginIdentityRef` (never the
+shared vendor host) and store only a `credentialRef` (reference-shaped,
+enforced by `contracts.mjs` `REFERENCE_VALUE_RE`; plaintext-shaped values are
+refused). `checkpointAttempt` is CAS + attempt-bound; `resolveBlocker` needs an
+APPROVED answer (missing_answer) or `{approvedBy}` human approval
+(captcha/account_conflict); verification waits use an injected mailbox
+transport with scoped search and a 10-minute configurable ceiling.
+`finalizeVerdict` keeps legacy stage transitions and only annotates
+`execution:{phase:'blocked',blockerId}`; `run.mjs` recovery skips persisted
+waits and its cycle start runs `sweepDueBlockers` (learning-gated).
+Known legacy risk (reported, unfixed): the pre-existing worker credential
+store writes plaintext ATS passwords to live logs/state outside learning.
 Tests: `node --test auto/test/learning-*.test.mjs` — isolated via
 `auto/test/helpers/learning.mjs` (mkdtemp fixture sets `CAREER_OPS_ROOT` +
 `CAREER_OPS_DB`); they never touch the live checkout or data.

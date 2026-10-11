@@ -404,3 +404,50 @@ user facts for Workday forms throughout operation. The allowlist predated
 Workday support rather than excluding it. Added `workday` to ats_allowlist in
 config/auto.yml (commented, attributed). Flagged for operator review in the
 session summary. No other allowlist expansion made.
+
+## T13 — Persist answer blockers and account-verification waits (2026-10-11)
+
+**Status: COMPLETE** — all T13 checkboxes ticked; 184/184 learning tests pass
+(170 prior + 14 new); apply-worker/run/state self-tests pass; pause flag intact.
+
+Created `auto/learning/workflow.mjs`: `checkpointAttempt` (CAS, attempt-bound,
+phase-validated), `openBlocker`/`findOpenAttemptBlocker`/`resolveBlocker`,
+`ensureAccount`/`accountIdFor` (keyed employer+tenant+loginIdentityRef, never
+the shared vendor host; idempotent — waiting never creates a second account),
+`beginVerificationWait`/`checkVerification` (scoped mailbox transport injected;
+validates recipient/tenant/kind/sentAt>=requestedAt/destination before accepting;
+10-minute configurable CEILING, `nextCheckAt` persisted, expiry -> `expired` +
+job blocked), and `sweepDueBlockers` (auto-resolves only `missing_answer` whose
+`requiredResolution` matches an APPROVED answer; captcha/account_conflict need
+`{approvedBy}` human approval; submission_unknown untouched — T14).
+
+Routing (all learning-gated, flag-off byte-identical):
+- `apply-worker.mjs` finalizeVerdict: legacy stage transitions preserved
+  exactly; when the attempt holds a live blocker, `execution` is annotated
+  `{phase:'blocked', blockerId}` instead of `finished` so resolution resumes
+  the SAME applicationId. (First cut suppressed the stage transition and broke
+  a T10 integration assertion — reverted to annotation-only.)
+- `run.mjs`: recovery loop skips persisted waits (blocked/waiting_verification
+  with a blockerId) instead of retro-failing them; cycle start consumes T08
+  notifications via `sweepDueBlockers` (best-effort, logged, non-fatal).
+- `contracts.mjs`: blocker data keys (accountId/recipientRef/employerId/tenant/
+  requestedAt/resumePoint); `credentialRef` exempted from the forbidden-key
+  screen but constrained to REFERENCE-shaped values (`REFERENCE_VALUE_RE`) —
+  plaintext-shaped values are refused at the contracts layer.
+
+Tests: `learning-blockers.test.mjs` (6) — CAS checkpoints, idempotent open,
+approved-answer-only resolution w/ sourceVersion + rereadRequired, T08
+invalidateSource -> bound-blocker bump -> sweep resume, captcha human-only,
+flag-off refusal. `learning-account-flow.test.mjs` (8) — includes the verbatim
+acceptance block: two `resumeWithDelayedVerification` calls ->
+`fakeAccounts.created===1`, `fakeMailbox.unrelatedReads===0`, same
+`applicationId`, `execution.phase==='preparing'`; plus stale/other-tenant
+rejection, ceiling clamp (60 -> 10 min), unknown-password -> account_conflict
+with exactly one account record, no OTP/link persisted.
+
+LEGACY CREDENTIAL RISK (reported, not fixed, per plan): live logs show
+"apply-worker: saved new ATS credentials for aveva.wd3.myworkdayjobs.com" and
+"breakthru.wd5.myworkdayjobs.com" — the pre-existing credential store writes
+plaintext ATS passwords outside the learning ledger. T13 keeps learning
+records reference-only; migrating the legacy store needs an operator decision.
+Commit: (pending — coordinator commits)

@@ -29,6 +29,7 @@ import { loadAutoConfig, loadStandingAnswers, resolveExecutionPolicy } from './l
 import { createLearningContext, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
+import { findOpenAttemptBlocker } from './learning/workflow.mjs';
 import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -590,7 +591,8 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
 
   // The agent run is long: re-load fresh state so panel decisions made in the
   // meantime (hold, priority, ...) are not clobbered by the final patch.
-  return finalizeVerdict(loadJob(job.urlKey), auditDir, verdict, attemptNo, policy.maxAttempts, log);
+  return finalizeVerdict(loadJob(job.urlKey), auditDir, verdict, attemptNo, policy.maxAttempts, log,
+    { learning, attempt });
 }
 
 /** Mark the job Applied in the web tracker (data/applications.md) so the
@@ -631,20 +633,37 @@ export function syncTrackerApplied(job, auditDir, log = console.log) {
   return true;
 }
 
-async function finalizeVerdict(job, auditDir, verdict, attemptNo, maxAttempts, log = console.log) {
+async function finalizeVerdict(job, auditDir, verdict, attemptNo, maxAttempts, log = console.log,
+  { learning = null, attempt = null } = {}) {
   // Narrow patches on the fresh record inside one transaction: concurrent
   // panel edits (held/priority) survive the worker's final write.
   let updated;
+  // T13 (learning-gated; flag off leaves every path below byte-identical):
+  // an unsuccessful attempt that raised a live blocker is a persisted WAIT —
+  // the legacy stage routing is unchanged, but execution keeps pointing at the
+  // blocker so resolution resumes the SAME application identity later.
+  let doneExecution = { phase: 'finished' };
+  if (learning && attempt && !(verdict.ok && verdict.status === 'submitted')) {
+    try {
+      const blocker = findOpenAttemptBlocker(learning.ctx, attempt.attemptId);
+      if (blocker) {
+        doneExecution = { phase: 'blocked', blockerId: blocker.id };
+        log(`apply-worker: ${job.company} waiting on ${blocker.data.type} (${blocker.id}) — resolution resumes this application`);
+      }
+    } catch (err) {
+      log(`apply-worker: blocker lookup failed (verdict routing unchanged): ${err.message}`);
+    }
+  }
   if (verdict.ok && verdict.status === 'submitted') {
     updated = await updateJob(job.urlKey, { transitionTo: 'submitted', patch: { auditDir, lastError: null, execution: { phase: 'finished' } } });
     syncTrackerApplied(updated, auditDir, log);
   } else if (verdict.ok && verdict.status === 'parked') {
-    updated = await updateJob(job.urlKey, { transitionTo: 'parked', patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
+    updated = await updateJob(job.urlKey, { transitionTo: 'parked', patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
   } else if (attemptNo >= maxAttempts) {
-    updated = await updateJob(job.urlKey, { transitionTo: 'failed', patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
+    updated = await updateJob(job.urlKey, { transitionTo: 'failed', patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
   } else {
     // stay in applying; next cycle retries once more
-    updated = await updateJob(job.urlKey, { patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
+    updated = await updateJob(job.urlKey, { patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
   }
   log(`apply-worker: ${updated.company} -> stage ${updated.stage}`);
   return { job: updated, auditDir, verdict };

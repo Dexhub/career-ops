@@ -71,6 +71,9 @@ const DATA_KEYS = Object.freeze({
   blockers: [
     'applicationId', 'attemptId', 'type', 'question', 'requiredResolution',
     'sourceVersions', 'nextCheckAt', 'deadline', 'resolution',
+    // T13 workflow fields: account/recipient references (never credential
+    // material), employer/tenant binding, request time and safe resume point.
+    'accountId', 'recipientRef', 'employerId', 'tenant', 'requestedAt', 'resumePoint',
   ],
   accounts: [
     'tenant', 'employerId', 'loginIdentityRef', 'credentialRef', 'lifecycle',
@@ -127,6 +130,11 @@ const FIELD_ENUMS = Object.freeze({
 // case-insensitively against every nested key. Error details carry the key
 // name only, never the value.
 const FORBIDDEN_KEY_RE = /(password|passwd|secret|token|api[_-]?key|otp|one[_-]?time[_-]?code|credential|cookie|authorization|private[_-]?key|verification[_-]?(url|link))/i;
+// Exact keys from CONTRACTS D5 that are opaque REFERENCES into the private
+// credential store, never credential material. Their values are additionally
+// shape-constrained (short opaque ref) in validateRecordData.
+const REFERENCE_KEYS = new Set(['credentialRef']);
+const REFERENCE_VALUE_RE = /^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$/;
 const PROTO_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -208,7 +216,15 @@ function validateValue(value, path, depth) {
         throw new LearningError('FORBIDDEN_KEY', `prototype-related key "${key}" at ${path}`);
       }
       if (FORBIDDEN_KEY_RE.test(key)) {
-        throw new LearningError('FORBIDDEN_KEY', `secret-bearing key "${key}" is not allowed at ${path}`);
+        if (!REFERENCE_KEYS.has(key)) {
+          throw new LearningError('FORBIDDEN_KEY', `secret-bearing key "${key}" is not allowed at ${path}`);
+        }
+        // Reference keys may only carry short opaque reference strings.
+        const refValue = value[key];
+        if (refValue !== null && (typeof refValue !== 'string' || !REFERENCE_VALUE_RE.test(refValue))) {
+          throw new LearningError('FORBIDDEN_KEY',
+            `"${key}" at ${path} must be a short opaque reference, never credential material`);
+        }
       }
       validateValue(value[key], `${path}.${key}`, depth + 1);
     }
@@ -231,7 +247,7 @@ export function validateRecordData(collection, data) {
     if (typeof key !== 'string' || PROTO_KEYS.has(key)) {
       throw new LearningError('FORBIDDEN_KEY', `prototype-related key in ${collection} data`);
     }
-    if (FORBIDDEN_KEY_RE.test(key)) {
+    if (FORBIDDEN_KEY_RE.test(key) && !(REFERENCE_KEYS.has(key) && allowed.includes(key))) {
       throw new LearningError('FORBIDDEN_KEY', `secret-bearing key "${key}" is not allowed in ${collection} data`);
     }
     if (!allowed.includes(key)) {
@@ -249,6 +265,15 @@ export function validateRecordData(collection, data) {
     }
   }
   // Collection-specific required shapes used by phase-1 consumers.
+  if (collection === 'accounts' && data.credentialRef !== undefined && data.credentialRef !== null) {
+    // A credentialRef is an opaque pointer into the private credential store:
+    // short, no whitespace, no URL/query syntax. Anything shaped like actual
+    // credential material is refused before it can reach the ledger.
+    if (typeof data.credentialRef !== 'string' || !REFERENCE_VALUE_RE.test(data.credentialRef)) {
+      throw new LearningError('FORBIDDEN_KEY',
+        'accounts.credentialRef must be a short opaque reference, never credential material');
+    }
+  }
   if (collection === 'families') {
     if (typeof data.label !== 'string' || data.label.length === 0) {
       throw new LearningError('SCHEMA_VALIDATION', 'families.label must be a nonempty string');

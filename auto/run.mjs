@@ -152,6 +152,14 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   const policy = resolveExecutionPolicy({ cfg }); // T12: explicit refusal on garbled config
   const learning = learningRuntime(log); // null unless config/learning.yml enables it
   for (const stale of listJobs('applying')) {
+    // T13 (learning-gated): a job waiting on a persisted blocker is not a
+    // stale attempt — never retro-fail it; resolution resumes the SAME
+    // application. With learning off no job ever carries these phases.
+    if (learning && stale.execution?.blockerId
+        && ['blocked', 'waiting_verification'].includes(stale.execution?.phase)) {
+      log(`run: ${stale.company} waiting on blocker ${stale.execution.blockerId} — leaving in applying`);
+      continue;
+    }
     if ((stale.attempts || 0) >= policy.maxAttempts) {
       // Shrink safety: an in-flight attempt keeps the policy it started
       // with. When the recorded (pinned) max_attempts still has budget, the
@@ -182,6 +190,22 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
           log(`run: learning capture FAILED for interrupted attempt ${stale.execution.attemptId}: ${err.message}`);
         }
       }
+    }
+  }
+
+  // T13: consume T08 notifications — resolve due answer blockers whose
+  // required answer was approved while no worker was running (e.g. supplied
+  // through the panel with the browser closed). Resolution routes the same
+  // application back to its safe resume point; the ordinary queue picks it up.
+  if (learning) {
+    try {
+      const { sweepDueBlockers } = await import('./learning/workflow.mjs');
+      const swept = await sweepDueBlockers(learning.ctx, {});
+      if (swept.resolved.length) {
+        log(`run: resolved ${swept.resolved.length} answer blocker(s) from approved answers — resuming same application(s)`);
+      }
+    } catch (err) {
+      log(`run: blocker sweep failed (continuing): ${err.message}`);
     }
   }
 
