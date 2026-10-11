@@ -4,6 +4,7 @@ import { atsVendorOf } from './ats-vendor.mjs';
 import { detectColumns, extractTrackerReportNumbers, isHeaderRow, isSeparatorRow } from './tracker-parse.mjs';
 import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
 import { resolveWorkspaceRoot } from './tracker-utils.mjs';
+import { listApplications, listScanHistory } from './core/db.mjs';
 
 const WEB_URL_RE = /https?:\/\/[^\s|)>]+/i;
 
@@ -135,19 +136,68 @@ function readIfPresent(file) {
 }
 
 /**
+ * Derive tracker seeds from application rows (the DB-backed tracker). Same
+ * per-row logic as parseTrackerAtsSeeds: prefer a direct URL column, else the
+ * **URL:** field of the linked report; never scrape an arbitrary Notes URL.
+ */
+function trackerSeedsFromRows(rows, reportsRoot) {
+  const seeds = [];
+  for (const row of rows) {
+    const reportNumbers = linkedReportNumbers(row.report, row.notes);
+    const url = webUrlFrom(row.url) || reportUrlForNumbers(reportNumbers, reportsRoot);
+    const seed = seedOf(row.company, url, 'tracker');
+    if (seed) seeds.push(seed);
+  }
+  return seeds;
+}
+
+/**
  * Read the user's tracker and scan history without writing either one.
  * Duplicate postings from the same board collapse to one provider fetch.
+ *
+ * Sources (both read-only):
+ * - trackerPath: a tracker FILE override (tests / CAREER_OPS_TRACKER). When
+ *   absent, rows come from the applications DB. Pass null to skip the tracker
+ *   half entirely.
+ * - scanHistoryPath: a scan-history TSV override (tests /
+ *   CAREER_OPS_SCAN_HISTORY). When absent, rows come from the scan_history DB
+ *   table. Pass null to skip the scan-history half (scan-ats-full.mjs does
+ *   this and feeds parseScanHistoryAtsSeeds its own serialized DB text).
  */
 export function loadHistoryAtsSeeds({
   dataRoot = getCareerOpsRoot(),
-  trackerPath = resolveTrackerPath(dataRoot),
-  scanHistoryPath = process.env.CAREER_OPS_SCAN_HISTORY || path.join(dataRoot, 'data/scan-history.tsv'),
+  trackerPath = process.env.CAREER_OPS_TRACKER ? resolveTrackerPath(dataRoot) : undefined,
+  scanHistoryPath = process.env.CAREER_OPS_SCAN_HISTORY || undefined,
 } = {}) {
-  const reportsRoot = path.join(resolveWorkspaceRoot(trackerPath), 'reports');
-  const combined = [
-    ...parseTrackerAtsSeeds(readIfPresent(trackerPath), { reportsRoot }),
-    ...parseScanHistoryAtsSeeds(readIfPresent(scanHistoryPath)),
-  ];
+  const reportsRoot = typeof trackerPath === 'string'
+    ? path.join(resolveWorkspaceRoot(trackerPath), 'reports')
+    : path.join(dataRoot, 'reports');
+
+  let trackerSeeds;
+  if (typeof trackerPath === 'string') {
+    trackerSeeds = parseTrackerAtsSeeds(readIfPresent(trackerPath), { reportsRoot });
+  } else if (trackerPath === null) {
+    trackerSeeds = [];
+  } else {
+    let rows = [];
+    try { rows = listApplications(); } catch { /* no DB yet — no tracker seeds */ }
+    trackerSeeds = trackerSeedsFromRows(rows, reportsRoot);
+  }
+
+  let scanHistorySeeds;
+  if (typeof scanHistoryPath === 'string') {
+    scanHistorySeeds = parseScanHistoryAtsSeeds(readIfPresent(scanHistoryPath));
+  } else if (scanHistoryPath === null) {
+    scanHistorySeeds = [];
+  } else {
+    let rows = [];
+    try { rows = listScanHistory(); } catch { /* no DB yet — no history seeds */ }
+    scanHistorySeeds = rows
+      .map((row) => seedOf(row.company, row.url, 'scan-history'))
+      .filter(Boolean);
+  }
+
+  const combined = [...trackerSeeds, ...scanHistorySeeds];
   const unique = new Map();
   for (const seed of combined) {
     const key = `${seed.vendor}\t${seed.careersUrl}`;

@@ -81,15 +81,49 @@ import { flagValue } from './lib/cli-flags.mjs';
 import { findCaptureForReport } from './jd-capture.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { resolveColumns, parseTrackerRow, extractTrackerReportNumbers } from './tracker-parse.mjs';
-import { loadCanonicalStates, resolveCanonicalState, resolveTrackerPath } from './tracker-utils.mjs';
+import { loadCanonicalStates, resolveCanonicalState } from './tracker-utils.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { listApplications } from './core/db.mjs';
 
 const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
 const DEFAULT_REPORTS_DIR = join(DATA_ROOT, 'reports');
 const DEFAULT_JDS_DIR = join(DATA_ROOT, 'jds');
-const DEFAULT_TRACKER_PATH = resolveTrackerPath(DATA_ROOT);
 const STATES_FILE = join(CAREER_OPS, 'templates/states.yml');
+
+// Sentinel accepted anywhere a trackerPath is: "join against the applications
+// DB" (the default source now that data/applications.md is retired). A string
+// trackerPath still means a tracker FILE — the --tracker testing override and
+// the self-test fixtures below depend on that.
+export const TRACKER_DB = Symbol('career-ops applications DB');
+
+/**
+ * Resolve tracker rows from either source. Returns null when there is nothing
+ * to join against at all (no file / unreadable file / empty or unreachable
+ * DB) — callers treat null as "fall back to legacy hard enforcement", the
+ * same contract the file-only version had for a missing applications.md.
+ */
+function loadTrackerRows(trackerPath) {
+  if (trackerPath === TRACKER_DB) {
+    let rows;
+    try { rows = listApplications(); } catch { return null; }
+    return rows.length ? rows : null; // empty DB = fresh install = nothing to join
+  }
+  if (!trackerPath || !existsSync(trackerPath)) return null;
+  let lines;
+  try {
+    lines = readFileSync(trackerPath, 'utf-8').split('\n');
+  } catch {
+    return null; // unreadable tracker — fail soft, never crash a health check
+  }
+  const colmap = resolveColumns(lines);
+  const rows = [];
+  for (const line of lines) {
+    const row = parseTrackerRow(line, colmap);
+    if (row) rows.push(row);
+  }
+  return rows;
+}
 
 // The retroactive-enforcement terminal set (PR #2791, santifer 2026-08-17:
 // "build the state-based split you described" — Schlaflied 2026-08-16).
@@ -111,7 +145,7 @@ const USAGE = `Usage:
   node check-jd-archive.mjs --summary             # human-readable table
   node check-jd-archive.mjs --reports-dir <path>  # override reports/ (testing)
   node check-jd-archive.mjs --jds-dir <path>      # override jds/ (testing)
-  node check-jd-archive.mjs --tracker <path>      # override data/applications.md (testing)
+  node check-jd-archive.mjs --tracker <path>      # tracker FILE instead of the applications DB (testing)
   node check-jd-archive.mjs --no-tracker          # skip the tracker join (legacy hard-only behavior)
   node check-jd-archive.mjs --self-test           # run the in-memory test suite
   node check-jd-archive.mjs --help                # print this usage block and exit`;
@@ -321,14 +355,8 @@ export function hasEmbeddedJdArchive(content) {
  * @returns {Map<number,'terminal'|'live'>|null}
  */
 export function classifyReportsByTrackerState(trackerPath, statesPath) {
-  if (!trackerPath || !existsSync(trackerPath)) return null;
-
-  let lines;
-  try {
-    lines = readFileSync(trackerPath, 'utf-8').split('\n');
-  } catch {
-    return null; // unreadable tracker — fall back to legacy hard enforcement, not a crash
-  }
+  const rows = loadTrackerRows(trackerPath);
+  if (!rows) return null; // no tracker source — fall back to legacy hard enforcement, not a crash
 
   let states;
   try {
@@ -337,12 +365,9 @@ export function classifyReportsByTrackerState(trackerPath, statesPath) {
     return null; // unreadable/malformed states.yml — same fallback
   }
 
-  const colmap = resolveColumns(lines);
   const byReport = new Map(); // reportNum -> matching tracker rows
 
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
+  for (const row of rows) {
     for (const num of extractTrackerReportNumbers(row.report, row.notes)) {
       if (!byReport.has(num)) byReport.set(num, []);
       byReport.get(num).push(row);
@@ -386,21 +411,12 @@ export function classifyReportsByTrackerState(trackerPath, statesPath) {
  */
 export function mapTrackerCaptureLinks(trackerPath, jdsDir) {
   const map = new Map();
-  if (!trackerPath || !existsSync(trackerPath)) return map;
-
-  let lines;
-  try {
-    lines = readFileSync(trackerPath, 'utf-8').split('\n');
-  } catch {
-    return map; // unreadable tracker — fail soft, exactly like classifyReportsByTrackerState
-  }
+  const rows = loadTrackerRows(trackerPath);
+  if (!rows) return map; // no tracker source — fail soft, exactly like classifyReportsByTrackerState
 
   const dataRoot = dirname(jdsDir);
-  const colmap = resolveColumns(lines);
 
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
+  for (const row of rows) {
     const cell = `${row.report ?? ''} ${row.notes ?? ''}`;
     const match = cell.match(JDS_PATH_RE);
     if (!match) continue;
@@ -539,15 +555,14 @@ const SUBMITTED_LABELS = new Set(['Applied', 'Responded', 'Interview', 'Offer', 
  * @returns {Array<{type: string, row: string, company: string, role: string, status: string, detail: string}>}
  */
 export function findUnarchivedApplications(trackerPath, reportsDir, jdsDir, statesPath = STATES_FILE) {
-  if (!trackerPath || !existsSync(trackerPath)) return [];
+  const rows = loadTrackerRows(trackerPath);
+  if (!rows) return [];
 
-  let lines;
   let states;
   try {
-    lines = readFileSync(trackerPath, 'utf-8').split('\n');
     states = loadCanonicalStates(statesPath);
   } catch {
-    return []; // unreadable tracker or states.yml — fail soft, never crash a health check
+    return []; // unreadable states.yml — fail soft, never crash a health check
   }
 
   const trackerCaptures = mapTrackerCaptureLinks(trackerPath, jdsDir);
@@ -560,12 +575,9 @@ export function findUnarchivedApplications(trackerPath, reportsDir, jdsDir, stat
     if (meta) reportsByNum.set(meta.reportNum, f);
   }
 
-  const colmap = resolveColumns(lines);
   const out = [];
 
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (!row) continue;
+  for (const row of rows) {
     const label = resolveCanonicalState(row.status, states);
     if (!label || !SUBMITTED_LABELS.has(label)) continue;
 
@@ -1031,7 +1043,7 @@ if (isMainModule(import.meta.url)) {
 
   const reportsDir = reportsDirArg || DEFAULT_REPORTS_DIR;
   const jdsDir = jdsDirArg || DEFAULT_JDS_DIR;
-  const trackerPath = noTrackerMode ? null : (trackerArg || DEFAULT_TRACKER_PATH);
+  const trackerPath = noTrackerMode ? null : (trackerArg || TRACKER_DB);
 
   const result = checkJdArchive(reportsDir, jdsDir, { trackerPath });
   const unarchivedApplications = findUnarchivedApplications(trackerPath, reportsDir, jdsDir);

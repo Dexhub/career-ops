@@ -416,7 +416,7 @@ Usage:
   --out       Override output path from payload (optional)
   --format    Override output PDF page format (letter|a4). Defaults to
               config/profile.yml page_format, then letter.
-  --report    Link the PDF to a tracker report number in data/pdf-index.tsv
+  --report    Link the PDF to a tracker report number in the PDF index (DB)
 `);
     process.exit(args.help ? 0 : 1);
   }

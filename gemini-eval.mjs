@@ -76,7 +76,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { TSV_ADDITION_HEADER } from './tracker-parse.mjs';
 
@@ -93,7 +93,6 @@ const PATHS = {
   profile:     join(DATA_ROOT, 'modes', '_profile.md'),
   profileYml:  join(DATA_ROOT, 'config', 'profile.yml'),
   reports:     join(DATA_ROOT, 'reports'),
-  tracker:     resolveTrackerPath(DATA_ROOT),
   trackerAdditions: join(DATA_ROOT, 'batch', 'tracker-additions'),
 };
 
@@ -617,9 +616,9 @@ ${evaluationText.replace(/---SCORE_SUMMARY---[\s\S]*?---END_SUMMARY---/, '').tri
           timeout: 30000,
         });
         if (mergeOutput.trim()) console.log(mergeOutput.trim());
-        console.log('📊  Tracker merged into data/applications.md.');
+        console.log('📊  Tracker merged into the applications database.');
       } catch (err) {
-        console.warn(`⚠️   Report saved, but could not merge tracker addition into data/applications.md: ${err.message}`);
+        console.warn(`⚠️   Report saved, but could not merge tracker addition into the applications database: ${err.message}`);
         process.exitCode = 1;
       }
     }

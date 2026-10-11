@@ -6,6 +6,12 @@
  * user-layer files a real install of that era contains. Returns a SHA-256
  * manifest so callers can assert byte-identity later.
  *
+ * Deliberately NOT converted to the SQLite store: the states on offer
+ * (v1.16/v1.18) predate the DB, and upgrade-tests.mjs seeds them into
+ * old-tag clones whose own code reads data/applications.md. The
+ * applications.md here is era-fixture content that must stay byte-identical
+ * through an upgrade — it is not live-store IO.
+ *
  * Usage:
  *   node seed-fixture.mjs <targetDir> [--state state-v1.18]
  *   node seed-fixture.mjs --self-test

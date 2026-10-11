@@ -63,10 +63,17 @@ import { roleFuzzyMatch } from './role-matcher.mjs';
 import { normalizeCompanyName, companySimilarity } from './invite-match.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { listApplications, listStatusEvents } from './core/db.mjs';
 
 const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
 const DATA_ROOT = getCareerOpsRoot();
-const DEFAULT_APPS_FILE = resolveTrackerPath(DATA_ROOT);
+// The apps side now reads the applications DB by default (data/applications.md
+// is retired). A string appsFile — the --apps-file testing override, or a
+// CAREER_OPS_TRACKER env override — still means a tracker FILE.
+export const TRACKER_DB = Symbol('career-ops applications DB');
+const DEFAULT_APPS_FILE = process.env.CAREER_OPS_TRACKER
+  ? resolveTrackerPath(DATA_ROOT)
+  : TRACKER_DB;
 const DEFAULT_INTERVIEWS_FILE = existsSync(join(DATA_ROOT, 'data/active-interviews.md'))
   ? join(DATA_ROOT, 'data/active-interviews.md')
   : join(DATA_ROOT, 'active-interviews.md');
@@ -239,8 +246,30 @@ export function extractTrackerRef(notes) {
   return m ? parseInt(m[1], 10) : null;
 }
 
-// --- applications.md loader (line-number aware, for git blame) ---
+// --- tracker loader (line-number aware for file mode, for git blame) ---
+// DB mode (appsFile === TRACKER_DB) has no line numbers to blame; each entry
+// instead carries `lastModified` directly — the latest status_events event
+// date for the row, falling back to the row's own updated_at — which Tier 2
+// uses in place of a git blame timestamp.
 function loadTrackerWithLines(appsFile) {
+  if (appsFile === TRACKER_DB) {
+    let rows, events;
+    try {
+      rows = listApplications();
+      events = listStatusEvents();
+    } catch {
+      return []; // no DB yet — nothing to compare, same as a missing tracker file
+    }
+    const lastEventDate = new Map(); // app_num -> latest event_date (events are id-ordered)
+    for (const ev of events) {
+      if (ev.event_date) lastEventDate.set(ev.app_num, ev.event_date);
+    }
+    return rows.map((row) => ({
+      ...row,
+      lineNum: null,
+      lastModified: lastEventDate.get(row.num) ?? row.updated_at ?? null,
+    }));
+  }
   if (!existsSync(appsFile)) return [];
   const content = readFileSync(appsFile, 'utf-8');
   const lines = content.split('\n');
@@ -479,7 +508,11 @@ export function buildSyncReport(trackerEntries, interviewRows, opts = {}) {
     }
 
     // Tier 2 — genuinely ambiguous. Blame both lines for a human tiebreak.
-    const applicationsLastModified = blameFn(appsFilePath, entry.lineNum);
+    // DB-sourced entries carry their own lastModified (latest status event /
+    // updated_at) since there is no file line to blame.
+    const applicationsLastModified = entry.lastModified !== undefined
+      ? entry.lastModified
+      : blameFn(appsFilePath, entry.lineNum);
     const activeInterviewsLastModified = blameFn(interviewsFilePath, lineNum);
     results.push({
       trackerNum: entry.num,

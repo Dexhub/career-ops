@@ -26,14 +26,16 @@ import { readFileSync, existsSync, statSync, realpathSync, writeFileSync, symlin
 import { join, dirname, relative, sep } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { load as yamlLoad } from 'js-yaml';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
+import { listApplications } from './core/db.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const CAREER_OPS = getCareerOpsRoot();
-const APPS_FILE = resolveTrackerPath(CAREER_OPS);
+// Tracker links were historically written relative to data/applications.md's
+// directory; rows now come from the DB but links still resolve against data/.
+const TRACKER_LINK_DIR = join(CAREER_OPS, 'data');
 const CV_FILE = join(CAREER_OPS, 'cv.md');
 const PROFILE_FILE = join(CAREER_OPS, 'config/profile.yml');
 
@@ -433,13 +435,10 @@ export function computeTargetedGaps(jdText, knownText) {
 
 // --- Main ---
 function analyze(minReports) {
-  if (!existsSync(APPS_FILE)) {
+  const rows = listApplications();
+  if (rows.length === 0) {
     return { error: 'No applications tracker found. Run some evaluations first.' };
   }
-
-  const lines = readFileSync(APPS_FILE, 'utf-8').split('\n');
-  const colmap = resolveColumns(lines);
-  const rows = lines.map(l => parseTrackerRow(l, colmap)).filter(Boolean);
 
   let reportsLinked = 0;
   let reportsRead = 0;
@@ -461,7 +460,7 @@ function analyze(minReports) {
     // (see merge-tracker.mjs); resolve against it, with a root-relative fallback.
     // The read is attempted directly instead of probing with existsSync first,
     // which costs a full stat per report and races with the read (#2385).
-    const candidates = new Set([join(dirname(APPS_FILE), linkMatch[1]), join(CAREER_OPS, linkMatch[1])]);
+    const candidates = new Set([join(TRACKER_LINK_DIR, linkMatch[1]), join(CAREER_OPS, linkMatch[1])]);
     let content = null;
     for (const p of candidates) {
       if (!withinReports(p)) continue;

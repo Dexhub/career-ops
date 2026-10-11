@@ -492,7 +492,7 @@ ${evaluationText.replace(/---SCORE_SUMMARY---[\s\S]*?---END_SUMMARY---/, '').tri
     console.log(`\n✅  Report saved: reports/${filename}`);
 
     // AGENTS.md Pipeline Integrity rule 1: never hand the user a row to paste
-    // into data/applications.md. Evaluations persist as a tracker addition and
+    // into the tracker (the applications DB). Evaluations persist as a tracker addition and
     // merge-tracker.mjs applies dedup, status validation, report-link
     // normalization and the tracker lock. A pasted literal skipped all of that,
     // and at 8 cells it was also silently dropped by every reader's width guard.

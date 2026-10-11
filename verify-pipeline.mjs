@@ -7,7 +7,7 @@
  * 2. No duplicate company+role entries
  * 3. All report links point to existing files
  * 4. Scores match format X.XX/5 or N/A or DUP
- * 5. All rows have proper pipe-delimited format
+ * 5. All rows have proper pipe-delimited format (tracker-file mode only; DB rows are structured)
  * 6. No pending TSVs in tracker-additions/ (only in merged/ or archived/)
  * 7. states.yml canonical IDs for cross-system consistency
  * 8. Stale report-number reservation sentinels are garbage-collected
@@ -16,7 +16,7 @@
  * 11. Via channel consistency (see #1596)
  * 12. No # value reused across 2+ tracker rows (error — see #1704)
  * 13. applications.md <-> active-interviews.md status sync (see #1504)
- * 14. data/follow-ups.md table schema (see #2971)
+ * 14. data/follow-ups.md table schema (see #2971; no-ops once follow-ups live in the DB)
  * 15. portals.yml entries no provider claims (see #3251)
  * 16. No invisible control characters in tracker cells (error — see #3892)
  * 17. JD archive coverage — check-jd-archive.mjs's findings (warning/error — see #4525)
@@ -38,13 +38,17 @@ import { checkTrackerSync } from './tracker-sync-check.mjs';
 import { normalizeStatus } from './followup-cadence.mjs';
 import { checkFollowupsSchema } from './stats.mjs';
 import { loadCanonicalStates } from './tracker-utils.mjs';
-import { checkJdArchive } from './check-jd-archive.mjs';
+import { checkJdArchive, TRACKER_DB } from './check-jd-archive.mjs';
+import { listApplications } from './core/db.mjs';
 
 const CODE_ROOT = dirname(fileURLToPath(import.meta.url));
 const CAREER_OPS = getCareerOpsRoot();
-// Support both layouts: data/applications.md (boilerplate) and applications.md (original).
-// CAREER_OPS_TRACKER overrides the path (used by tests and non-standard layouts).
-const APPS_FILE = resolveTrackerPath(CAREER_OPS);
+// Tracker rows live in the applications DB (data/applications.md is retired).
+// CAREER_OPS_TRACKER still selects a tracker FILE — tests and non-standard
+// layouts drive the full file-mode checks through it — so when it is set,
+// every file-shaped check (pipe format, raw-line control bytes) runs as
+// before; otherwise rows come from the DB and those checks re-target or no-op.
+const TRACKER_FILE = process.env.CAREER_OPS_TRACKER ? resolveTrackerPath(CAREER_OPS) : null;
 
 const ADDITIONS_DIR = join(CAREER_OPS, 'batch/tracker-additions');
 // CAREER_OPS_REPORTS overrides the reports dir (used by tests, mirrors CAREER_OPS_TRACKER).
@@ -77,52 +81,85 @@ function error(msg) { console.log(`❌ ${msg}`); errors++; }
 function warn(msg) { console.log(`⚠️  ${msg}`); warnings++; }
 function ok(msg) { console.log(`✅ ${msg}`); }
 
-// --- Read applications.md ---
-if (!existsSync(APPS_FILE)) {
-  console.log('\n📊 No applications.md found. This is normal for a fresh setup.');
-  console.log('   The file will be created when you evaluate your first offer.\n');
-  process.exit(0);
+// --- Read the tracker (file override, else the applications DB) ---
+let lines = [];     // raw tracker lines — file mode only (checks 5 and 16)
+let COLMAP = null;  // header-resolved column map — file mode only
+let entries = [];
+
+if (TRACKER_FILE) {
+  if (!existsSync(TRACKER_FILE)) {
+    console.log('\n📊 No applications.md found. This is normal for a fresh setup.');
+    console.log('   The file will be created when you evaluate your first offer.\n');
+    process.exit(0);
+  }
+  lines = readFileSync(TRACKER_FILE, 'utf-8').split('\n');
+
+  // Map columns by header name so the checks work whether the tracker uses the
+  // original 9-column layout or a customized one with an extra column (e.g. a
+  // Location column after Role). Fixed-position indexing would otherwise read
+  // Location where Score is expected and flag false errors. Falls back to the
+  // legacy fixed layout when no recognizable header row is found.
+  //
+  // Sourced from tracker-parse.mjs rather than re-declared here: this file used
+  // to carry its own copy of LEGACY_COLMAP, HEADER_ALIASES and detectColumns, so
+  // a fix to the shared module left verify-pipeline reading a different layout
+  // than merge-tracker wrote — the drift tracker-parse.mjs exists to prevent, and
+  // the same half-application #1291 was filed for.
+  COLMAP = resolveColumns(lines);
+  const MAX_IDX_PARSE = Math.max(...Object.values(COLMAP));
+
+  for (const line of lines) {
+    if (!line.startsWith('|')) continue;
+    const parts = line.split('|').map(s => s.trim());
+    if (parts.length <= MAX_IDX_PARSE) continue;
+    const num = parseInt(parts[COLMAP.num]);
+    if (isNaN(num)) continue;
+    entries.push({
+      num,
+      date: parts[COLMAP.date],
+      company: parts[COLMAP.company],
+      via: COLMAP.via != null ? parts[COLMAP.via] : '',
+      role: parts[COLMAP.role],
+      location: COLMAP.location != null ? parts[COLMAP.location] : '',
+      score: parts[COLMAP.score],
+      status: parts[COLMAP.status],
+      pdf: parts[COLMAP.pdf],
+      report: parts[COLMAP.report],
+      notes: COLMAP.notes != null ? (parts[COLMAP.notes] || '') : '',
+    });
+  }
+} else {
+  let rows;
+  try {
+    rows = listApplications();
+  } catch (err) {
+    console.log(`\n📊 Applications DB could not be read (${err.message}). This is normal for a fresh setup.`);
+    console.log('   It will be created when you evaluate your first offer.\n');
+    process.exit(0);
+  }
+  if (rows.length === 0) {
+    console.log('\n📊 No applications in the tracker DB yet. This is normal for a fresh setup.');
+    console.log('   Rows will appear when you evaluate your first offer.\n');
+    process.exit(0);
+  }
+  // Checks below call string methods on every cell, so coerce nullable DB
+  // columns the way the pipe parse coerced absent cells: to ''.
+  entries = rows.map(r => ({
+    num: r.num,
+    date: String(r.date ?? ''),
+    company: String(r.company ?? ''),
+    via: String(r.via ?? ''),
+    role: String(r.role ?? ''),
+    location: String(r.location ?? ''),
+    score: String(r.score ?? ''),
+    status: String(r.status ?? ''),
+    pdf: String(r.pdf ?? ''),
+    report: String(r.report ?? ''),
+    notes: String(r.notes ?? ''),
+  }));
 }
-const content = readFileSync(APPS_FILE, 'utf-8');
-const lines = content.split('\n');
 
-// Map columns by header name so the checks work whether the tracker uses the
-// original 9-column layout or a customized one with an extra column (e.g. a
-// Location column after Role). Fixed-position indexing would otherwise read
-// Location where Score is expected and flag false errors. Falls back to the
-// legacy fixed layout when no recognizable header row is found.
-//
-// Sourced from tracker-parse.mjs rather than re-declared here: this file used
-// to carry its own copy of LEGACY_COLMAP, HEADER_ALIASES and detectColumns, so
-// a fix to the shared module left verify-pipeline reading a different layout
-// than merge-tracker wrote — the drift tracker-parse.mjs exists to prevent, and
-// the same half-application #1291 was filed for.
-const COLMAP = resolveColumns(lines);
-const MAX_IDX = Math.max(...Object.values(COLMAP));
-
-const entries = [];
-for (const line of lines) {
-  if (!line.startsWith('|')) continue;
-  const parts = line.split('|').map(s => s.trim());
-  if (parts.length <= MAX_IDX) continue;
-  const num = parseInt(parts[COLMAP.num]);
-  if (isNaN(num)) continue;
-  entries.push({
-    num,
-    date: parts[COLMAP.date],
-    company: parts[COLMAP.company],
-    via: COLMAP.via != null ? parts[COLMAP.via] : '',
-    role: parts[COLMAP.role],
-    location: COLMAP.location != null ? parts[COLMAP.location] : '',
-    score: parts[COLMAP.score],
-    status: parts[COLMAP.status],
-    pdf: parts[COLMAP.pdf],
-    report: parts[COLMAP.report],
-    notes: COLMAP.notes != null ? (parts[COLMAP.notes] || '') : '',
-  });
-}
-
-console.log(`\n📊 Checking ${entries.length} entries in applications.md\n`);
+console.log(`\n📊 Checking ${entries.length} entries in ${TRACKER_FILE ? 'applications.md' : 'the applications DB'}\n`);
 
 // --- Check 1: Canonical statuses ---
 let badStatuses = 0;
@@ -174,7 +211,9 @@ if (dupes === 0) ok('No exact duplicates found');
 // links must resolve against the tracker's own directory (see #760). For the
 // transition we also accept legacy root-relative links: try the tracker dir
 // first, then fall back to the repo root before flagging a link broken.
-const TRACKER_DIR = dirname(APPS_FILE);
+// DB rows keep the historical convention: links are written relative to the
+// tracker's old home, the data/ directory.
+const TRACKER_DIR = TRACKER_FILE ? dirname(TRACKER_FILE) : join(CAREER_OPS, 'data');
 let brokenReports = 0;
 for (const e of entries) {
   // Shared rule (tracker-utils.mjs): first link, regular file, tracker dir then
@@ -199,17 +238,24 @@ for (const e of entries) {
 if (badScores === 0) ok('All scores valid');
 
 // --- Check 5: Row format ---
-let badRows = 0;
-for (const line of lines) {
-  if (!line.startsWith('|')) continue;
-  if (isSeparatorRow(line) || isHeaderRow(line)) continue;
-  const parts = line.split('|');
-  if (parts.length <= MAX_IDX) {
-    error(`Row with too few columns (need ${MAX_IDX} data cols): ${line.substring(0, 80)}...`);
-    badRows++;
+// Pipe-delimited shape only exists in file mode; DB rows are structured by
+// construction, so there is nothing for this check to catch there.
+if (TRACKER_FILE) {
+  const MAX_IDX = Math.max(...Object.values(COLMAP));
+  let badRows = 0;
+  for (const line of lines) {
+    if (!line.startsWith('|')) continue;
+    if (isSeparatorRow(line) || isHeaderRow(line)) continue;
+    const parts = line.split('|');
+    if (parts.length <= MAX_IDX) {
+      error(`Row with too few columns (need ${MAX_IDX} data cols): ${line.substring(0, 80)}...`);
+      badRows++;
+    }
   }
+  if (badRows === 0) ok('All rows properly formatted');
+} else {
+  ok('Row format not applicable — tracker rows live in the applications DB');
 }
-if (badRows === 0) ok('All rows properly formatted');
 
 // --- Check 6: Pending TSVs ---
 let pendingTsvs = 0;
@@ -398,7 +444,8 @@ for (const e of entries) {
   const company = String(e.company || '').trim();
   const via = String(e.via || '').trim();
   if (company === '?') {
-    if (COLMAP.via == null) {
+    // DB mode always has a via column; only a customized tracker FILE can lack one.
+    if (TRACKER_FILE && COLMAP.via == null) {
       warn(`#${e.num}: unknown employer (?) but the tracker has no Via column — add it with: node merge-tracker.mjs --migrate-via`);
       viaIssues++;
     } else if (!via || via === '—') {
@@ -489,7 +536,8 @@ if (dupeNums === 0) ok('No duplicate tracker numbers');
 // its module header).
 let syncResult;
 try {
-  syncResult = checkTrackerSync({ appsFile: APPS_FILE });
+  // In DB mode, checkTrackerSync's own default apps source is the DB.
+  syncResult = checkTrackerSync(TRACKER_FILE ? { appsFile: TRACKER_FILE } : {});
 } catch (err) {
   // A check that could not RUN is a failed check, not a warning. warn() does not affect the exit
   // code, so a throw here made verify-pipeline print a notice and still exit 0 — and to anything
@@ -640,15 +688,28 @@ if (!existsSync(PORTALS_FILE)) {
 // CONTROL_CHARS is imported, never re-declared — a second copy of the range
 // would let the write path and this detector disagree about what counts.
 let controlByteRows = 0;
-for (let i = 0; i < lines.length; i++) {
-  if (!lines[i].startsWith('|')) continue;
-  // .match() with a /g regex resets lastIndex; .test() would not, and would
-  // then skip every other offending row.
-  const found = lines[i].match(CONTROL_CHARS);
-  if (!found) continue;
-  const points = [...new Set(found.map(c => `U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`))];
-  error(`applications.md line ${i + 1}: tracker row contains invisible control character(s) ${points.join(', ')} — delete them; they render as nothing in every view but shift the positional column parse`);
-  controlByteRows++;
+if (TRACKER_FILE) {
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith('|')) continue;
+    // .match() with a /g regex resets lastIndex; .test() would not, and would
+    // then skip every other offending row.
+    const found = lines[i].match(CONTROL_CHARS);
+    if (!found) continue;
+    const points = [...new Set(found.map(c => `U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`))];
+    error(`applications.md line ${i + 1}: tracker row contains invisible control character(s) ${points.join(', ')} — delete them; they render as nothing in every view but shift the positional column parse`);
+    controlByteRows++;
+  }
+} else {
+  // DB mode: no positional parse to shift, but a control byte migrated into a
+  // cell still corrupts every downstream match and render — scan cell values.
+  for (const e of entries) {
+    const cells = [e.date, e.company, e.via, e.role, e.location, e.score, e.status, e.pdf, e.report, e.notes].join('|');
+    const found = cells.match(CONTROL_CHARS);
+    if (!found) continue;
+    const points = [...new Set(found.map(c => `U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')}`))];
+    error(`#${e.num}: tracker row contains invisible control character(s) ${points.join(', ')} — delete them; they render as nothing in every view but corrupt matching and rendering`);
+    controlByteRows++;
+  }
 }
 if (controlByteRows === 0) ok('No control characters in tracker cells');
 
@@ -662,7 +723,7 @@ if (controlByteRows === 0) ok('No control characters in tracker cells');
 // reports here as an error; `jd-archive-review-due` is explicitly soft in its
 // own source (a still-live/unresolved row, not yet a confirmed miss), so it
 // reports as a warning, same as this file's own Check 9/10 warnings.
-const jdArchiveResult = checkJdArchive(REPORTS_DIR, JDS_DIR, { trackerPath: APPS_FILE, statesPath: STATES_FILE });
+const jdArchiveResult = checkJdArchive(REPORTS_DIR, JDS_DIR, { trackerPath: TRACKER_FILE ?? TRACKER_DB, statesPath: STATES_FILE });
 const jdArchiveMissing = jdArchiveResult.findings.filter(f => f.type === 'missing-jd-archive');
 const jdArchiveReviewDue = jdArchiveResult.findings.filter(f => f.type === 'jd-archive-review-due');
 for (const f of jdArchiveMissing) error(`${f.file}: ${f.detail}`);
