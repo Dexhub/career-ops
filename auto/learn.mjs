@@ -12,6 +12,7 @@
 //   node auto/learn.mjs resolve-page --attempt-id ID --input FILE
 //   node auto/learn.mjs checkpoint --attempt-id ID --phase PHASE --input FILE
 //   node auto/learn.mjs capture-attempt --attempt-id ID --apply
+//   node auto/learn.mjs review --once --local-only [--limit N]
 //
 // The attempt subcommands (CONTRACTS J) are the restricted executor's ONLY
 // write surface into the learning store: strict JSON in/out, inputs must be
@@ -37,6 +38,7 @@ import {
 import { LearningError, isSecretKey } from './learning/contracts.mjs';
 import { recordOccurrence } from './learning/questions.mjs';
 import { buildContextPacket } from './learning/retrieval.mjs';
+import { runReview } from './learning/reviewer.mjs';
 
 const USAGE = `Usage:
   node auto/learn.mjs inspect --json
@@ -46,7 +48,9 @@ const USAGE = `Usage:
   node auto/learn.mjs observe-page --attempt-id ID --input FILE --apply
   node auto/learn.mjs resolve-page --attempt-id ID --input FILE
   node auto/learn.mjs checkpoint --attempt-id ID --phase PHASE --input FILE
-  node auto/learn.mjs capture-attempt --attempt-id ID --apply`;
+  node auto/learn.mjs capture-attempt --attempt-id ID --apply
+  node auto/learn.mjs review --once --local-only [--limit N]
+  node auto/learn.mjs review --once --approval-id ID`;
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -55,12 +59,12 @@ function parseArgs(argv) {
     const arg = rest[i];
     if (!arg.startsWith('--')) throw new Error(`unexpected argument: ${arg}`);
     const name = arg.slice(2);
-    if (['out', 'manifest', 'attempt-id', 'input', 'phase'].includes(name)) {
+    if (['out', 'manifest', 'attempt-id', 'input', 'phase', 'approval-id', 'limit'].includes(name)) {
       const value = rest[i + 1];
       if (!value || value.startsWith('--')) throw new Error(`missing value for --${name}`);
       flags[name] = value;
       i += 1;
-    } else if (['json', 'dry-run', 'apply', 'verify'].includes(name)) {
+    } else if (['json', 'dry-run', 'apply', 'verify', 'once', 'local-only'].includes(name)) {
       flags[name] = true;
     } else {
       throw new Error(`unknown flag: --${name}`);
@@ -562,6 +566,30 @@ export async function main(argv = process.argv.slice(2)) {
     const countsMatch = JSON.stringify(applied.counts) === JSON.stringify(check.counts);
     print({ generation: applied.generation, counts: applied.counts, errors: applied.errors, verified: countsMatch });
     return countsMatch ? 0 : 1;
+  }
+
+  if (command === 'review') {
+    // T19: one bounded, feature-flagged reviewer pass. --local-only never
+    // consults a model; the cloud-enabled variant requires a recorded D03
+    // approval (--approval-id) — an AWS credential profile is insufficient.
+    // runReview refuses while config/learning.yml disables learning or review,
+    // and it can never start a cycle, submit, or change desired state.
+    if (!flags.once) throw new Error('review requires --once (a single bounded run)');
+    const localOnly = Boolean(flags['local-only']) || !flags['approval-id'];
+    if (!flags['local-only'] && !flags['approval-id']) {
+      throw new Error('review requires --local-only, or --approval-id ID for the cloud-enabled variant');
+    }
+    const limit = flags.limit === undefined ? undefined : Number.parseInt(flags.limit, 10);
+    if (flags.limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+      throw new Error('--limit must be a positive integer');
+    }
+    const report = await runReview(ctx, {
+      localOnly,
+      limit,
+      approvalId: flags['approval-id'] ?? null,
+    });
+    print(report);
+    return 0;
   }
 
   // Attempt-scoped subcommands (CONTRACTS J): strict JSON out on stdout.

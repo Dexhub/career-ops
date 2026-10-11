@@ -685,3 +685,55 @@ fixture isolation is the first assertion; plan's verbatim acceptance snippet
 included. Full learning suite 261/261 pass (246 prior intact; earlier handoff
 figure of 248 was a miscount — zero failures before or after).
 Commit: (pending — coordinator commits)
+
+## T19 — Run a bounded incremental reviewer, not an unrestricted supervisor (2026-10-11T14:55Z)
+
+Created: `auto/learning/reviewer.mjs`, `auto/test/learning-reviewer.test.mjs`.
+Modified: `auto/learn.mjs` (new `review --once --local-only [--limit N]` /
+`review --once --approval-id ID` subcommand + flags), `auto/panel.mjs`
+(informational `learningReview` field in `/api/auto/status` payload via
+read-only `learningReviewInfo()`; no new routes, no behavior change).
+
+- `reviewer.mjs` exports `runReview(ctx,{localOnly,limit,approvalId})` and
+  `reviewDue(state,now)` (CONTRACTS D7) plus `reviewStatus`, `persistProposal`,
+  `screenProposalCandidate`, `proposalIdFor`, `verifyCloudApproval`,
+  `readReviewerState`. Nothing executes at import time; never imports
+  core/db.mjs; no path to startCycle/submit/desired-state/launchd exists.
+- State (`reviewer/state.json`, atomic writes under a pipeline lock): high-water
+  mark of settled attempt id→revision, reviewer lease (30 min TTL), dueAt,
+  lastRunAt, ONE activeRunId. Six-hour cadence applies only after enabling;
+  missed intervals coalesce into one catch-up run (dueAt reset from finish).
+  Backward clock shift (dueAt > now + interval) triggers one resync run.
+- Deterministic batches over lexically sorted attempt heads read from revision
+  directory names; corrupt JSON is reported per-source and skipped without
+  advancing its cursor entry or blocking unrelated records. Unsettled attempts
+  stay explicitly pending. Batch/time limits stop early, preserving the cursor.
+- Local failure/reuse/cost summaries always computed FIRST. Cloud analysis only
+  when `!localOnly` AND needed AND `cloudEnabled` AND budget reservation
+  succeeds AND a recorded D03 approval record (status `approved`,
+  requiredApprovals includes `D03`) is named — an AWS profile is insufficient
+  (`REVIEW_APPROVAL_REQUIRED`). `CLOUD_OUTCOME_UNKNOWN` is recorded with the
+  open reservation id and never auto-reissued (second run skips
+  `CLOUD_IN_FLIGHT`); budget exhaustion skips before any transport call.
+- Proposals carry kind/evidenceIds/intendedBenefit/baseline/affectedSources/
+  evaluationResult(null)/requiredApprovals(['user',…])/diff; code/UI diffs are
+  inert text. Duplicate suppression keys on component/source/version
+  (`prop-review-<sha256/24>`), new evidence merged as a new revision.
+  `screenProposalCandidate` rejects self-granted authority (pre-approved
+  status, emptied approval gate, apply/execute/approved* keys).
+- Run records live in `reviewRuns` (running→completed/failed; stale run from an
+  expired lease marked aborted on takeover); lease contention refuses with
+  `REVIEWER_LEASE_HELD`.
+- Panel note: the live panel process keeps the old code until the operator
+  restarts it; the new `learningReview` status field is inert until then and
+  reads as not-due while learning is disabled.
+
+Tests: 13/13 new (`node --test auto/test/learning-reviewer.test.mjs`) covering
+restart mid-batch, two-panel lease contention, future/backward clock shifts,
+sleep/catch-up coalescing, unknown cloud outcome, budget exhaustion, D03
+refusal, malformed source, duplicate suppression and self-authority rejection;
+fixture isolation is the first assertion; plan's verbatim acceptance snippet
+included. Full learning suite + cloud handler: 286/286 pass (273 prior intact).
+CLI smoke against the live checkout refused safely (`review` without `--once`
+usage error; `--once --local-only` → "learning is disabled … review refused").
+Commit: (pending — coordinator commits)

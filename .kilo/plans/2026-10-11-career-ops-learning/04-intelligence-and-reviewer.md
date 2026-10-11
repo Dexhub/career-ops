@@ -87,13 +87,13 @@ await assert.rejects(promoteProcedure(ctx,{procedureId,evaluationId:evaluation.i
 **Modify:** `auto/learn.mjs`, existing panel timer integration and post-attempt local consolidation hook.
 **Produces:** `runReview`, `reviewDue`, review-run records, candidate proposals.
 
-- [ ] Persist a high-water mark over settled source IDs/revisions, a reviewer lease, due time and one active run ID. Use deterministic source batches; do not rescan the whole history into every prompt. Failed/unsettled artifacts remain explicitly pending.
-- [ ] On each attempt completion, perform cheap validated capture. Consolidate new records when idle or through the local reviewer. Use a default six-hour review interval only after enabling it; missed intervals coalesce into one bounded catch-up run after sleep/restart.
-- [ ] Keep application-start scheduling separate. The existing panel may check whether review is due, but the reviewer cannot call `startCycle`, submit, change desired application-running state, or enable the disabled application launchd schedule.
-- [ ] For each batch, compute deterministic failure/reuse/cost summaries first; invoke optional analysis only if needed and permitted by the budget. Stop on configured batch/time limits and preserve the cursor for continuation. A malformed source must not block all unrelated records indefinitely.
-- [ ] Create evidence-linked proposals for answers, procedures, config, code, UI and positioning. Code/UI proposals are inert suggested diffs or implementation notes; they are never automatically executed. Testing an arbitrary generated code patch itself requires a reviewed, isolated maintenance workflow, not the production review loop.
-- [ ] Record why a proposal is useful, its baseline, expected scope, actual evaluation result and approval gate. Suppress duplicate proposals by affected component/source/version while retaining additional supporting evidence.
-- [ ] Test restart mid-batch, two panel processes, future/backward clock shift, sleep/catch-up, unknown cloud outcome, budget exhaustion and rejection of a proposal that attempts to grant itself authority. Run `node --test auto/test/learning-reviewer.test.mjs`.
+- [x] Persist a high-water mark over settled source IDs/revisions, a reviewer lease, due time and one active run ID. Use deterministic source batches; do not rescan the whole history into every prompt. Failed/unsettled artifacts remain explicitly pending.
+- [x] On each attempt completion, perform cheap validated capture. Consolidate new records when idle or through the local reviewer. Use a default six-hour review interval only after enabling it; missed intervals coalesce into one bounded catch-up run after sleep/restart.
+- [x] Keep application-start scheduling separate. The existing panel may check whether review is due, but the reviewer cannot call `startCycle`, submit, change desired application-running state, or enable the disabled application launchd schedule.
+- [x] For each batch, compute deterministic failure/reuse/cost summaries first; invoke optional analysis only if needed and permitted by the budget. Stop on configured batch/time limits and preserve the cursor for continuation. A malformed source must not block all unrelated records indefinitely.
+- [x] Create evidence-linked proposals for answers, procedures, config, code, UI and positioning. Code/UI proposals are inert suggested diffs or implementation notes; they are never automatically executed. Testing an arbitrary generated code patch itself requires a reviewed, isolated maintenance workflow, not the production review loop.
+- [x] Record why a proposal is useful, its baseline, expected scope, actual evaluation result and approval gate. Suppress duplicate proposals by affected component/source/version while retaining additional supporting evidence.
+- [x] Test restart mid-batch, two panel processes, future/backward clock shift, sleep/catch-up, unknown cloud outcome, budget exhaustion and rejection of a proposal that attempts to grant itself authority. Run `node --test auto/test/learning-reviewer.test.mjs`.
 
 ```js
 await runReview(ctx,{localOnly:true,limit:25,approvalId:null});

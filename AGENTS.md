@@ -590,7 +590,16 @@ byte cap from `config/learning.yml`, provenance/gaps/procedures reserved before
 stories); stories are verbatim CV/profile spans with hashes, never synthesized;
 cache keyed by question fingerprints + source hashes + policy/procedure
 versions (never role title); `storeDraftAnswer` keeps generated free text as a
-draft proposal, never a personal fact. Rules: nothing executes at import
+draft proposal, never a personal fact. Reviewer (T19): `reviewer.mjs` exports
+`runReview`/`reviewDue` — bounded incremental passes over newly settled
+attempts (persisted cursor + 30-min lease + one active run in `reviewRuns`),
+local failure/reuse/cost summaries first, inert evidence-linked proposals
+(duplicate-suppressed by component/source/version); CLI `node auto/learn.mjs
+review --once --local-only`; the cloud variant needs a recorded D03 approval
+record (`--approval-id`), never just an AWS profile, and an unknown cloud
+outcome is never auto-reissued. The panel's `/api/auto/status` carries a
+read-only `learningReview` due-ness field; the reviewer has no path to
+`startCycle`/submit/desired state/launchd. Rules: nothing executes at import
 time; learning modules never import `core/db.mjs` (the `learn.mjs` CLI is
 allowed read-only db access for discovery but currently needs only
 `path-resolver.mjs`); no new dependencies.

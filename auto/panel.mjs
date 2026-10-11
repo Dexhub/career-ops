@@ -27,6 +27,9 @@ import { listJobs, loadJob, pickOrder, queueOrderOptions, saveJob, transition, u
 import { AUTO_CONFIG_PATH, loadAutoConfig, POLICY_RANGES, previewPolicyEnforcement, resolveExecutionPolicy } from './lib/config.mjs';
 import { loadRadar, saveRadar } from './radar.mjs';
 import { agentFlags, setAgentEnabled } from './lib/agent-flags.mjs';
+import { getCareerOpsRoot } from '../path-resolver.mjs';
+import { createLearningContext } from './learning/context.mjs';
+import { reviewStatus as learningReviewStatus } from './learning/reviewer.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -515,6 +518,19 @@ export function operatorPayload() {
   };
 }
 
+// T19: purely informational, learning-gated review-due check. Strictly
+// read-only — the panel may surface that a review is due, but it never runs
+// one, and the reviewer itself can never start a cycle, submit, or change
+// desired application-running state. Disabled learning reads as "not due".
+function learningReviewInfo() {
+  try {
+    const ctx = createLearningContext({ codeRoot: ROOT, dataRoot: getCareerOpsRoot(), now: () => new Date() });
+    return learningReviewStatus(ctx);
+  } catch {
+    return { enabled: false, reviewEnabled: false, due: false };
+  }
+}
+
 function statusPayload() {
   const jobs = jobSummaries();
   const counts = {};
@@ -537,6 +553,7 @@ function statusPayload() {
     dailyLimit,
     workingOn: applying ? `${applying.company} — ${applying.role}` : null,
     digestToday: existsSync(join(ROOT, 'data', 'auto', `digest-${day}.md`)),
+    learningReview: learningReviewInfo(),
     logTail: logTail(),
   };
 }
