@@ -1,22 +1,23 @@
 #!/usr/bin/env node
 /**
- * followup-seed.mjs — Seed data/follow-ups.md when a row is marked Applied (#1430)
+ * followup-seed.mjs — Seed the next-follow-up date when a row is marked Applied (#1430)
  *
  * WHY: the follow-up system was "born dead". Marking a tracker row Applied only
- * updated applications.md — data/follow-ups.md stayed empty until the user ran
- * the `followup` mode by hand and it happened to notice the row. In practice
- * that meant most applications never got a scheduled next-follow-up date at
- * all, silently defeating the entire cadence feature. This script closes that
- * gap: given an appNum (or --backfill for the whole tracker), it computes the
- * cadence-default next-follow-up date and writes it as a PIN DIRECTIVE line —
- * never a table row, because a table row in follow-ups.md means "a follow-up
- * was SENT", which seeding must not claim.
+ * updated the applications table — the follow-up schedule stayed empty until
+ * the user ran the `followup` mode by hand and it happened to notice the row.
+ * In practice that meant most applications never got a scheduled
+ * next-follow-up date at all, silently defeating the entire cadence feature.
+ * This script closes that gap: given an appNum (or --backfill for the whole
+ * tracker), it computes the cadence-default next-follow-up date and writes it
+ * to the `follow_up_next` table in data/career-ops.db — never a `follow_ups`
+ * row, because a follow-ups row means "a follow-up was SENT", which seeding
+ * must not claim.
  *
- * Pin format (parsed by `parseNextOverrides` in followup-cadence.mjs):
- *   - next #<appNum> <YYYY-MM-DD> (set <YYYY-MM-DD>)
- * First date = seeded next-follow-up date. `(set …)` = the day the pin was
- * written. The LAST pin per application wins, so re-seeding with --force is
- * always safe — it just appends a fresh pin.
+ * The pin lives in follow_up_next as `{app_num, next_date, set_date}` — the
+ * DB-era successor of the markdown pin directive
+ * `- next #<appNum> <YYYY-MM-DD> (set <YYYY-MM-DD>)`. One row per application
+ * (upsert), so re-seeding with --force is always safe — it just replaces the
+ * pin, matching the old "last pin wins" rule.
  *
  * Apply-date resolution order (see resolveAppliedDate): explicit --date, then
  * "Applied YYYY-MM-DD" in the row's notes, then the tracker's `date` column,
@@ -31,8 +32,8 @@
  * unlabelled guess is the trade that replaced it (#2607).
  *
  * Idempotency: by default, seeding a given appNum is a NO-OP FOREVER once
- * either a pin or a follow-up table row exists for it (exit 0, seeded:false).
- * Pass --force to append a fresh pin anyway.
+ * either a follow_up_next pin or a follow_ups row exists for it (exit 0,
+ * seeded:false). Pass --force to write a fresh pin anyway.
  *
  * Usage:
  *   node followup-seed.mjs <appNum> [--date YYYY-MM-DD] [--force] [--dry-run] [--json]
@@ -46,8 +47,8 @@
  *   4 lock timeout
  *
  * Env overrides (mirroring merge-tracker.mjs / followup-cadence.mjs):
- *   CAREER_OPS_TRACKER                     tracker path
- *   CAREER_OPS_FOLLOWUPS                   follow-ups path
+ *   CAREER_OPS_DB                          tracker database path
+ *   CAREER_OPS_FOLLOWUPS                   follow-ups lock-key path (legacy name, keys the lock)
  *   CAREER_OPS_PROFILE                     profile.yml path (cadence overrides)
  *   CAREER_OPS_FOLLOWUPS_LOCK              lock directory override
  *   CAREER_OPS_FOLLOWUPS_LOCK_TIMEOUT_MS   lock acquire timeout
@@ -56,7 +57,7 @@
  *   CAREER_OPS_OWNERLESS_GRACE_MS          ownerless-lock floor (pipeline-lock.mjs; shared, not per-script)
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, statSync, realpathSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, realpathSync } from 'fs';
 import { join, dirname, basename, resolve, isAbsolute, relative, sep } from 'path';
 import { fileURLToPath } from 'url';
 import { createHash, randomUUID } from 'crypto';
@@ -69,24 +70,26 @@ import {
   isMkdirContention, isRmContention, rmLockArtifactSync, createLockWaitPolicy,
   sameLockDirectory, lockRecoveryVerdict, RECOVER_STALE,
 } from './pipeline-lock.mjs';
-import { renameSyncWithRetry } from './tracker-utils.mjs';
 import { tmpdir } from 'os';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import { localToday } from './lib/local-today.mjs';
 import {
   resolveCadenceConfig,
   normalizeStatus,
   parseAppliedDate,
-  parseNextOverrides,
   parseDate,
   addDays,
 } from './followup-cadence.mjs';
-import { getCareerOpsRoot, resolveTrackerPath as sharedResolveTrackerPath } from './path-resolver.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import * as db from './core/db.mjs';
 
 const CAREER_OPS = getCareerOpsRoot();
 
-/** Canonical header written when data/follow-ups.md doesn't exist yet. */
+/**
+ * Canonical header of the retired data/follow-ups.md markdown store. Kept
+ * exported for legacy-format consumers and tests; nothing in this file writes
+ * it anymore — follow-up state lives in data/career-ops.db.
+ */
 export const FOLLOWUPS_HEADER = [
   '# Follow-ups',
   '',
@@ -204,11 +207,11 @@ export function formatPinLine(appNum, nextDate, setDate) {
 
 // --- Path resolution (env override → option override → default) -----------
 
-function resolveTrackerPath(override) {
-  if (override) return override;
-  return sharedResolveTrackerPath(CAREER_OPS);
-}
-
+// The follow-ups path no longer names a file that is read or written — the
+// data lives in the DB — but it still KEYS THE LOCK (sha256 of this path picks
+// the lock directory). Every follow-up writer, including the web dashboard via
+// withFollowupsLock, derives the same key from the same default, so changing
+// this derivation silently breaks mutual exclusion. It stays as-is.
 function resolveFollowupsPath(override) {
   if (override) return override;
   if (process.env.CAREER_OPS_FOLLOWUPS) return process.env.CAREER_OPS_FOLLOWUPS;
@@ -222,40 +225,23 @@ function envInt(name, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// --- Tracker reading ---------------------------------------------------
+// --- Idempotency: pin OR follow-up row already exists for appNum ----------
 
-function readTrackerRows(trackerPath) {
-  const content = readFileSync(trackerPath, 'utf-8');
-  const lines = content.split('\n');
-  const colmap = resolveColumns(lines);
-  const rows = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) rows.push(row);
+/**
+ * The set of appNums that already count as seeded: anything with a
+ * follow_up_next pin OR a sent follow-up in the follow_ups table. A
+ * follow_up_cleared marker deliberately does NOT count — the markdown era's
+ * `isAlreadySeeded` only looked at next-pins and table rows, and a cleared
+ * application that gets explicitly re-seeded should get its pin.
+ */
+function seededAppNums() {
+  const seeded = new Set();
+  for (const row of db.listFollowUpNext()) seeded.add(row.app_num);
+  for (const row of db.listFollowUps()) {
+    const n = parseInt(row.app_num, 10);
+    if (!isNaN(n)) seeded.add(n);
   }
-  return rows;
-}
-
-// --- Idempotency: pin OR follow-up table row already exists for appNum ----
-
-// Mirrors followup-cadence.mjs's parseFollowups: a `|`-delimited row whose 3rd
-// cell (index 2 after split('|').map(trim) — index 0 is the empty cell before
-// the leading pipe, index 1 is the follow-up's own `num`) is the appNum.
-function hasFollowupTableRow(content, appNum) {
-  for (const line of content.split('\n')) {
-    if (!line.startsWith('|')) continue;
-    const parts = line.split('|').map(s => s.trim());
-    if (parts.length < 8) continue;
-    const rowAppNum = parseInt(parts[2], 10);
-    if (!isNaN(rowAppNum) && rowAppNum === appNum) return true;
-  }
-  return false;
-}
-
-function isAlreadySeeded(content, appNum) {
-  if (!content) return false;
-  if (parseNextOverrides(content).has(appNum)) return true;
-  return hasFollowupTableRow(content, appNum);
+  return seeded;
 }
 
 // --- Locking (mirrors merge-tracker.mjs's tracker lock, scoped to follow-ups) --
@@ -437,35 +423,14 @@ async function acquireFollowupsLock(lockDir, followupsPath, options = {}) {
   throw new SeedError('LOCK_TIMEOUT', `Timed out waiting for follow-ups lock at ${lockDir}`);
 }
 
-// --- Atomic write (mirrors writeFileAtomic in tracker.mjs / merge-tracker.mjs) --
-
-function writeFileAtomic(filePath, content) {
-  const tmpPath = join(dirname(filePath), `.${basename(filePath)}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`);
-  try {
-    writeFileSync(tmpPath, content);
-    renameSyncWithRetry(tmpPath, filePath);
-  } catch (err) {
-    rmSync(tmpPath, { force: true });
-    throw err;
-  }
-}
-
-function appendPins(existingContent, pinLines) {
-  const joined = pinLines.join('\n');
-  if (existingContent == null) {
-    return `${FOLLOWUPS_HEADER}\n${joined}\n`;
-  }
-  return existingContent + (existingContent.endsWith('\n') ? '' : '\n') + joined + '\n';
-}
-
 // --- Core: seed one application --------------------------------------------
 
 /**
- * Seed data/follow-ups.md with a pin directive for one Applied application.
+ * Seed the follow_up_next table with a pin for one Applied application.
  *
- * Silent-no-op-forever by default: once a pin or a follow-up table row exists
+ * Silent-no-op-forever by default: once a pin or a follow_ups row exists
  * for `appNum`, subsequent calls return `{seeded:false, reason:'already-seeded'}`
- * without touching the file, unless `options.force` is set.
+ * without touching the DB, unless `options.force` is set.
  *
  * @param {number} appNum
  * @param {object} [options]
@@ -477,8 +442,7 @@ function appendPins(existingContent, pinLines) {
  *   suppressing `already-seeded`, so the preview would promise a pin the real run then
  *   declines to write. This says "treat the status as Applied", not "write regardless".
  * @param {boolean} [options.dryRun] - Compute and report, but write nothing (no lock taken).
- * @param {string} [options.trackerPath]
- * @param {string} [options.followupsPath]
+ * @param {string} [options.followupsPath] - Legacy lock-key path; the data itself lives in the DB.
  * @param {string} [options.profilePath]
  * @param {string} [options.lockDir]
  * @param {number} [options.lockTimeoutMs]
@@ -549,21 +513,20 @@ export async function seedFollowup(appNum, options = {}) {
     throw new SeedError('INVALID_DATE', `--date must be a real calendar date in YYYY-MM-DD form: ${options.date}`);
   }
 
-  const trackerPath = resolveTrackerPath(options.trackerPath);
   const followupsPath = resolveFollowupsPath(options.followupsPath);
 
-  if (!existsSync(trackerPath)) {
-    throw new SeedError('ROW_NOT_FOUND', `Tracker not found at ${trackerPath}`);
+  const dbPath = db.resolveDbPath();
+  if (!existsSync(dbPath)) {
+    throw new SeedError('ROW_NOT_FOUND', `Tracker not found at ${dbPath}`);
   }
-  const rows = readTrackerRows(trackerPath);
-  const row = rows.find(r => r.num === appNum);
+  const row = db.getApplication(appNum);
   if (!row) {
-    throw new SeedError('ROW_NOT_FOUND', `Application #${appNum} not found in ${trackerPath}`);
+    throw new SeedError('ROW_NOT_FOUND', `Application #${appNum} not found in ${dbPath}`);
   }
 
   const normalized = normalizeStatus(row.status);
   if (normalized !== 'applied' && !options.force && !options.assumeApplied) {
-    throw new SeedError('NOT_APPLIED', `Application #${appNum} is not Applied (status: "${row.status.trim()}"); use --force to seed anyway`);
+    throw new SeedError('NOT_APPLIED', `Application #${appNum} is not Applied (status: "${String(row.status ?? '').trim()}"); use --force to seed anyway`);
   }
 
   // appDateSource travels with the result so a caller can tell a measured apply
@@ -576,8 +539,7 @@ export async function seedFollowup(appNum, options = {}) {
   const pin = formatPinLine(appNum, nextDate, setDate);
 
   if (options.dryRun) {
-    const existingContent = existsSync(followupsPath) ? readFileSync(followupsPath, 'utf-8') : '';
-    if (isAlreadySeeded(existingContent, appNum) && !options.force) {
+    if (seededAppNums().has(appNum) && !options.force) {
       return { seeded: false, appNum, pin: null, nextDate, appliedDate, appDateSource, setDate, reason: 'already-seeded', dryRun: true };
     }
     return { seeded: true, appNum, pin, nextDate, appliedDate, appDateSource, setDate, dryRun: true };
@@ -591,13 +553,11 @@ export async function seedFollowup(appNum, options = {}) {
   });
 
   try {
-    const existingContent = existsSync(followupsPath) ? readFileSync(followupsPath, 'utf-8') : null;
-    if (existingContent != null && isAlreadySeeded(existingContent, appNum) && !options.force) {
+    if (seededAppNums().has(appNum) && !options.force) {
       return { seeded: false, appNum, pin: null, nextDate, appliedDate, appDateSource, setDate, reason: 'already-seeded' };
     }
 
-    mkdirSync(dirname(followupsPath), { recursive: true });
-    writeFileAtomic(followupsPath, appendPins(existingContent, [pin]));
+    db.setFollowUpNext(appNum, nextDate, setDate);
     return { seeded: true, appNum, pin, nextDate, appliedDate, appDateSource, setDate };
   } finally {
     lock.release();
@@ -615,13 +575,13 @@ export async function seedFollowup(appNum, options = {}) {
  * @returns {Promise<{seeded: object[], skipped: object[]}>}
  */
 export async function seedBackfill(options = {}) {
-  const trackerPath = resolveTrackerPath(options.trackerPath);
   const followupsPath = resolveFollowupsPath(options.followupsPath);
 
-  if (!existsSync(trackerPath)) {
-    throw new SeedError('ROW_NOT_FOUND', `Tracker not found at ${trackerPath}`);
+  const dbPath = db.resolveDbPath();
+  if (!existsSync(dbPath)) {
+    throw new SeedError('ROW_NOT_FOUND', `Tracker not found at ${dbPath}`);
   }
-  const rows = readTrackerRows(trackerPath);
+  const rows = db.listApplications();
   const appliedRows = rows.filter(r => normalizeStatus(r.status) === 'applied');
   const cadence = resolveCadenceConfig({ profilePath: options.profilePath });
   const setDate = todayStr();
@@ -633,11 +593,11 @@ export async function seedBackfill(options = {}) {
   }
 
   if (options.dryRun) {
-    const existingContent = existsSync(followupsPath) ? readFileSync(followupsPath, 'utf-8') : '';
+    const alreadySeeded = seededAppNums();
     const seeded = [];
     const skipped = [];
     for (const row of appliedRows) {
-      if (isAlreadySeeded(existingContent, row.num) && !options.force) {
+      if (alreadySeeded.has(row.num) && !options.force) {
         skipped.push({ appNum: row.num, reason: 'already-seeded' });
         continue;
       }
@@ -662,13 +622,11 @@ export async function seedBackfill(options = {}) {
   });
 
   try {
-    const existingContent = existsSync(followupsPath) ? readFileSync(followupsPath, 'utf-8') : null;
-    const checkContent = existingContent ?? '';
+    const alreadySeeded = seededAppNums();
     const seeded = [];
     const skipped = [];
-    const newPins = [];
     for (const row of appliedRows) {
-      if (isAlreadySeeded(checkContent, row.num) && !options.force) {
+      if (alreadySeeded.has(row.num) && !options.force) {
         skipped.push({ appNum: row.num, reason: 'already-seeded' });
         continue;
       }
@@ -683,12 +641,15 @@ export async function seedBackfill(options = {}) {
         throw err;
       }
       seeded.push(plan);
-      newPins.push(plan.pin);
     }
 
-    if (newPins.length > 0) {
-      mkdirSync(dirname(followupsPath), { recursive: true });
-      writeFileAtomic(followupsPath, appendPins(existingContent, newPins));
+    if (seeded.length > 0) {
+      // One transaction for the whole batch, mirroring the single atomic file
+      // write of the markdown era: a crash mid-backfill leaves either all pins
+      // or none, never a half-seeded tracker.
+      db.tx(() => {
+        for (const plan of seeded) db.setFollowUpNext(plan.appNum, plan.nextDate, plan.setDate);
+      });
     }
 
     return { seeded, skipped };

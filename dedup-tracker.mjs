@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * dedup-tracker.mjs — Remove duplicate entries from applications.md
+ * dedup-tracker.mjs — Remove duplicate entries from the applications table
  *
  * Groups by normalized company, then merges only rows whose full role title
  * matches exactly (case- and whitespace-normalized) and whose posting URLs, when
@@ -11,23 +11,17 @@
  * Run: node career-ops/dedup-tracker.mjs [--dry-run]
  */
 
-import { readFileSync, copyFileSync, existsSync, mkdirSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
-import { fileURLToPath } from 'url';
-import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
-import { roleFuzzyMatch } from './role-matcher.mjs';
 import { normalizeUrl } from './url-key.mjs';
-import {
-  openTrackerTransaction, rebuildRow, normalizeCompany,
-} from './tracker-utils.mjs';
-import { resolveColumns, parseTrackerRow, normalizeVia } from './tracker-parse.mjs';
+import { normalizeCompany } from './tracker-utils.mjs';
+import { normalizeVia } from './tracker-parse.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
+import * as db from './core/db.mjs';
 
-const CAREER_OPS = getCareerOpsRoot();
-// Support both layouts: data/applications.md (boilerplate) and applications.md
-// (original). CAREER_OPS_TRACKER lets tests point the script at an isolated
-// fixture so the real user tracker is never touched.
-const APPS_FILE = resolveTrackerPath(CAREER_OPS);
+// The tracker lives in the SQLite database. CAREER_OPS_DB lets tests point the
+// script at an isolated fixture so the real user tracker is never touched.
+const APPS_FILE = db.resolveDbPath();
 
 // ── CLI args ────────────────────────────────────────────────────────
 // Same shape as scan-ats-full.mjs (#1633/PR #1635) and reply-watch.mjs
@@ -278,57 +272,13 @@ function parseScore(s) {
   return m ? parseFloat(m[1]) : 0;
 }
 
-/**
- * Parse one Markdown table row from applications.md into a tracker object.
- *
- * Header and separator rows return null because they either lack enough cells
- * or do not have a numeric tracker id. Valid data rows keep the raw line; the
- * caller attaches the physical line index after parsing so later updates and
- * removals never depend on tracker numbers being globally unique.
- *
- * @param {string} line - One line from applications.md.
- * @returns {object|null} Parsed tracker row, or null for non-application lines.
- */
-function parseAppLine(line) {
-  return parseTrackerRow(line, COLMAP);
-}
-
 // Read
 if (!existsSync(APPS_FILE)) {
-  console.log('No applications.md found. Nothing to dedup.');
+  console.log('No tracker database found. Nothing to dedup.');
   process.exit(0);
 }
 
-let trackerTransaction = null;
-let COLMAP;
-if (!DRY_RUN) {
-  try {
-    trackerTransaction = await openTrackerTransaction(APPS_FILE);
-  } catch (err) {
-    console.error(`Cannot acquire tracker lock: ${err.message}`);
-    process.exit(1);
-  }
-  process.once('exit', () => {
-    try { trackerTransaction.close(); } catch {}
-  });
-}
-try {
-const content = trackerTransaction ? trackerTransaction.read() : readFileSync(APPS_FILE, 'utf-8');
-const lines = content.split('\n');
-// Header-aware column map (tolerates an inserted Location column, etc.).
-COLMAP = resolveColumns(lines);
-
-// Parse all entries
-const entries = [];
-
-for (let i = 0; i < lines.length; i++) {
-  if (!lines[i].startsWith('|')) continue;
-  const app = parseAppLine(lines[i]);
-  if (app && app.num > 0) {
-    app.lineIdx = i;
-    entries.push(app);
-  }
-}
+const entries = db.listApplications().filter(app => app.num > 0);
 
 console.log(`📊 ${entries.length} entries loaded`);
 
@@ -375,9 +325,13 @@ function withinBlindWindow(a, b) {
   return Math.abs(ta - tb) <= BLIND_WINDOW_DAYS * 86400000;
 }
 
-// Find duplicates
+// Find duplicates. Writes are collected during clustering and applied in one
+// DB transaction at the end, so a crash mid-dedup leaves the tracker untouched
+// — the same all-or-nothing guarantee the markdown era got from a single
+// atomic file write.
 let removed = 0;
-const linesToRemove = new Set();
+const patches = new Map(); // num → partial column patch for the keeper
+const numsToRemove = new Set();
 
 for (const [company, companyEntries] of groups) {
   if (companyEntries.length < 2) continue;
@@ -422,13 +376,8 @@ for (const [company, companyEntries] of groups) {
 
     // Update keeper's status if a removed entry had a more advanced one
     if (bestStatus !== keeper.status) {
-      const lineIdx = keeper.lineIdx;
-      if (lineIdx !== undefined) {
-        const parts = lines[lineIdx].split('|').map(s => s.trim());
-        parts[COLMAP.status] = bestStatus;
-        lines[lineIdx] = rebuildRow(parts);
-        console.log(`  📝 #${keeper.num}: status promoted to "${bestStatus}" (from #${cluster.find(e => e.status === bestStatus)?.num})`);
-      }
+      patches.set(keeper.num, { ...(patches.get(keeper.num) || {}), status: bestStatus });
+      console.log(`  📝 #${keeper.num}: status promoted to "${bestStatus}" (from #${cluster.find(e => e.status === bestStatus)?.num})`);
     }
 
     // Merge notes from removed entries
@@ -444,33 +393,19 @@ for (const [company, companyEntries] of groups) {
     }
 
     if (mergedNotes !== originalNotes) {
-      const lineIdx = keeper.lineIdx;
-      if (lineIdx !== undefined) {
-        const parts = lines[lineIdx].split('|').map(s => s.trim());
-        parts[COLMAP.notes] = mergedNotes;
-        lines[lineIdx] = rebuildRow(parts);
-        keeper.notes = mergedNotes;
-        console.log(`  📝 #${keeper.num}: notes merged`);
-      }
+      patches.set(keeper.num, { ...(patches.get(keeper.num) || {}), notes: mergedNotes });
+      keeper.notes = mergedNotes;
+      console.log(`  📝 #${keeper.num}: notes merged`);
     }
 
     // Remove duplicates
     for (let k = 1; k < cluster.length; k++) {
       const dup = cluster[k];
-      const lineIdx = dup.lineIdx;
-      if (lineIdx !== undefined) {
-        linesToRemove.add(lineIdx);
-        removed++;
-        console.log(`🗑️  Remove #${dup.num} (${dup.company} — ${dup.role}, ${dup.score}) → kept #${keeper.num} (${keeper.score})`);
-      }
+      numsToRemove.add(dup.num);
+      removed++;
+      console.log(`🗑️  Remove #${dup.num} (${dup.company} — ${dup.role}, ${dup.score}) → kept #${keeper.num} (${keeper.score})`);
     }
   }
-}
-
-// Remove lines (in reverse order to preserve indices)
-const sortedRemoveIndices = [...linesToRemove].sort((a, b) => b - a);
-for (const idx of sortedRemoveIndices) {
-  lines.splice(idx, 1);
 }
 
 console.log(`\n📊 ${removed} duplicates removed`);
@@ -478,13 +413,13 @@ console.log(`\n📊 ${removed} duplicates removed`);
 if (!DRY_RUN && removed > 0) {
   const backupPath = `${APPS_FILE}.bak`;
   copyFileSync(APPS_FILE, backupPath);
-  trackerTransaction.replace(lines.join('\n'));
+  db.tx(() => {
+    for (const [num, patch] of patches) db.updateApplication(num, patch);
+    for (const num of numsToRemove) db.deleteApplication(num);
+  });
   console.log(`✅ Written to ${APPS_FILE} (backup: ${backupPath})`);
 } else if (DRY_RUN) {
   console.log('(dry-run — no changes written)');
 } else {
   console.log('✅ No duplicates found');
-}
-} finally {
-  trackerTransaction?.close();
 }

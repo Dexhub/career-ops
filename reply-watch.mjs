@@ -15,14 +15,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { matchCandidates, classifyReply } from './reply-matcher.mjs';
-import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
-import {
-  openTrackerTransaction, rebuildRow, resolveTrackerPath,
-} from './tracker-utils.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { validateFlags } from './lib/cli-flags.mjs';
 import { localToday } from './lib/local-today.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import * as db from './core/db.mjs';
 
 // Every file here is user layer, so it resolves against the data root
 // (CAREER_OPS_ROOT / CAREER_OPS_DATA_DIR / .career-ops-data marker), never the
@@ -30,7 +27,10 @@ import { isMainModule } from './lib/is-main-module.mjs';
 const DATA_ROOT = getCareerOpsRoot();
 export const DEFAULT_CANDIDATES_PATH = process.env.CAREER_OPS_REPLY_CANDIDATES
   || path.join(DATA_ROOT, 'data', 'reply-candidates.json');
-export const APPS_FILE = resolveTrackerPath(DATA_ROOT);
+// The tracker now lives in the SQLite database (CAREER_OPS_DB override).
+export const APPS_FILE = db.resolveDbPath();
+// Retired markdown follow-ups path. Nothing here reads it anymore (follow-ups
+// come from the follow_ups table); exported for path-resolution tests only.
 export const FOLLOWUPS_FILE = path.join(DATA_ROOT, 'data', 'follow-ups.md');
 
 // Helper to ask a question in the CLI
@@ -105,51 +105,29 @@ function loadTrackerApps() {
   if (!fs.existsSync(APPS_FILE)) {
     return [];
   }
-  const content = fs.readFileSync(APPS_FILE, 'utf-8');
-  const lines = content.split('\n');
-  const colmap = resolveColumns(lines);
-  const apps = [];
-  for (const line of lines) {
-    const row = parseTrackerRow(line, colmap);
-    if (row) {
-      apps.push(row);
-    }
-  }
-  return apps;
+  return db.listApplications();
 }
 
-// Load followups history
+// Load followups history (same row shape the markdown parser produced)
 function loadFollowups() {
-  if (!fs.existsSync(FOLLOWUPS_FILE)) {
+  if (!fs.existsSync(APPS_FILE)) {
     return [];
   }
-  const content = fs.readFileSync(FOLLOWUPS_FILE, 'utf-8');
-  const lines = content.split('\n');
-  const followups = [];
-  for (const line of lines) {
-    if (!line.startsWith('|')) continue;
-    const parts = line.split('|').map(s => s.trim());
-    if (parts.length < 8) continue;
-    const num = parseInt(parts[1], 10);
-    const appNum = parseInt(parts[2], 10);
-    if (isNaN(num) || isNaN(appNum)) continue;
-    followups.push({
-      num,
-      appNum,
-      date: parts[3],
-      company: parts[4],
-      role: parts[5],
-      channel: parts[6],
-      contact: parts[7],
-      notes: parts[8] || ''
-    });
-  }
-  return followups;
+  return db.listFollowUps().map(row => ({
+    num: row.num,
+    appNum: row.app_num,
+    date: row.date,
+    company: row.company,
+    role: row.role,
+    channel: row.channel,
+    contact: row.contact,
+    notes: row.notes || '',
+  }));
 }
 
-// Apply an approved batch in one locked read/modify/write transaction. Reading
-// after lock acquisition matters because the review prompt can remain open
-// while another process merges or updates tracker rows.
+// Apply an approved batch in one DB transaction. Re-reading each row inside
+// the transaction matters because the review prompt can remain open while
+// another process merges or updates tracker rows.
 function groupStatusRecommendations(recommendations) {
   const byApplication = new Map();
   for (const recommendation of recommendations) {
@@ -175,47 +153,36 @@ function groupStatusRecommendations(recommendations) {
 }
 
 async function updateTrackerStatuses(updates, onApplied = null) {
-  const trackerTransaction = await openTrackerTransaction(APPS_FILE);
+  const grouped = groupStatusRecommendations(updates);
+  const updatesByNum = new Map(grouped.updates.map(update => [update.num, update]));
+  const applied = new Set();
+  const alreadyCurrent = new Set();
+  const conflicts = new Map();
+  const missing = new Set(updatesByNum.keys());
 
-  try {
-    const content = trackerTransaction.read();
-    const lines = content.split('\n');
-    const colmap = resolveColumns(lines);
-    const grouped = groupStatusRecommendations(updates);
-    const updatesByNum = new Map(grouped.updates.map(update => [update.num, update]));
-    const applied = new Set();
-    const alreadyCurrent = new Set();
-    const conflicts = new Map();
-    const missing = new Set(updatesByNum.keys());
-
-    for (let i = 0; i < lines.length; i++) {
-      const row = parseTrackerRow(lines[i], colmap);
-      if (!row) continue;
-      const update = updatesByNum.get(row.num);
-      if (!update) continue;
-      missing.delete(update.num);
+  db.tx(() => {
+    for (const [num, update] of updatesByNum) {
+      const row = db.getApplication(num);
+      if (!row) continue; // stays in `missing`
+      missing.delete(num);
       if (row.status === update.newStatus) {
-        alreadyCurrent.add(update.num);
+        alreadyCurrent.add(num);
         continue;
       }
       if (row.status !== update.oldStatus) {
-        conflicts.set(update.num, row.status);
+        conflicts.set(num, row.status);
         continue;
       }
-      const parts = lines[i].split('|').map(s => s.trim());
-      parts[colmap.status] = update.newStatus;
-      lines[i] = rebuildRow(parts);
-      applied.add(update.num);
+      db.updateApplication(num, { status: update.newStatus });
+      applied.add(num);
     }
+    // Inside the transaction so the status-event rows commit atomically with
+    // the status writes they describe — the same guarantee the markdown era
+    // got from running the log append before the locked file was closed.
+    if (applied.size > 0 && onApplied) onApplied(applied, updatesByNum);
+  });
 
-    if (applied.size > 0) {
-      trackerTransaction.replace(lines.join('\n'));
-      if (onApplied) onApplied(applied, updatesByNum);
-    }
-    return { applied, alreadyCurrent, conflicts, missing, recommendationConflicts: grouped.conflicts };
-  } finally {
-    trackerTransaction.close();
-  }
+  return { applied, alreadyCurrent, conflicts, missing, recommendationConflicts: grouped.conflicts };
 }
 
 const KNOWN_FLAGS = ['--help', '-h'];
@@ -317,18 +284,23 @@ async function main() {
 
     const answer = await askQuestion(`Apply recommended status updates to ${APPS_FILE}? (y/N): `);
     if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-      const statusLogFile = path.join(path.dirname(APPS_FILE), 'status-log.tsv');
       const todayStr = localToday();
 
       const result = await updateTrackerStatuses(updates, (applied, updatesByNum) => {
         for (const num of applied) {
           const u = updatesByNum.get(num);
           if (u) {
-            const line = `${num}\t${todayStr}\t${u.oldStatus}\t${u.newStatus}\treply-watch\t\n`;
             try {
-              fs.appendFileSync(statusLogFile, line, 'utf-8');
+              db.appendStatusEvent({
+                appNum: num,
+                eventDate: todayStr,
+                fromStatus: u.oldStatus,
+                toStatus: u.newStatus,
+                source: 'reply-watch',
+                note: '',
+              });
             } catch (err) {
-              console.warn(`Warning: failed to append to status-log.tsv for #${num}: ${err.message}`);
+              console.warn(`Warning: failed to record status event for #${num}: ${err.message}`);
             }
           }
         }
@@ -346,15 +318,6 @@ async function main() {
         }
       }
       console.log('\n✅ Tracker review complete');
-
-      // Sync tracker DB if tracker.mjs exists
-      try {
-        const { execSync } = await import('child_process');
-        execSync('node tracker.mjs sync', { stdio: 'ignore' });
-        console.log('Synced database index (applications.db).');
-      } catch (e) {
-        // ignore
-      }
     } else {
       console.log('Updates skipped.');
     }

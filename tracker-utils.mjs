@@ -1,11 +1,16 @@
 /**
- * tracker-utils.mjs — shared helpers for rewriting `data/applications.md` rows.
+ * tracker-utils.mjs — shared helpers for tracker writers and readers.
  *
- * The tracker is a markdown table that several scripts mutate in place
- * (`dedup-tracker.mjs`, `normalize-statuses.mjs`, `merge-tracker.mjs`,
- * `set-status.mjs`). Keeping the row-rewrite, path-resolution, locking, and
- * atomic-write logic here means a fix lands once instead of drifting between
- * copies — and every writer excludes every other writer through the same lock.
+ * The tracker now lives in `data/career-ops.db` (core/db.mjs); several scripts
+ * mutate it (`dedup-tracker.mjs`, `normalize-statuses.mjs`, `merge-tracker.mjs`,
+ * `set-status.mjs`). Keeping the path-resolution, locking, string-sanitizing,
+ * and atomic-write logic here means a fix lands once instead of drifting
+ * between copies. The directory lock still matters in the DB era: it serializes
+ * whole read/dedup/decide/write critical sections (multi-statement JS logic
+ * SQLite transactions alone cannot cover), with every writer keying the lock
+ * off the same DB path. The markdown row helpers (`rebuildRow`,
+ * `openTrackerTransaction`, `resolveTrackerPath`, `writeFileAtomic`) remain
+ * exported for legacy-format consumers and tests.
  */
 
 import { readFileSync, writeFileSync, renameSync, rmSync, mkdirSync, statSync, lstatSync, existsSync, realpathSync, chmodSync } from 'fs';

@@ -3,9 +3,10 @@
 /**
  * set-status.mjs — canonical CLI to update a tracker row's status/note (#1428).
  *
- * data/applications.md is a shared surface with multiple readers and writers.
- * One canonical write path is safer than N agents hand-editing markdown, so
- * modes (apply Step 9, followup, batch) call this instead of editing the table.
+ * The applications table in data/career-ops.db (core/db.mjs) is a shared
+ * surface with multiple readers and writers. One canonical write path is safer
+ * than N agents writing rows directly, so modes (apply Step 9, followup,
+ * batch) and the web /api/status route call this instead.
  *
  * Usage:
  *   node set-status.mjs <report#|company> <state> [--note "..."] [--role "..."] [--force] [--dry-run] [--json]
@@ -46,19 +47,18 @@
  * OLD, --note NEW instead replaces whole notes at "; " boundaries (including
  * idempotent retries); a missing match fails without writing anything.
  *
- * The read-modify-write runs under the shared tracker lock (tracker-utils.mjs,
- * same lock as merge-tracker.mjs) and the file is replaced atomically. Only the
- * Status and Notes cells of the matched row change; every other byte of the
- * tracker round-trips untouched.
+ * The read-modify-write runs inside one db.tx() transaction (SQLite serializes
+ * writers; the old shared tracker directory lock is retired). Only the status
+ * and notes columns of the matched row change; every other column is untouched.
  *
  * Exit codes: 0 success (including no-op re-runs) · 1 usage error,
- * non-canonical state, unreadable states.yml, or non-retryable lock/write failure ·
- * 2 row not found or unreadable tracker · 3 ambiguous company match ·
- * 4 tracker lock timeout (busy — retry later).
+ * non-canonical state, unreadable states.yml, or non-retryable write failure ·
+ * 2 row not found or missing DB · 3 ambiguous company match ·
+ * 4 reserved (was tracker lock timeout — the DB needs no lock).
  *
  * When the new status is Applied, the JSON output carries
  * `"followupSeedCandidate": true` — the hook point for seeding
- * data/follow-ups.md with the default cadence (#1430, not implemented here).
+ * the follow-up tables with the default cadence (#1430).
  *
  * When the new status is Interview and no JD is archived yet for the row
  * (no embedded `## Job Description` section, no jds/ capture), this also
@@ -68,14 +68,12 @@
  * travels in the JSON output as `jdArchiveTriggered`. Same never-fails-the-
  * status-change policy as follow-up seeding.
  *
- * Every real status change also appends one line to the transition ledger
- * (status-log.tsv, sibling of the tracker file):
- *   {tracker#}\t{date}\t{from}\t{to}\t{source}\t
+ * Every real status change also appends one row to the transition ledger
+ * (status_events table, same transaction as the status write):
+ *   {tracker#} {date} {from} {to} {source}
  * Source is `set-status` unless --source names the caller delegating here.
  * Date defaults to today; pass --on YYYY-MM-DD when the transition actually
- * happened earlier ("they replied Tuesday"). The append is observation-only:
- * if it fails, a warning goes to stderr and the exit code is unchanged — the
- * tracker remains the source of truth for state. Read by funnel-velocity.mjs.
+ * happened earlier ("they replied Tuesday"). Read by funnel-velocity.mjs.
  *
  * Two rules the reader enforces that this writer never has to think about,
  * because it always has a real prior status and always writes its own source.
@@ -99,17 +97,18 @@
  *     the note column.
  */
 
-import { readFileSync, existsSync, appendFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join, dirname, resolve, sep, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
-import { extractTrackerReportNumbers, resolveColumns, parseTrackerRow, normalizeTextKey } from './tracker-parse.mjs';
+import { extractTrackerReportNumbers, normalizeTextKey } from './tracker-parse.mjs';
 import { roleFuzzyMatch } from './role-matcher.mjs';
 import { localToday } from './lib/local-today.mjs';
 import {
-  rebuildRow, resolveTrackerPath, writeFileAtomic, loadCanonicalStates, resolveCanonicalState,
-  normalizeCompany, cell, CLI_EXIT, makeCliFailWith, acquireTrackerLockForCli, resolveWorkspaceRoot,
+  loadCanonicalStates, resolveCanonicalState,
+  normalizeCompany, cell, CLI_EXIT, makeCliFailWith,
 } from './tracker-utils.mjs';
+import * as db from './core/db.mjs';
 import { getCareerOpsRoot } from './path-resolver.mjs';
 import { claimActivity, releaseActivity, describeActiveOwner } from './session-activity.mjs';
 import { hasEmbeddedJdArchive } from './check-jd-archive.mjs';
@@ -360,9 +359,9 @@ if (!newStatus) {
 
 // ── tracker access ───────────────────────────────────────────────
 
-const APPS_FILE = resolveTrackerPath(DATA_ROOT);
-if (!existsSync(APPS_FILE)) {
-  failWith(EXIT_NOT_FOUND, 'no-tracker', `No tracker found at ${APPS_FILE}`);
+const DB_FILE = db.resolveDbPath();
+if (!existsSync(DB_FILE)) {
+  failWith(EXIT_NOT_FOUND, 'no-tracker', `No tracker database at ${DB_FILE}`);
 }
 
 /**
@@ -411,7 +410,7 @@ function resolveCandidates(matches, { notFound, ambiguous }) {
 /**
  * Find the tracker row matching the CLI selector.
  *
- * @param {object[]} rows - Parsed data rows (parseTrackerRow output + lineIdx).
+ * @param {object[]} rows - Application rows from db.listApplications().
  * @returns {object} The single matched row. Exits the process on 0 or 2+ matches.
  */
 function resolveRow(rows) {
@@ -460,29 +459,16 @@ function resolveRow(rows) {
   );
 }
 
-// ── locked read-modify-write ─────────────────────────────────────
+// ── read-modify-write (SQLite serializes writers; db.tx below) ───
 
-// Shared with mark-pdf-ready.mjs (tracker-utils.mjs): dry-run never writes,
-// so it must not hold the exclusive lock — a read-only preview should not
-// block (or be blocked by) merge-tracker or another writer.
-const lock = await acquireTrackerLockForCli(APPS_FILE, { dryRun: flags.dryRun, failWith });
-
-let content;
+let rows;
 try {
-  content = readFileSync(APPS_FILE, 'utf-8');
+  rows = db.listApplications();
 } catch (err) {
-  failWith(EXIT_NOT_FOUND, 'read-failure', `Cannot read tracker at ${APPS_FILE}: ${err.message}`);
-}
-const lines = content.split('\n');
-const colmap = resolveColumns(lines);
-
-const rows = [];
-for (let i = 0; i < lines.length; i++) {
-  const row = parseTrackerRow(lines[i], colmap);
-  if (row) rows.push({ ...row, lineIdx: i });
+  failWith(EXIT_NOT_FOUND, 'read-failure', `Cannot read tracker at ${DB_FILE}: ${err.message}`);
 }
 if (rows.length === 0) {
-  failWith(EXIT_NOT_FOUND, 'empty-tracker', `Tracker at ${APPS_FILE} has no data rows`);
+  failWith(EXIT_NOT_FOUND, 'empty-tracker', `Tracker at ${DB_FILE} has no data rows`);
 }
 
 const target = resolveRow(rows);
@@ -637,21 +623,15 @@ if (!flags.dryRun) {
 let statusChanged = false;
 let noteChanged = false;
 let statusLogged = false;
+let updatedNotes = null;
 const replacedNote = flags.replaceNote !== null ? cell(flags.replaceNote) : null;
 try {
-  // Rebuild only the matched line: change the Status cell, append the note, keep
-  // every other cell exactly as parsed.
-  const parts = lines[target.lineIdx].split('|').map(s => s.trim());
-  while (parts.length <= Math.max(colmap.status, colmap.notes ?? 0)) parts.push('');
-
-  statusChanged = parts[colmap.status] !== newStatus;
-  parts[colmap.status] = newStatus;
+  // Change only the status and notes columns of the matched row; every other
+  // column is untouched.
+  statusChanged = target.status !== newStatus;
 
   if (note) {
-    if (colmap.notes == null) {
-      failWith(EXIT_USAGE, 'no-notes-column', 'Tracker has no Notes column — cannot apply --note');
-    }
-    const existing = parts[colmap.notes] ?? '';
+    const existing = String(target.notes ?? '').trim();
     if (replacedNote !== null) {
       // Use the same whole-note boundaries as append idempotency. Prefer the
       // longer complete span so NEW containing OLD (including "; ") is not
@@ -667,7 +647,7 @@ try {
       if (!found) {
         failWith(EXIT_USAGE, 'replace-note-not-found', 'Neither --replace-note nor --note matches a whole note in the Notes cell');
       }
-      parts[colmap.notes] = updated;
+      updatedNotes = updated;
       noteChanged = updated !== existing;
     } else {
       // Delimiter-aware idempotency: the note counts as already present only when
@@ -681,48 +661,51 @@ try {
         || existing.endsWith(`; ${note}`)
         || existing.includes(`; ${note}; `);
       if (!hasNote) {
-        parts[colmap.notes] = existing && existing !== '—' && existing !== '-' ? `${existing}; ${note}` : note;
+        updatedNotes = existing && existing !== '—' && existing !== '-' ? `${existing}; ${note}` : note;
         noteChanged = true;
       }
     }
   }
 
   if ((statusChanged || noteChanged) && !flags.dryRun) {
-    lines[target.lineIdx] = rebuildRow(parts);
     try {
-      writeFileAtomic(APPS_FILE, lines.join('\n'));
+      // One transaction: the status write and its transition-ledger row land
+      // (or fail) together — the ledger can never record a transition the
+      // applications table does not show, and vice versa.
+      db.tx(() => {
+        const patch = {};
+        if (statusChanged) patch.status = newStatus;
+        if (noteChanged) patch.notes = updatedNotes;
+        db.updateApplication(target.num, patch);
+
+        // ── status-event append (transition ledger, read by funnel-velocity.mjs) ──
+        // The applications table stays the source of truth for STATE; the
+        // ledger records WHEN transitions happened.
+        if (statusChanged) {
+          // LOCAL today: the UTC day is TOMORROW for a west-of-Greenwich evening
+          // run, so this logged a transition dated a day that had not happened
+          // yet (#2932, mirroring #2765). status_events is what funnel-velocity
+          // reads for time-between-stages, so a future-dated transition skews
+          // the interval it measures.
+          const eventDate = flags.on ?? localToday();
+          db.appendStatusEvent({
+            appNum: target.num,
+            eventDate,
+            fromStatus: oldStatus,
+            toStatus: newStatus,
+            source: flags.source ?? 'set-status',
+          });
+          statusLogged = true;
+        }
+      });
     } catch (err) {
       // Same structured error contract as every other failure path — a raw
       // stack trace on stdout/stderr would break --json consumers.
-      failWith(EXIT_USAGE, 'write-failure', `Cannot write tracker at ${APPS_FILE}: ${err.message}`);
-    }
-  }
-
-  // ── status-log append (transition ledger, read by funnel-velocity.mjs) ──
-  // Observation trail only: the tracker stays the source of truth for STATE,
-  // the ledger records WHEN transitions happened. A failed append is a warning,
-  // never a failure — the status write above already succeeded. Sibling of the
-  // tracker file so CAREER_OPS_TRACKER redirects (tests, custom layouts) keep
-  // the ledger next to the tracker it describes. Inside the lock window, so
-  // concurrent writers can't interleave lines.
-  if (statusChanged && !flags.dryRun) {
-    const logPath = join(dirname(APPS_FILE), 'status-log.tsv');
-    // LOCAL today: the UTC day is TOMORROW for a west-of-Greenwich evening run,
-    // so this appended a status-log row dated a day that had not happened yet
-    // (#2932, mirroring #2765). status-log.tsv is what funnel-velocity reads for
-    // time-between-stages, so a future-dated transition skews the interval it
-    // measures rather than just looking odd in the file.
-    const eventDate = flags.on ?? localToday();
-    try {
-      appendFileSync(logPath, `${target.num}\t${eventDate}\t${oldStatus}\t${newStatus}\t${flags.source ?? 'set-status'}\t\n`);
-      statusLogged = true;
-    } catch (err) {
-      console.error(`⚠ status-log append failed (status change itself succeeded): ${err.message}`);
+      failWith(EXIT_USAGE, 'write-failure', `Cannot write tracker at ${DB_FILE}: ${err.message}`);
     }
   }
 } finally {
-  lock?.release();
-  // Release the claim once the write (and its log append) has finished, so
+  // Release the claim once the write (and its ledger row) has finished, so
   // it never outlives the run — reached even if something above threw.
   // Never fails the status change: a release failure is only ever a warning,
   // and the stale-sentinel handling in session-activity.mjs means a leaked
@@ -752,28 +735,19 @@ const changed = statusChanged || noteChanged;
 // it, and so does every future caller that delegates here rather than editing
 // the table.
 //
-// AFTER the tracker lock is released, deliberately. seedFollowup() re-reads the
-// tracker to resolve the applied date, and it must read the row this run just
-// wrote. It takes its own followups lock, never the tracker lock, so there is
-// no lock ordering to get wrong.
+// AFTER the status transaction has committed, deliberately. seedFollowup()
+// re-reads the applications table to resolve the applied date, and it must
+// read the row this run just wrote.
 //
 // A seeding failure NEVER fails the status change. The write has already
-// committed and the caller's exit code is about that write — same policy, and
-// the same wording, as the status-log append above. It is also idempotent
-// (`already-seeded` → seeded:false), so a re-run cannot stack duplicate pins.
+// committed and the caller's exit code is about that write — same policy as
+// before the DB migration. It is also idempotent (`already-seeded` →
+// seeded:false), so a re-run cannot stack duplicate pins.
 let followupSeeded = null;
 if (statusChanged && newStatus === 'Applied') {
   try {
     const { seedFollowup } = await import('./followup-seed.mjs');
-    // followupsPath is derived from the tracker's own directory, not left to
-    // followup-seed's default. Its default is the REPO's data/follow-ups.md,
-    // so with CAREER_OPS_TRACKER pointing elsewhere — tests, and any install
-    // whose data lives outside the checkout — the status would be written to
-    // one tracker and the follow-up seeded next to a different one. The
-    // status-log append above derives its path the same way.
     const seed = await seedFollowup(target.num, {
-      trackerPath: APPS_FILE,
-      followupsPath: join(dirname(APPS_FILE), 'follow-ups.md'),
       // --on is the day the transition REALLY happened, and for a transition
       // into Applied that day is the day the application was sent. Nothing
       // else carries it here: the tracker's date column is the evaluation
@@ -831,7 +805,7 @@ if (statusChanged && newStatus === 'Applied') {
 let jdArchiveTriggered = null;
 if (statusChanged && newStatus === 'Interview' && !flags.dryRun) {
   try {
-    const workspaceRoot = resolveWorkspaceRoot(APPS_FILE);
+    const workspaceRoot = DATA_ROOT;
     const reportsDir = join(workspaceRoot, 'reports');
     const jdsDir = join(workspaceRoot, 'jds');
 
@@ -934,7 +908,7 @@ const result = {
   ...(followupSeeded ? { followupSeeded } : {}),
   ...(jdArchiveTriggered ? { jdArchiveTriggered } : {}),
   ...(statusChanged && !flags.dryRun ? { statusLogged } : {}),
-  tracker: APPS_FILE,
+  tracker: DB_FILE,
 };
 
 if (flags.json) {
