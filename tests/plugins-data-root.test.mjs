@@ -19,20 +19,26 @@ console.log('\nplugins — data-root path resolution and buildSnapshot pipeline 
 const dir = mkdtempSync(join(tmpdir(), 'career-ops-plugins-'));
 // test-all runs this file in a shared process: restore, don't just delete.
 const prevRoot = process.env.CAREER_OPS_ROOT;
+const prevDb = process.env.CAREER_OPS_DB;
 try {
   // Set CAREER_OPS_ROOT BEFORE importing plugins.mjs. The module-level
   // constants DATA_ROOT / APPLICATIONS_PATH / PIPELINE_PATH are evaluated
   // once at import time, so the env must be in place before that happens.
   process.env.CAREER_OPS_ROOT = dir;
 
-  // Write a real pipeline.md with checklist entries so buildSnapshot() reads
-  // real content. scan.mjs (imported transitively by plugins.mjs) also calls
-  // mkdirSync on data/, but runs after this and is idempotent.
+  // Seed real pipeline entries so buildSnapshot() reads real content.
+  // buildSnapshot() now reads the pipeline_items table via core/db.mjs, so
+  // the fixture seeds the DB at this data root (CAREER_OPS_DB keeps any
+  // outer guard from redirecting it elsewhere).
   mkdirSync(join(dir, 'data'), { recursive: true });
-  writeFileSync(
-    join(dir, 'data', 'pipeline.md'),
-    '# Pipeline\n- [ ] https://example.com/job/1\n- [x] https://example.com/job/2\n',
-  );
+  process.env.CAREER_OPS_DB = join(dir, 'data', 'career-ops.db');
+  {
+    const db = await import(
+      pathToFileURL(join(ROOT, 'core', 'db.mjs')).href + '?root=' + Date.now()
+    );
+    db.addPipelineItem({ url: 'https://example.com/job/1', checked: 0, raw: '- [ ] https://example.com/job/1' });
+    db.addPipelineItem({ url: 'https://example.com/job/2', checked: 1, raw: '- [x] https://example.com/job/2' });
+  }
 
   // Import the REAL plugins.mjs. The '?root=...' query busts the ESM cache so
   // the module is re-evaluated with the current CAREER_OPS_ROOT even if an
@@ -82,5 +88,7 @@ try {
 } finally {
   if (prevRoot === undefined) delete process.env.CAREER_OPS_ROOT;
   else process.env.CAREER_OPS_ROOT = prevRoot;
+  if (prevDb === undefined) delete process.env.CAREER_OPS_DB;
+  else process.env.CAREER_OPS_DB = prevDb;
   rmSync(dir, { recursive: true, force: true });
 }
