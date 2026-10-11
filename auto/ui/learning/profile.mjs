@@ -177,7 +177,9 @@ export function renderKnowledgeView(doc, root, model) {
     return;
   }
   if (model.error) {
-    root.append(el(doc, 'p', { className: 'lrn-error', text: model.error }));
+    const errEl = el(doc, 'p', { className: 'lrn-error', text: model.error, role: 'alert' });
+    errEl.tabIndex = -1;
+    root.append(errEl);
   }
 
   // Pending proposals FIRST and visibly distinct from confirmed knowledge.
@@ -195,7 +197,7 @@ export function renderKnowledgeView(doc, root, model) {
       el(doc, 'span', { className: 'lrn-value', text: valueText }),
     ]);
     if (p.sensitive && !revealed) {
-      const btn = el(doc, 'button', { className: 'lrn-btn', text: 'reveal' });
+      const btn = el(doc, 'button', { className: 'lrn-btn', text: 'reveal', label: `reveal sensitive value (proposal ${p.id})` });
       btn.addEventListener('click', () => model.onReveal(p.id));
       valueRow.append(el(doc, 'span', { text: ' ' }), btn);
     }
@@ -205,7 +207,7 @@ export function renderKnowledgeView(doc, root, model) {
     if (preview.affectedApplicationIds.length > 0) {
       card.append(el(doc, 'div', { className: 'lrn-muted', text: `dependent applications: ${preview.affectedApplicationIds.join(', ')}` }));
     }
-    const approve = el(doc, 'button', { className: 'lrn-btn lrn-approve', text: `Approve (rev ${p.revision})` });
+    const approve = el(doc, 'button', { className: 'lrn-btn lrn-approve', text: `Approve (rev ${p.revision})`, label: `approve proposal ${p.id} (rev ${p.revision})` });
     approve.disabled = Boolean(model.busy);
     approve.addEventListener('click', () => model.onApprove(preview));
     card.append(approve);
@@ -215,7 +217,8 @@ export function renderKnowledgeView(doc, root, model) {
   // Committed-state readback after an approval (server re-read, never optimistic).
   if (model.readback) {
     const rb = model.readback;
-    const box = el(doc, 'div', { className: 'lrn-card lrn-readback' });
+    const box = el(doc, 'div', { className: 'lrn-card lrn-readback', role: 'status' });
+    box.tabIndex = -1;
     box.append(el(doc, 'h4', { text: 'Committed state (re-read from server)' }));
     box.append(el(doc, 'div', { text: `proposal: ${rb.proposalStatus} (rev ${rb.proposalRevision ?? '?'})` }));
     box.append(el(doc, 'div', { text: `answer ${rb.answerId ?? '?'}: ${rb.answerStatus}` }));
@@ -272,7 +275,7 @@ export function renderKnowledgeView(doc, root, model) {
       card.append(el(doc, 'div', { className: 'lrn-muted', text: 'resumed application rereads the live field before continuing (rereadRequired)' }));
     }
     if (['open', 'waiting'].includes(b.status) && model.onResolveBlocker) {
-      const btn = el(doc, 'button', { className: 'lrn-btn', text: 'Resolve…' });
+      const btn = el(doc, 'button', { className: 'lrn-btn', text: 'Resolve…', label: `resolve blocker ${b.id}` });
       btn.disabled = Boolean(model.busy);
       btn.addEventListener('click', () => model.onResolveBlocker(b));
       card.append(btn);

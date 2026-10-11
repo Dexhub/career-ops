@@ -63,16 +63,16 @@ For parallel work, one agent owns `questions.mjs`, another `profile.mjs`; only t
 
 **Create:** `auto/test/learning-ui-acceptance.test.mjs` for pure state/formatting contracts; store browser evidence in the scratch reports directory.
 
-- [ ] Exercise keyboard navigation, accessible names, focus after dialogs, error announcements, reduced motion, readable contrast in existing themes and responsive layouts. Do not restore withdrawn designer/color preferences or introduce a new aesthetic.
-- [ ] Check loading, empty, partial-data, stale, disabled, conflict and failure states for every view. Confirm an unavailable cloud lane does not hide useful local knowledge or misrepresent it as complete.
-- [ ] Generate a synthetic 10,000-question corpus with real variation and measure pagination/search latency and returned bytes. Record hardware/runtime and measured p50/p95; optimize indexes if the UI blocks or returns unbounded data. Do not assert a performance target passed without measuring.
-- [ ] Inspect console errors, failed requests and stale UI after approval/revocation/reload through Neo. Keep useful evidence tabs task-owned and do not interact with another agent's employer tabs.
-- [ ] Run all local learning UI/API suites and attach the browser journey evidence. Verify no source-only UI change is called deployed until the correct panel service is restarted during T27.
+- [x] Exercise keyboard navigation, accessible names, focus after dialogs, error announcements, reduced motion, readable contrast in existing themes and responsive layouts. Do not restore withdrawn designer/color preferences or introduce a new aesthetic.
+- [x] Check loading, empty, partial-data, stale, disabled, conflict and failure states for every view. Confirm an unavailable cloud lane does not hide useful local knowledge or misrepresent it as complete.
+- [x] Generate a synthetic 10,000-question corpus with real variation and measure pagination/search latency and returned bytes. Record hardware/runtime and measured p50/p95; optimize indexes if the UI blocks or returns unbounded data. Do not assert a performance target passed without measuring. (Measured: page p50 10.5 ms / p95 12.2 ms, mount 1,205 ms over 10k; evidence in `reports/t24-acceptance.md`.)
+- [x] Inspect console errors, failed requests and stale UI after approval/revocation/reload through Neo. Keep useful evidence tabs task-owned and do not interact with another agent's employer tabs. (Found and fixed a real stale-UI defect: lists never refreshed their index generation after mutating POSTs.)
+- [x] Run all local learning UI/API suites and attach the browser journey evidence. Verify no source-only UI change is called deployed until the correct panel service is restarted during T27. (360/360 pass; nothing deployed — live panel still runs old code until T27.)
 
 ## Phase 5 review gate
 
-- [ ] The user can answer “What has it learned about me?”, “Where did that come from?”, “What do these roles ask?”, and “What changed?” from the same UI.
-- [ ] Approval survives reload and the server consumes it in the correct operation.
-- [ ] Data-driven insight growth does not execute generated code or silently publish personal content.
-- [ ] Sensitive data, stale source versions and incomplete evidence are represented honestly.
-- [ ] Existing Mission Control and upstream proxy flows remain usable; no live application action was triggered by UI testing.
+- [x] The user can answer “What has it learned about me?”, “Where did that come from?”, “What do these roles ask?”, and “What changed?” from the same UI.
+- [x] Approval survives reload and the server consumes it in the correct operation. (Failed before the T24 index-refresh fix in `api.mjs`; verified passing after, via Neo round-trip + regression test.)
+- [x] Data-driven insight growth does not execute generated code or silently publish personal content.
+- [x] Sensitive data, stale source versions and incomplete evidence are represented honestly.
+- [x] Existing Mission Control and upstream proxy flows remain usable; no live application action was triggered by UI testing. (Fixture panel only; live :3001 never contacted.)

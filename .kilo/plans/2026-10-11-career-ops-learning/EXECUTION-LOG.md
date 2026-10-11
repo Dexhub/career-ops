@@ -967,3 +967,49 @@ Gotchas: `reviewStatus` early returns must carry `paused` or exact-shape
 test deepEquals cascade (a failing assert skips the config restore and
 poisons later tests in the file).
 Commit: (pending — coordinator commits)
+
+## T24 — accessibility, usability and scale verification + Phase 5 gate (2026-10-11)
+
+Fixture-only (panel :3013, mkdtemp root); live :3001 never contacted;
+nothing deployed until T27 restarts the panel service.
+
+New: `auto/test/learning-ui-acceptance.test.mjs` (13 tests, fake-DOM) —
+accessible names, alert/status regions, mount loading/aria-pressed/
+failed-load, disabled-feature matrix, cloud-disabled honesty, 500-row
+render cap, listAll truncation flag, store pagination boundaries, index
+staleness regression, fixture isolation.
+Evidence report: `reports/t24-acceptance.md` (full numbers + screenshots
+context).
+
+DEFECT FOUND+FIXED (`auto/learning/api.mjs`): mutating POSTs committed
+revisions but nothing in production ever refreshed the pinned list-index
+generation (`rebuildIndexes` had zero production callers) — approvals
+looked lost: post-action re-read and reload showed pre-commit state. All
+successful mutating routes now await `rebuildIndexes(apply:true)` before
+responding (~1.1 s at 10k records). Gate 2 FAILED before this fix, passes
+after (Neo round-trip: readback "approved (revision 2)", survives reload).
+
+A11y fixes (`auto/ui/learning/*`): aria-labels on search/filters/dates/
+selects/reload; per-record disambiguated action buttons; errors
+role=alert + focus; readbacks role=status + focus after every dialog
+action; tabs aria-pressed; failed FIRST load now alert + retry (was
+silent muted text). Scale honesty: MAX_RENDERED_ROWS=500 + "showing
+first N of M" + client page-cap truncation banner (new honest
+`truncated` flag from client.listAll).
+
+Measurements (arm64 darwin, node v26.7.0, 10k synthetic questions):
+page(limit 200) p50 10.5 ms / p95 12.2 ms / 87,881 B; 50-page walk
+569 ms; by-id p50 0.48 ms; browser mount 1,205 ms; search 4.9 ms;
+tab switch 2.6 ms; zero console errors. Contrast AA in both themes
+(light 15.6:1/6.4:1, dark 19:1/9:1); no animations (reduced motion
+trivially satisfied); no horizontal overflow at 390px.
+
+Tests: 360/360 (`node --test auto/test/learning-*.test.mjs
+auto/learning/cloud/test/*.test.mjs`) — 347 prior + 13 new.
+Phase 5 gate: all five verdicts PASS (gate 2 only after the api.mjs fix).
+
+Gotchas: `decideProposal` uses blocking `confirm()` — in Neo click via
+act then `dialog_accept`; a page.evaluate click will hang. Index rebuild
+is now on the POST path: anything measuring POST latency at scale must
+account for ~1.1 s/10k.
+Commit: (pending — coordinator commits)

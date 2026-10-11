@@ -295,7 +295,7 @@ export function renderIntelligenceView(doc, root, model) {
   const families = insightFamilies(rows);
   const bar = el(doc, 'div', { className: 'lrn-filters' });
   bar.append(el(doc, 'span', { className: 'lrn-muted', text: 'role family:' }));
-  const sel = el(doc, 'select', { className: 'lrn-select' });
+  const sel = el(doc, 'select', { className: 'lrn-select', label: 'filter insights by role family' });
   const all = el(doc, 'option', { text: 'all' });
   all.value = '';
   sel.append(all);

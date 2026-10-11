@@ -189,7 +189,11 @@ export function renderOperationsView(doc, root, model) {
   controls.append(privacyBtn);
   controls.append(el(doc, 'span', { className: 'lrn-muted', text: 'these controls never start an application cycle' }));
   root.append(controls);
-  if (readback) root.append(el(doc, 'p', { className: 'lrn-readback', text: readback }));
+  if (readback) {
+    const rb = el(doc, 'p', { className: 'lrn-readback', text: readback, role: 'status' });
+    rb.tabIndex = -1;
+    root.append(rb);
+  }
 
   // Reviewer state.
   const rev = section(doc, 'Reviewer');

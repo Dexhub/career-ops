@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { getCareerOpsRoot } from '../../path-resolver.mjs';
 import { createLearningContext, learningDataRoot, readLearningConfig } from './context.mjs';
 import { LearningError, isSecretKey, isValidId, statusEnumFor } from './contracts.mjs';
-import { getRecord, listRecords, commitRecord } from './store.mjs';
+import { getRecord, listRecords, commitRecord, rebuildIndexes } from './store.mjs';
 import {
   proposeAnswer, approveAnswer, previewAnswerSourcePatch, createUserApproval, previewForget,
 } from './answers.mjs';
@@ -326,6 +326,16 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
     return send(res, 403, { error: 'learning is not activated', code: 'LEARNING_DISABLED', feature });
   }
 
+  // T24 defect fix: commits write immutable revision files, but list routes
+  // serve a pinned complete index generation. Nothing in production refreshed
+  // that generation after a write, so the UI's mandatory post-action re-read
+  // (and any reload) kept showing the PRE-commit state. Every successful
+  // mutating route below refreshes the generation before responding; readers
+  // then see either the old complete index or the new complete one, never a
+  // mix. (~1.1s measured on a 10k-record corpus — acceptable for human-speed
+  // approval actions.)
+  const refreshIndexes = () => rebuildIndexes(ctx, { apply: true });
+
   switch (sub) {
     case 'answers/propose': {
       validateBody(body, {
@@ -343,6 +353,7 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
         preview = err instanceof LearningError
           ? { error: err.message, code: err.code } : { error: 'preview failed', code: 'INTERNAL' };
       }
+      await refreshIndexes();
       return send(res, 200, {
         proposal: { id: proposal.id, revision: proposal.revision, status: proposal.status },
         preview, opId,
@@ -356,6 +367,7 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
       const result = await (deps.approveAnswer ?? approveAnswer)(ctx, {
         proposalId: body.proposalId, expectedRevision: body.expectedRevision, approval,
       });
+      await refreshIndexes();
       return send(res, 200, { ...result, opId: body.opId });
     }
     case 'blockers/resolve': {
@@ -367,6 +379,7 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
       const result = await (deps.resolveBlocker ?? resolveBlocker)(ctx, {
         blockerId: body.blockerId, resolution: body.resolution ?? {}, approval,
       }, { jobs: deps.jobs });
+      await refreshIndexes();
       return send(res, 200, {
         blockerId: body.blockerId, status: result.blocker.status,
         resumePoint: result.resumePoint, rereadRequired: result.rereadRequired, opId: body.opId,
@@ -378,6 +391,7 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
       const result = await (deps.promoteProcedure ?? promoteProcedure)(ctx, {
         procedureId: body.procedureId, evaluationId: body.evaluationId, approval,
       });
+      await refreshIndexes();
       return send(res, 200, { result, opId: body.opId });
     }
     case 'proposals/decision': {
@@ -409,6 +423,7 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
       const committed = await commitRecord(ctx, 'proposals', body.proposalId, proposal.data, {
         expectedRevision: body.expectedRevision, status: body.decision, sourceIds: proposal.sourceIds,
       });
+      await refreshIndexes();
       return send(res, 200, { status: committed.status, changed: true, revision: committed.revision, opId: body.opId });
     }
     case 'review': {
@@ -423,6 +438,7 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
         approvalId: body.approvalId ?? null,
         ...(body.limit !== undefined ? { limit: body.limit } : {}),
       });
+      await refreshIndexes();
       return send(res, 200, { report, opId: body.opId });
     }
     case 'learner/pause': {

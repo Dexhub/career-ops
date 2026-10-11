@@ -147,9 +147,11 @@ export function createLearningClient({ base = API_BASE, panelBase = PANEL_BASE, 
         items.push(...(envelope.items ?? []));
         onPage?.(envelope);
         cursor = envelope.nextCursor ?? null;
-        if (!cursor) return { items, generation, coverage, feature };
+        if (!cursor) return { items, generation, coverage, feature, truncated: false };
       }
-      if (!stale) return { items, generation, coverage, feature };
+      // maxPages exhausted with a cursor remaining: the walk is honest about
+      // being partial — callers surface this, never present it as complete.
+      if (!stale) return { items, generation, coverage, feature, truncated: cursor != null };
     }
     throw new LearningClientError('stale', `list ${route}: records changed twice during pagination — refresh and retry`, { code: 'REFRESH_REQUIRED' });
   }

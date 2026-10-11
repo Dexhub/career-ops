@@ -85,7 +85,17 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     learningRoot.replaceChildren();
     const d = state.data;
     if (!d) {
-      learningRoot.append(el(doc, 'p', { className: 'lrn-muted', text: state.error ?? 'loading…' }));
+      // T24: a failed FIRST load must be announced (role=alert) and leave a
+      // retry control; previously it rendered as silent muted text.
+      if (state.error) {
+        const errEl = el(doc, 'p', { className: 'lrn-error', text: state.error, role: 'alert' });
+        errEl.tabIndex = -1;
+        const retry = el(doc, 'button', { className: 'lrn-btn', text: '↻', label: 'reload from server' });
+        retry.addEventListener('click', () => refreshLearning());
+        learningRoot.append(errEl, retry);
+      } else {
+        learningRoot.append(el(doc, 'p', { className: 'lrn-muted', text: 'loading…' }));
+      }
       return;
     }
     const head = el(doc, 'div', { className: 'lrn-head' });
@@ -94,6 +104,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
       ['intelligence', 'Role intelligence'], ['operations', 'Operations'], ['proposals', 'Proposals'],
     ]) {
       const b = el(doc, 'button', { className: `lrn-tab${state.tab === key ? ' lrn-here' : ''}`, text: label });
+      b.setAttribute('aria-pressed', String(state.tab === key));
       b.addEventListener('click', () => { state.tab = key; renderLearning(); });
       head.append(b);
     }
@@ -104,12 +115,16 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
         ? 'learning disabled'
         : (review?.due ? 'review due — run learn.mjs review' : 'review up to date'),
     }));
-    const reload = el(doc, 'button', { className: 'lrn-btn', text: '↻' });
+    const reload = el(doc, 'button', { className: 'lrn-btn', text: '↻', label: 'reload from server' });
     reload.title = 'reload from server';
     reload.addEventListener('click', () => refreshLearning());
     head.append(reload);
     learningRoot.append(head);
-    if (state.error) learningRoot.append(el(doc, 'p', { className: 'lrn-error', text: state.error }));
+    if (state.error) {
+      const errEl = el(doc, 'p', { className: 'lrn-error', text: state.error, role: 'alert' });
+      errEl.tabIndex = -1;
+      learningRoot.append(errEl);
+    }
 
     const body = el(doc, 'div');
     learningRoot.append(body);
@@ -125,6 +140,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
         facets,
         filters: state.filters,
         coverage: d.questions.coverage,
+        truncated: d.questions.truncated === true,
         feature,
         answerStatus: answerStatusByQuestion({ families: [], answers: d.answers.items }),
         groups: familyGroups({ families: [], questionsById, answers: d.answers.items, proposals: d.proposals.items }),
@@ -193,6 +209,13 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     renderLearning();
   }
 
+  // T24 a11y: after a dialog-driven action re-renders the pane, move focus to
+  // the outcome (error alert first, else the committed-state readback) instead
+  // of letting it drop to <body>.
+  function focusFeedback() {
+    learningRoot?.querySelector?.('[role="alert"], [role="status"]')?.focus?.();
+  }
+
   async function approve(preview) {
     const ok = globalThis.confirm?.(
       `Approve this answer?\n\n${preview.target}\nvalue: ${preview.value}\nsource ${preview.sourceVersions.join(', ')}\naffects: ${preview.affectedApplicationIds.join(', ') || '(no recorded applications)'}`,
@@ -223,6 +246,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     }
     state.busy = false;
     renderLearning();
+    focusFeedback();
   }
 
   async function resolveBlocker(b) {
@@ -246,6 +270,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     await refreshLearning(); // committed state from re-read
     state.busy = false;
     renderLearning();
+    focusFeedback();
   }
 
   // ---- T23 operations/proposals actions ----------------------------------------
@@ -270,6 +295,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     } catch (err) { state.error = describeError(err); }
     state.busy = false;
     renderLearning();
+    focusFeedback();
   }
 
   async function runLocalReview() {
@@ -288,6 +314,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     try { await loadLearning(); } catch (err) { state.error = describeError(err); }
     state.busy = false;
     renderLearning();
+    focusFeedback();
   }
 
   async function privacyPreview() {
@@ -304,6 +331,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     }
     state.busy = false;
     renderLearning();
+    focusFeedback();
   }
 
   async function decideProposal(p, decision) {
@@ -331,6 +359,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     } catch (err) { state.error = describeError(err); }
     state.busy = false;
     renderLearning();
+    focusFeedback();
   }
 
   // ---- queue freshness extension ---------------------------------------------
@@ -369,12 +398,12 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     queueRoot.append(el(doc, 'h2', { text: 'Freshness' }, [
       el(doc, 'span', { className: 'note', text: ' — verified posting dates; unknown stays unknown, never guessed' }),
     ]));
-    if (f.error) queueRoot.append(el(doc, 'p', { className: 'lrn-error', text: f.error }));
+    if (f.error) queueRoot.append(el(doc, 'p', { className: 'lrn-error', text: f.error, role: 'alert' }));
     if (!f.preview) { queueRoot.append(el(doc, 'p', { className: 'lrn-muted', text: 'loading…' })); return; }
 
     const bar = el(doc, 'div', { className: 'lrn-filters' });
     bar.append(el(doc, 'span', { className: 'lrn-muted', text: `live order mode: ${f.preview.liveMode} (changing the preview below does NOT change the live order)` }));
-    const sel = el(doc, 'select', { className: 'lrn-select' });
+    const sel = el(doc, 'select', { className: 'lrn-select', label: 'queue order preview mode' });
     for (const m of f.preview.modes) {
       const o = el(doc, 'option', { text: m });
       o.value = m;

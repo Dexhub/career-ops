@@ -150,11 +150,19 @@ export function familyGroups({ families = [], questionsById = new Map(), answers
 
 // --- DOM rendering (textContent only) ----------------------------------------
 
-export function el(doc, tag, { className, text, title } = {}, children = []) {
+// T24: hard cap on rendered table rows so a 10k-record corpus can never block
+// the panel; the cut is always announced with an honest "showing first N" line.
+export const MAX_RENDERED_ROWS = 500;
+
+export function el(doc, tag, { className, text, title, label, role } = {}, children = []) {
   const node = doc.createElement(tag);
   if (className) node.className = className;
   if (text != null) node.textContent = String(text);
   if (title) node.title = title;
+  // T24 a11y: explicit accessible names/roles (icon buttons, unlabeled
+  // selects/inputs, alert/status regions) — placeholders are not names.
+  if (label) node.setAttribute('aria-label', label);
+  if (role) node.setAttribute('role', role);
   for (const c of children) node.append(c);
   return node;
 }
@@ -181,21 +189,21 @@ export function renderQuestionsView(doc, root, model) {
 
   // Filter bar.
   const bar = el(doc, 'div', { className: 'lrn-filters' });
-  const search = el(doc, 'input', { className: 'lrn-search' });
+  const search = el(doc, 'input', { className: 'lrn-search', label: 'search questions by wording or id' });
   search.type = 'search';
   search.placeholder = 'search question wording / id…';
   search.value = filters.search ?? '';
   search.addEventListener('input', () => model.onFilter({ ...filters, search: search.value }));
   bar.append(search);
   const selects = [
-    ['fieldType', 'any type', facets.fieldTypes],
-    ['status', 'any status', facets.statuses],
-    ['required', 'any requiredness', ['required', 'optional', 'unknown']],
-    ['role', 'any role', facets.roles],
-    ['company', 'any company', facets.companies],
+    ['fieldType', 'any type', facets.fieldTypes, 'filter by field type'],
+    ['status', 'any status', facets.statuses, 'filter by status'],
+    ['required', 'any requiredness', ['required', 'optional', 'unknown'], 'filter by requiredness'],
+    ['role', 'any role', facets.roles, 'filter by role family'],
+    ['company', 'any company', facets.companies, 'filter by company'],
   ];
-  for (const [key, label, options] of selects) {
-    const sel = el(doc, 'select', { className: 'lrn-select' });
+  for (const [key, label, options, ariaLabel] of selects) {
+    const sel = el(doc, 'select', { className: 'lrn-select', label: ariaLabel });
     sel.append(el(doc, 'option', { text: label }));
     sel.options[0].value = '';
     for (const opt of options) {
@@ -208,7 +216,7 @@ export function renderQuestionsView(doc, root, model) {
     bar.append(sel);
   }
   for (const [key, label] of [['dateFrom', 'from'], ['dateTo', 'to']]) {
-    const inp = el(doc, 'input', { className: 'lrn-date', title: `updated ${label}` });
+    const inp = el(doc, 'input', { className: 'lrn-date', title: `updated ${label}`, label: `filter: updated ${label} date` });
     inp.type = 'date';
     inp.value = filters[key] ?? '';
     inp.addEventListener('change', () => model.onFilter({ ...filters, [key]: inp.value }));
@@ -223,6 +231,22 @@ export function renderQuestionsView(doc, root, model) {
     }));
   }
 
+  // T24 scale honesty: the client may stop fetching at its page cap, and the
+  // table never renders unbounded rows. Both limits are stated, never silent.
+  if (model.truncated) {
+    root.append(el(doc, 'p', {
+      className: 'lrn-muted',
+      text: 'list truncated at the client page cap — totals below cover only the fetched records; refine filters to narrow',
+    }));
+  }
+  const visible = rows.length > MAX_RENDERED_ROWS ? rows.slice(0, MAX_RENDERED_ROWS) : rows;
+  if (visible.length < rows.length) {
+    root.append(el(doc, 'p', {
+      className: 'lrn-muted',
+      text: `showing first ${visible.length} of ${rows.length} matching questions — refine search or filters to see the rest`,
+    }));
+  }
+
   // Questions table.
   const table = el(doc, 'table', { className: 'lrn-table' });
   const thead = el(doc, 'thead');
@@ -233,7 +257,7 @@ export function renderQuestionsView(doc, root, model) {
   thead.append(hr);
   table.append(thead);
   const tbody = el(doc, 'tbody');
-  for (const r of rows) {
+  for (const r of visible) {
     const tr = el(doc, 'tr');
     const qCell = el(doc, 'td', { className: 'lrn-qcell' });
     qCell.append(el(doc, 'div', { text: r.text, title: r.id }));

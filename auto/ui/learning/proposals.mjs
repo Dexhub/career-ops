@@ -105,7 +105,11 @@ export function renderProposalsView(doc, root, model) {
     root.append(el(doc, 'p', { className: 'lrn-muted', text: 'learning disabled — no proposals' }));
     return;
   }
-  if (readback) root.append(el(doc, 'p', { className: 'lrn-readback', text: readback }));
+  if (readback) {
+    const rb = el(doc, 'p', { className: 'lrn-readback', text: readback, role: 'status' });
+    rb.tabIndex = -1;
+    root.append(rb);
+  }
   if (rows.length === 0) {
     root.append(el(doc, 'p', { className: 'lrn-muted', text: 'no proposals' }));
     return;
@@ -128,7 +132,7 @@ export function renderProposalsView(doc, root, model) {
     if (p.decidable) {
       const bar = el(doc, 'div', { className: 'lrn-ops-controls' });
       for (const decision of ['approve', 'reject']) {
-        const b = el(doc, 'button', { className: 'lrn-btn', text: decision });
+        const b = el(doc, 'button', { className: 'lrn-btn', text: decision, label: `${decision} proposal ${p.id}` });
         b.disabled = busy;
         b.addEventListener('click', () => onDecide(p, decision));
         bar.append(b);
