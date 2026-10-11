@@ -25,7 +25,7 @@ import { flagValue, hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 import { loadAutoConfig, loadStandingAnswers } from './lib/config.mjs';
-import { listJobs, loadJob, pickOrder, saveJob, transition } from './state.mjs';
+import { allocateAttempt, listJobs, loadJob, pickOrder, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
@@ -274,23 +274,32 @@ function pickJob(needle) {
   return loadJob(pool[0].urlKey);
 }
 
-export function runApply({ needle, submit = true, agent = 'claude', timeoutMins, log = console.log } = {}) {
+export async function runApply({ needle, submit = true, agent = 'claude', timeoutMins, log = console.log } = {}) {
   const cfg = loadAutoConfig();
   const standing = loadStandingAnswers();
   if (!standing || standing.filled_in_by_user !== true) {
     throw new Error('apply-worker: config/standing-answers.yml missing or filled_in_by_user is not true — refusing to start');
   }
 
-  const job = pickJob(needle);
+  let job = pickJob(needle);
   if (!job) { log('apply-worker: no resume_ready job found'); return null; }
   if (!job.resumePdf || !existsSync(job.resumePdf)) {
     throw new Error(`apply-worker: resume PDF missing for ${job.company}: ${job.resumePdf}`);
   }
 
   const attemptNo = (job.attempts || 0) + 1;
-  const attemptName = submit ? `attempt-${attemptNo}` : `attempt-dryrun-${Date.now()}`;
-  const auditDir = join(ROOT, 'output', appKey(job), 'audit', attemptName);
-  mkdirSync(auditDir, { recursive: true });
+  const auditRoot = join(ROOT, 'output', appKey(job), 'audit');
+  // Immutable attempt: fresh UUID + exclusively created audit dir — a requeue
+  // or retry never reuses (or overwrites) an earlier attempt's directory.
+  let attempt = null;
+  let auditDir;
+  if (submit) {
+    attempt = allocateAttempt({ job, auditRoot });
+    auditDir = attempt.auditDir;
+  } else {
+    auditDir = join(auditRoot, `attempt-dryrun-${Date.now()}`);
+    mkdirSync(auditDir, { recursive: true });
+  }
 
   const prompt = renderPrompt({
     job,
@@ -308,9 +317,34 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
   log(`apply-worker: ${job.company} — ${job.role} [${submit ? 'SUBMIT' : 'dry-run'}] -> ${auditDir}`);
 
   if (submit) {
-    // resume_ready -> applying (or applying -> applying on retry)
-    transition(job, 'applying', { attempts: attemptNo });
-    saveJob(job);
+    // CAS claim of the attempt: resume_ready -> applying (or applying ->
+    // applying on retry). expectedVersion makes exactly one worker the
+    // execution owner — a competitor loses with VERSION_CONFLICT instead of
+    // double-applying. No lock is held after this call (never across the
+    // browser session below).
+    try {
+      job = await updateJob(job.urlKey, {
+        expectedVersion: job.recordVersion,
+        transitionTo: 'applying',
+        patch: {
+          attempts: attemptNo,
+          auditDir,
+          execution: {
+            attemptId: attempt.attemptId,
+            phase: 'in_progress',
+            policyVersion: attempt.policyVersion,
+            sourceVersion: attempt.sourceVersion,
+            procedureVersion: attempt.procedureVersion,
+          },
+        },
+      });
+    } catch (err) {
+      if (err.code === 'VERSION_CONFLICT') {
+        log(`apply-worker: lost the attempt claim for ${job.company} (concurrent writer) — skipping`);
+        return null;
+      }
+      throw err;
+    }
   }
 
   const agentCfg = cfg.agent || {};
@@ -350,7 +384,9 @@ export function runApply({ needle, submit = true, agent = 'claude', timeoutMins,
 
   if (!submit) return { job, auditDir, verdict }; // dry runs never mutate state
 
-  return finalizeVerdict(job, auditDir, verdict, attemptNo, log);
+  // The agent run is long: re-load fresh state so panel decisions made in the
+  // meantime (hold, priority, ...) are not clobbered by the final patch.
+  return finalizeVerdict(loadJob(job.urlKey), auditDir, verdict, attemptNo, log);
 }
 
 /** Mark the job Applied in the web tracker (data/applications.md) so the
@@ -391,23 +427,23 @@ export function syncTrackerApplied(job, auditDir, log = console.log) {
   return true;
 }
 
-function finalizeVerdict(job, auditDir, verdict, attemptNo, log = console.log) {
-
+async function finalizeVerdict(job, auditDir, verdict, attemptNo, log = console.log) {
+  // Narrow patches on the fresh record inside one transaction: concurrent
+  // panel edits (held/priority) survive the worker's final write.
+  let updated;
   if (verdict.ok && verdict.status === 'submitted') {
-    transition(job, 'submitted', { auditDir, lastError: null });
-    syncTrackerApplied(job, auditDir, log);
+    updated = await updateJob(job.urlKey, { transitionTo: 'submitted', patch: { auditDir, lastError: null, execution: { phase: 'finished' } } });
+    syncTrackerApplied(updated, auditDir, log);
   } else if (verdict.ok && verdict.status === 'parked') {
-    transition(job, 'parked', { auditDir, lastError: verdict.reason });
+    updated = await updateJob(job.urlKey, { transitionTo: 'parked', patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
   } else if (attemptNo >= MAX_ATTEMPTS) {
-    transition(job, 'failed', { auditDir, lastError: verdict.reason });
+    updated = await updateJob(job.urlKey, { transitionTo: 'failed', patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
   } else {
     // stay in applying; next cycle retries once more
-    job.auditDir = auditDir;
-    job.lastError = verdict.reason;
+    updated = await updateJob(job.urlKey, { patch: { auditDir, lastError: verdict.reason, execution: { phase: 'finished' } } });
   }
-  saveJob(job);
-  log(`apply-worker: ${job.company} -> stage ${job.stage}`);
-  return { job, auditDir, verdict };
+  log(`apply-worker: ${updated.company} -> stage ${updated.stage}`);
+  return { job: updated, auditDir, verdict };
 }
 
 // ---------------------------------------------------------------------------
@@ -509,7 +545,7 @@ if (isMainModule(import.meta.url)) {
     selfTest();
   } else {
     const timeoutRaw = flagValue(argv, '--timeout-mins');
-    runApply({
+    await runApply({
       needle: flagValue(argv, '--job') ?? undefined,
       submit: !hasFlag(argv, '--no-submit'),
       agent: flagValue(argv, '--agent') ?? 'claude',

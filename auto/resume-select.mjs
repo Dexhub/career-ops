@@ -24,7 +24,7 @@ import { isMainModule } from '../lib/is-main-module.mjs';
 import { roleTokens, SENIORITY_TOKENS } from '../role-matcher.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
 import { listLibrary } from './resume-library.mjs';
-import { listJobs, loadJob, saveJob, transition } from './state.mjs';
+import { listJobs, loadJob, updateJob } from './state.mjs';
 
 const MATCH_FLOOR = 0.34; // Jaccard floor below which we fall back to default
 
@@ -92,7 +92,7 @@ export function selectVariant(jobRole, library, defaultTitle) {
   return { variant: def, score: bestScore, fallback: true };
 }
 
-export function runSelect({ limit, dryRun = false, log = console.log } = {}) {
+export async function runSelect({ limit, dryRun = false, log = console.log } = {}) {
   const cfg = loadAutoConfig();
   const library = listLibrary();
   if (library.length === 0) {
@@ -116,8 +116,7 @@ export function runSelect({ limit, dryRun = false, log = console.log } = {}) {
     log(`resume-select: ${job.company} — ${job.role}`);
     log(`  -> ${variant.title}${fallback ? ' (DEFAULT fallback)' : ` (score ${score.toFixed(2)})`}`);
     if (!dryRun) {
-      transition(job, 'resume_ready', patch);
-      saveJob(job);
+      await updateJob(job.urlKey, { transitionTo: 'resume_ready', patch });
       ready += 1;
     }
   }
@@ -168,7 +167,7 @@ if (isMainModule(import.meta.url)) {
     selfTest();
   } else {
     const limitRaw = flagValue(argv, '--limit');
-    runSelect({
+    await runSelect({
       limit: limitRaw === undefined || limitRaw === null ? undefined : Number(limitRaw),
       dryRun: hasFlag(argv, '--dry-run'),
     });

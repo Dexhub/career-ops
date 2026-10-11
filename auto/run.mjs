@@ -29,7 +29,7 @@ import { acquirePipelineLock } from '../pipeline-lock.mjs';
 import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
-import { listJobs, loadJob, pickOrder, saveJob, submittedCountOn, transition } from './state.mjs';
+import { listJobs, pickOrder, submittedCountOn, updateJob } from './state.mjs';
 import { runApply } from './apply-worker.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { writeDigest } from './digest.mjs';
@@ -131,7 +131,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   if (noSubmit) {
     // Testing lane: a dry run never mutates state, so looping would re-pick
     // the same job forever. Do exactly one.
-    apply({ submit: false, agent: cfg.agent?.primary ?? 'claude', log });
+    await apply({ submit: false, agent: cfg.agent?.primary ?? 'claude', log });
     await awaitEval();
     return;
   }
@@ -147,9 +147,10 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   // it stops shadowing the queue and shows up in the digest.
   for (const stale of listJobs('applying')) {
     if ((stale.attempts || 0) >= (cfg.max_attempts ?? 2)) {
-      const job = loadJob(stale.urlKey);
-      transition(job, 'failed', { lastError: job.lastError || 'exhausted attempts (stale applying)' });
-      saveJob(job);
+      const job = await updateJob(stale.urlKey, {
+        transitionTo: 'failed',
+        patch: { lastError: stale.lastError || 'exhausted attempts (stale applying)' },
+      });
       log(`run: recovered stale applying job ${job.company} -> failed`);
     }
   }
@@ -194,7 +195,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
     applied.add(next.urlKey);
 
     try {
-      apply({ needle: next.urlKey, agent: cfg.agent?.primary ?? 'claude', log });
+      await apply({ needle: next.urlKey, agent: cfg.agent?.primary ?? 'claude', log });
     } catch (err) {
       console.warn(`run: apply error for ${next.company}: ${err.message} — continuing`);
     }

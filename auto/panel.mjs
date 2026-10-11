@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listJobs, loadJob, pickOrder, saveJob, transition, submittedCountOn, STAGES } from './state.mjs';
+import { listJobs, loadJob, pickOrder, saveJob, transition, updateJob, submittedCountOn, STAGES } from './state.mjs';
 import { AUTO_CONFIG_PATH, loadAutoConfig } from './lib/config.mjs';
 import { loadRadar, saveRadar } from './radar.mjs';
 import { agentFlags, setAgentEnabled } from './lib/agent-flags.mjs';
@@ -203,20 +203,19 @@ export function safeOutputPath(relPath) {
 }
 
 /** parked/failed → queued with attempts reset. The state machine enforces legality. */
-export function requeueJob(urlKey) {
-  const job = loadJob(urlKey);
-  if (!job) return { ok: false, error: 'job not found' };
+export async function requeueJob(urlKey) {
   try {
-    transition(job, 'queued', { attempts: 0, lastError: null });
+    const job = await updateJob(urlKey, { transitionTo: 'queued', patch: { attempts: 0, lastError: null } });
     return { ok: true, stage: job.stage };
   } catch (err) {
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.code === 'JOB_NOT_FOUND' ? 'job not found' : err.message };
   }
 }
 
 /** Bulk retry: requeue each key independently; one refusal never blocks the rest. */
-export function requeueJobs(keys) {
-  const results = (Array.isArray(keys) ? keys : []).map((key) => ({ key, ...requeueJob(key) }));
+export async function requeueJobs(keys) {
+  const results = [];
+  for (const key of (Array.isArray(keys) ? keys : [])) results.push({ key, ...(await requeueJob(key)) });
   return { ok: results.every((r) => r.ok), requeued: results.filter((r) => r.ok).length, results };
 }
 
@@ -226,29 +225,29 @@ export function requeueJobs(keys) {
  * `discovered` (still waiting) and `parked` jobs that never got a score;
  * anything already scored is refused — use requeue for apply-side retries.
  */
-export function rerankJob(urlKey) {
+export async function rerankJob(urlKey) {
   const job = loadJob(urlKey);
   if (!job) return { ok: false, error: 'job not found' };
   if (job.score != null) return { ok: false, error: `already scored ${job.score} — re-rank is for unscored jobs` };
   try {
+    let updated;
     if (job.stage === 'parked') {
-      transition(job, 'discovered', { evalAttempts: 0, lastError: null });
+      updated = await updateJob(urlKey, { transitionTo: 'discovered', patch: { evalAttempts: 0, lastError: null } });
     } else if (job.stage === 'discovered') {
-      job.evalAttempts = 0;
-      job.lastError = null;
-      saveJob(job);
+      updated = await updateJob(urlKey, { patch: { evalAttempts: 0, lastError: null } });
     } else {
       return { ok: false, error: `cannot re-rank from stage ${job.stage}` };
     }
-    return { ok: true, stage: job.stage };
+    return { ok: true, stage: updated.stage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 }
 
 /** Bulk re-rank; one refusal never blocks the rest. */
-export function rerankJobs(keys) {
-  const results = (Array.isArray(keys) ? keys : []).map((key) => ({ key, ...rerankJob(key) }));
+export async function rerankJobs(keys) {
+  const results = [];
+  for (const key of (Array.isArray(keys) ? keys : [])) results.push({ key, ...(await rerankJob(key)) });
   return { ok: results.every((r) => r.ok), reranked: results.filter((r) => r.ok).length, results };
 }
 
@@ -257,19 +256,21 @@ export function rerankJobs(keys) {
  * without parking. Both touch panel-owned fields only (priority, held) —
  * never the stage, so the state machine stays authoritative.
  */
-export function editQueue(urlKey, action) {
-  const job = loadJob(urlKey);
-  if (!job) return { ok: false, error: 'job not found' };
+export async function editQueue(urlKey, action) {
+  let patch;
   if (action === 'bump') {
     const top = Math.max(0, ...listJobs(['resume_ready', 'applying']).map((j) => j.priority || 0));
-    job.priority = top + 1;
-    job.held = false;
-  } else if (action === 'unbump') job.priority = 0;
-  else if (action === 'hold') { job.held = true; job.priority = 0; }
-  else if (action === 'release') job.held = false;
+    patch = { priority: top + 1, held: false };
+  } else if (action === 'unbump') patch = { priority: 0 };
+  else if (action === 'hold') patch = { held: true, priority: 0 };
+  else if (action === 'release') patch = { held: false };
   else return { ok: false, error: `unknown action "${action}"` };
-  saveJob(job);
-  return { ok: true, priority: job.priority || 0, held: !!job.held };
+  try {
+    const job = await updateJob(urlKey, { patch });
+    return { ok: true, priority: job.priority || 0, held: !!job.held };
+  } catch (err) {
+    return { ok: false, error: err.code === 'JOB_NOT_FOUND' ? 'job not found' : err.message };
+  }
 }
 
 // ---------- config editing (whitelisted auto.yml fields) ----------
@@ -458,7 +459,9 @@ function liveAttempt() {
   const applying = listJobs('applying')[0];
   if (!applying) return null;
   const job = loadJob(applying.urlKey);
-  const attemptDir = join(OUTPUT_ROOT, appKeyFor(job), 'audit', `attempt-${job.attempts || 1}`);
+  // UUID-named attempt dirs are recorded on the job at claim time; the
+  // numbered reconstruction remains as the legacy fallback.
+  const attemptDir = job.auditDir || join(OUTPUT_ROOT, appKeyFor(job), 'audit', `attempt-${job.attempts || 1}`);
   const startedAt = job.timestamps?.findLast?.((t) => t.stage === 'applying')?.at ?? null;
   let files = [];
   if (existsSync(attemptDir)) {
@@ -674,11 +677,11 @@ export function createPanelServer() {
         if (req.method === 'POST' && p === '/api/auto/resume') return send(res, 200, cancelPause());
         if (req.method === 'POST' && p === '/api/auto/requeue') {
           const body = await readBody(req);
-          return send(res, 200, body.keys ? requeueJobs(body.keys) : requeueJob(body.key));
+          return send(res, 200, body.keys ? await requeueJobs(body.keys) : await requeueJob(body.key));
         }
         if (req.method === 'POST' && p === '/api/auto/rerank') {
           const body = await readBody(req);
-          return send(res, 200, body.keys ? rerankJobs(body.keys) : rerankJob(body.key));
+          return send(res, 200, body.keys ? await rerankJobs(body.keys) : await rerankJob(body.key));
         }
         if (req.method === 'POST' && p === '/api/auto/agent') {
           const body = await readBody(req);
@@ -686,7 +689,7 @@ export function createPanelServer() {
         }
         if (req.method === 'POST' && p === '/api/auto/queue-edit') {
           const body = await readBody(req);
-          return send(res, 200, editQueue(body.key, body.action));
+          return send(res, 200, await editQueue(body.key, body.action));
         }
         if (req.method === 'GET' && p === '/api/auto/config') return send(res, 200, configPayload());
         if (req.method === 'POST' && p === '/api/auto/config') {
@@ -773,36 +776,36 @@ async function selfTest() {
     const { createJob } = await import('./state.mjs');
     const { job } = createJob({ url: 'https://boards.greenhouse.io/acme/jobs/123', company: 'acme', role: 'cto' });
     for (const st of ['evaluated', 'queued', 'resume_ready', 'applying', 'failed']) transition(job, st, { attempts: 2 });
-    const r = requeueJob(job.urlKey);
+    const r = await requeueJob(job.urlKey);
     check('requeue failed→queued resets attempts', r.ok === true && loadJob(job.urlKey).stage === 'queued' && loadJob(job.urlKey).attempts === 0);
-    check('requeue refuses an illegal stage', requeueJob(job.urlKey).ok === false); // already queued
-    const bulk = requeueJobs([job.urlKey, 'nonexistent']);
+    check('requeue refuses an illegal stage', (await requeueJob(job.urlKey)).ok === false); // already queued
+    const bulk = await requeueJobs([job.urlKey, 'nonexistent']);
     check('bulk requeue reports per-key results', bulk.ok === false && bulk.results.length === 2 && bulk.requeued === 0);
 
     // queue edits in the same temp dir
-    const b = editQueue(job.urlKey, 'bump');
+    const b = await editQueue(job.urlKey, 'bump');
     check('bump sets priority above the pool', b.ok === true && loadJob(job.urlKey).priority === 1);
-    const h = editQueue(job.urlKey, 'hold');
+    const h = await editQueue(job.urlKey, 'hold');
     check('hold benches the job and clears priority',
       h.ok === true && loadJob(job.urlKey).held === true && loadJob(job.urlKey).priority === 0
       && pickOrder([loadJob(job.urlKey)]).length === 0);
-    check('release returns it to the pool', editQueue(job.urlKey, 'release').ok === true && loadJob(job.urlKey).held === false);
+    check('release returns it to the pool', (await editQueue(job.urlKey, 'release')).ok === true && loadJob(job.urlKey).held === false);
     check('queue edit rejects unknown action/key',
-      editQueue(job.urlKey, 'explode').ok === false && editQueue('nonexistent', 'bump').ok === false);
+      (await editQueue(job.urlKey, 'explode')).ok === false && (await editQueue('nonexistent', 'bump')).ok === false);
 
     // re-rank: a never-scored parked job goes back to discovered; scored jobs are refused
     const { job: rj } = createJob({ url: 'https://boards.greenhouse.io/beta/jobs/9', company: 'beta', role: 'vp' });
     transition(rj, 'parked', { lastError: 'eval failed 3× (last: timeout)', evalAttempts: 3 });
-    const rr = rerankJob(rj.urlKey);
+    const rr = await rerankJob(rj.urlKey);
     const rjAfter = loadJob(rj.urlKey);
     check('rerank parked-unscored → discovered, counter reset',
       rr.ok === true && rjAfter.stage === 'discovered' && rjAfter.evalAttempts === 0 && rjAfter.lastError === null);
     rjAfter.lastError = 'eval failed: flaky'; rjAfter.evalAttempts = 2; saveJob(rjAfter);
     check('rerank discovered-with-error clears retry state in place',
-      rerankJob(rj.urlKey).ok === true && loadJob(rj.urlKey).evalAttempts === 0 && loadJob(rj.urlKey).lastError === null);
+      (await rerankJob(rj.urlKey)).ok === true && loadJob(rj.urlKey).evalAttempts === 0 && loadJob(rj.urlKey).lastError === null);
     const scored = loadJob(job.urlKey); scored.score = 4.5; saveJob(scored);
-    check('rerank refuses a scored job', rerankJob(job.urlKey).ok === false);
-    check('bulk rerank reports per-key results', rerankJobs([rj.urlKey, 'nonexistent']).ok === false);
+    check('rerank refuses a scored job', (await rerankJob(job.urlKey)).ok === false);
+    check('bulk rerank reports per-key results', (await rerankJobs([rj.urlKey, 'nonexistent'])).ok === false);
 
     // per-agent stop flags round-trip (real flag dir — restore at the end)
     const { agentEnabled } = await import('./lib/agent-flags.mjs');

@@ -18,13 +18,14 @@
  * CLI) after clearing the obstacle manually; requeue resets attempts.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { getCareerOpsRoot } from '../path-resolver.mjs';
 import { normalizeUrl } from '../url-key.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { validateFlags } from '../lib/cli-flags.mjs';
-import { listAutoJobs, loadAutoJob, saveAutoJob } from '../core/db.mjs';
+import { listAutoJobs, loadAutoJob, saveAutoJob, tx } from '../core/db.mjs';
 
 const ROOT = getCareerOpsRoot();
 
@@ -100,17 +101,202 @@ export function createJob({ url, company = '', role = '', ats = '' }) {
   return { job, created: true };
 }
 
-/** @returns {object|null} */
-export function loadJob(urlKey) {
-  if (!urlKey) throw new Error('loadJob: empty urlKey — refuse to key a job on nothing');
-  return loadAutoJob(urlKey);
+// ---------------------------------------------------------------------------
+// Record versioning (T03 / CONTRACTS D4)
+//
+// `schemaVersion` is the job-record schema (legacy records have none and read
+// as version-zero inputs; unknown future versions are refused).
+// `recordVersion` is the optimistic-concurrency revision compared by
+// updateJob(): legacy records are version 0; every CAS write increments it.
+
+export const JOB_SCHEMA_VERSION = 1;
+
+function typedError(code, message, extra = {}) {
+  const err = new Error(message);
+  err.code = code;
+  Object.assign(err, extra);
+  return err;
 }
 
-/** One UPSERT: full JSON in `data`, hot fields mirrored to typed columns. */
+/** Durable local application identity derived from the normalized URL key. */
+export function applicationIdFor(urlKey) {
+  if (!urlKey) throw new Error('applicationIdFor: empty urlKey');
+  return createHash('sha256').update(`application:${urlKey}`).digest('hex').slice(0, 32);
+}
+
+/**
+ * Explicit, pure migration of a raw stored job record to the current schema.
+ * - version-zero legacy jobs (no schemaVersion/recordVersion) read compatibly;
+ * - unknown FUTURE versions are refused (UNSUPPORTED_RECORD_VERSION);
+ * - preserves timestamps, stage, attempts, audit paths, priority and holds;
+ * - never submits, requeues, or downgrades a submitted record (the stage is
+ *   copied verbatim — a migration adds metadata only).
+ * No I/O: the migrated view is NOT written back; writes happen on the next
+ * saveJob/updateJob.
+ * @param {object|null} raw
+ * @returns {object|null}
+ */
+export function migrateJobRecord(raw) {
+  if (raw == null) return null;
+  if (!raw.urlKey) throw typedError('INVALID_RECORD', 'migrateJobRecord: record has no urlKey');
+  if (raw.schemaVersion != null
+      && (!Number.isInteger(raw.schemaVersion) || raw.schemaVersion > JOB_SCHEMA_VERSION)) {
+    throw typedError('UNSUPPORTED_RECORD_VERSION',
+      `migrateJobRecord: unknown future job schemaVersion ${raw.schemaVersion} for ${raw.urlKey} — refusing to parse`,
+      { foundVersion: raw.schemaVersion });
+  }
+  if (raw.recordVersion != null && (!Number.isInteger(raw.recordVersion) || raw.recordVersion < 0)) {
+    throw typedError('INVALID_RECORD',
+      `migrateJobRecord: invalid recordVersion ${raw.recordVersion} for ${raw.urlKey}`);
+  }
+  const job = {
+    ...raw,
+    schemaVersion: JOB_SCHEMA_VERSION,
+    recordVersion: raw.recordVersion ?? 0, // legacy records are version 0
+    applicationId: raw.applicationId ?? applicationIdFor(raw.urlKey),
+    execution: {
+      attemptId: null,
+      phase: 'not_started',
+      policyVersion: null,
+      sourceVersion: null,
+      procedureVersion: null,
+      submissionPossible: false,
+      confirmationRef: null,
+      blockerId: null,
+      ...(raw.execution && typeof raw.execution === 'object' ? raw.execution : {}),
+    },
+    trackerSync: {
+      status: 'not_required',
+      taskId: null,
+      ...(raw.trackerSync && typeof raw.trackerSync === 'object' ? raw.trackerSync : {}),
+    },
+    dates: {
+      postedAt: null, postedPrecision: null, postedSource: null,
+      firstSeenAt: null, lastCheckedAt: null, repostedAt: null,
+      ...(raw.dates && typeof raw.dates === 'object' ? raw.dates : {}),
+    },
+  };
+  if (job.stage !== raw.stage) {
+    throw typedError('INVALID_RECORD', `migrateJobRecord: stage drifted during migration for ${raw.urlKey}`);
+  }
+  return job;
+}
+
+/** @returns {object|null} the migrated current-schema view of the job */
+export function loadJob(urlKey) {
+  if (!urlKey) throw new Error('loadJob: empty urlKey — refuse to key a job on nothing');
+  return migrateJobRecord(loadAutoJob(urlKey));
+}
+
+/**
+ * One UPSERT: full JSON in `data`, hot fields mirrored to typed columns.
+ * Legacy last-write-wins path (kept for existing callers and self-tests);
+ * bumps recordVersion so updateJob() CAS detects these writes too.
+ */
 export function saveJob(job) {
   if (!job?.urlKey) throw new Error('saveJob: job has no urlKey');
+  job.recordVersion = Number.isInteger(job.recordVersion) ? job.recordVersion + 1 : 1;
   saveAutoJob(job);
   return job;
+}
+
+/** Fields updateJob() refuses in a patch: use the dedicated mechanism. */
+const PROTECTED_PATCH_KEYS = Object.freeze(['urlKey', 'recordVersion', 'schemaVersion', 'stage', 'timestamps']);
+/** Nested D4 extension objects shallow-merge instead of replacing. */
+const NESTED_PATCH_KEYS = Object.freeze(['execution', 'trackerSync', 'dates']);
+
+/**
+ * Compare-and-swap job mutation (T03). Reads the latest record inside a
+ * single db.tx() transaction (the SQLite replacement for the per-job
+ * directory-lock idiom), migrates it, verifies expectedVersion, applies the
+ * narrow patch (and optional stage transition), bumps recordVersion, and
+ * persists atomically. No lock is held outside this call — never across a
+ * browser session.
+ * @param {string} urlKey
+ * @param {{expectedVersion?: number, patch?: object, transitionTo?: string}} opts
+ *   expectedVersion — optional CAS guard; a stale value rejects with a typed
+ *   error (code VERSION_CONFLICT, carrying actualVersion). Omit it to apply
+ *   a narrow patch to the fresh record without claiming exclusivity.
+ * @returns {Promise<object>} the updated job
+ */
+export async function updateJob(urlKey, { expectedVersion, patch = {}, transitionTo } = {}) {
+  if (!urlKey) throw new Error('updateJob: empty urlKey — refuse to key a job on nothing');
+  for (const key of PROTECTED_PATCH_KEYS) {
+    if (key in patch) throw typedError('INVALID_PATCH', `updateJob: patch may not set "${key}" directly`);
+  }
+  return tx(() => {
+    const raw = loadAutoJob(urlKey);
+    if (!raw) throw typedError('JOB_NOT_FOUND', `updateJob: no job for ${urlKey}`);
+    const job = migrateJobRecord(raw);
+    const actual = job.recordVersion;
+    if (expectedVersion != null && expectedVersion !== actual) {
+      throw typedError('VERSION_CONFLICT',
+        `updateJob: stale write for ${urlKey} (expected ${expectedVersion}, actual ${actual})`,
+        { actualVersion: actual });
+    }
+    if (transitionTo) {
+      if (!STAGES.includes(transitionTo)) {
+        throw new Error(`updateJob: unknown stage "${transitionTo}"`);
+      }
+      const allowed = LEGAL_TRANSITIONS[job.stage] || [];
+      if (!allowed.includes(transitionTo)) {
+        throw new Error(`updateJob: illegal ${job.stage} → ${transitionTo} for ${urlKey}`);
+      }
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (NESTED_PATCH_KEYS.includes(key) && value && typeof value === 'object'
+          && job[key] && typeof job[key] === 'object') {
+        job[key] = { ...job[key], ...value };
+      } else {
+        job[key] = value;
+      }
+    }
+    if (transitionTo) {
+      job.stage = transitionTo;
+      if (!Array.isArray(job.timestamps)) job.timestamps = [];
+      job.timestamps.push({ stage: transitionTo, at: new Date().toISOString() });
+    }
+    job.recordVersion = actual + 1;
+    saveAutoJob(job);
+    return job;
+  });
+}
+
+/**
+ * Immutable attempt allocation (T03 / CONTRACTS C): a UUID attemptId and an
+ * exclusively-created audit directory. Requeue must NEVER reuse an old
+ * directory — a fresh UUID guarantees a fresh path, and the non-recursive
+ * mkdir of the final component throws EEXIST instead of silently reusing.
+ * The retry budget (job.attempts) is tracked separately on the job record.
+ * The returned attempt pins the application identity and policy/source/
+ * procedure versions; the caller persists it via updateJob().
+ * @param {{job: object, auditRoot: string, policyVersion?: string|null,
+ *          sourceVersion?: string|null, procedureVersion?: string|null,
+ *          now?: () => Date}} opts
+ * @returns {{attemptId: string, auditDir: string, applicationId: string,
+ *            policyVersion: string|null, sourceVersion: string|null,
+ *            procedureVersion: string|null, allocatedAt: string}}
+ */
+export function allocateAttempt({
+  job, auditRoot,
+  policyVersion = null, sourceVersion = null, procedureVersion = null,
+  now = () => new Date(),
+} = {}) {
+  if (!job?.urlKey) throw new Error('allocateAttempt: job has no urlKey');
+  if (!auditRoot) throw new Error('allocateAttempt: auditRoot is required');
+  const attemptId = randomUUID();
+  const auditDir = join(auditRoot, `attempt-${attemptId}`);
+  mkdirSync(auditRoot, { recursive: true });
+  mkdirSync(auditDir); // exclusive: EEXIST means a reused directory — refuse
+  return {
+    attemptId,
+    auditDir,
+    applicationId: job.applicationId ?? applicationIdFor(job.urlKey),
+    policyVersion,
+    sourceVersion,
+    procedureVersion,
+    allocatedAt: now().toISOString(),
+  };
 }
 
 /**

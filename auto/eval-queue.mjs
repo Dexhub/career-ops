@@ -34,7 +34,7 @@ import { isMainModule } from '../lib/is-main-module.mjs';
 import { validateFlags, flagValue, safeIntFlag } from '../lib/cli-flags.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
-import { createJob, loadJob, saveJob, transition } from './state.mjs';
+import { createJob, loadJob, updateJob } from './state.mjs';
 import { listPipelineItems } from '../core/db.mjs';
 
 const ROOT = getCareerOpsRoot();
@@ -195,7 +195,7 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
     if (hit) {
       if (!dryRun) {
         const { job } = createJob({ url: row.url, company: row.company, role: row.role });
-        if (job.stage === 'discovered') transition(job, 'skipped', { lastError: `blacklisted (${hit})` });
+        if (job.stage === 'discovered') await updateJob(job.urlKey, { transitionTo: 'skipped', patch: { lastError: `blacklisted (${hit})` } });
       }
       outcomes.push({ ...row, outcome: 'skipped', reason: `blacklisted (${hit})` });
       continue;
@@ -203,7 +203,7 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
     if (isAggregatorUrl(row.url)) {
       if (!dryRun) {
         const { job } = createJob({ url: row.url, company: row.company, role: row.role });
-        if (job.stage === 'discovered') transition(job, 'skipped', { lastError: 'aggregator-hosted URL (UNCONFIRMED; auto lane applies direct only)' });
+        if (job.stage === 'discovered') await updateJob(job.urlKey, { transitionTo: 'skipped', patch: { lastError: 'aggregator-hosted URL (UNCONFIRMED; auto lane applies direct only)' } });
       }
       outcomes.push({ ...row, outcome: 'skipped', reason: 'aggregator URL' });
       continue;
@@ -215,7 +215,7 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
     if (liveness?.result === 'expired') {
       if (!dryRun) {
         const { job } = createJob({ url: row.url, company: row.company, role: row.role });
-        if (job.stage === 'discovered') transition(job, 'skipped', { lastError: `dead posting: ${liveness.reason}` });
+        if (job.stage === 'discovered') await updateJob(job.urlKey, { transitionTo: 'skipped', patch: { lastError: `dead posting: ${liveness.reason}` } });
       }
       outcomes.push({ ...row, outcome: 'skipped', reason: 'dead posting' });
       continue;
@@ -227,12 +227,11 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
     if (!jd?.text || jd.text.length < 200) {
       if (!dryRun) {
         const { job } = createJob({ url: row.url, company: row.company, role: row.role });
-        job.lastError = 'jd-fetch-failed (unknown ATS or thin content)';
-        job.evalAttempts = (job.evalAttempts || 0) + 1;
-        if (job.evalAttempts >= 3) {
-          transition(job, 'parked', { lastError: 'JD unavailable via API after 3 tries — needs manual/Neo eval' });
+        const evalAttempts = (job.evalAttempts || 0) + 1;
+        if (evalAttempts >= 3) {
+          await updateJob(job.urlKey, { transitionTo: 'parked', patch: { evalAttempts, lastError: 'JD unavailable via API after 3 tries — needs manual/Neo eval' } });
         } else {
-          saveJob(job);
+          await updateJob(job.urlKey, { patch: { evalAttempts, lastError: 'jd-fetch-failed (unknown ATS or thin content)' } });
         }
       }
       outcomes.push({ ...row, outcome: 'deferred', reason: 'no JD text via API' });
@@ -249,25 +248,24 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
     log(`eval-queue: evaluating ${row.company} — ${row.role}`);
     const evalRes = runOllamaEval({ jdText: `${jd.title ? jd.title + '\n\n' : ''}${jd.text}`, url: row.url, model, baseUrl: cfg.eval.base_url });
     if (!evalRes.ok) {
-      job.lastError = `eval failed: ${evalRes.error}`;
-      job.evalAttempts = (job.evalAttempts || 0) + 1;
-      if (job.evalAttempts >= 3) {
+      const evalAttempts = (job.evalAttempts || 0) + 1;
+      if (evalAttempts >= 3) {
         // Stop burning an eval slot on it every cycle; surface it instead.
-        transition(job, 'parked', { lastError: `eval failed 3× (last: ${evalRes.error}) — re-rank from Mission Control after fixing the model` });
+        await updateJob(job.urlKey, { transitionTo: 'parked', patch: { evalAttempts, lastError: `eval failed 3× (last: ${evalRes.error}) — re-rank from Mission Control after fixing the model` } });
       } else {
-        saveJob(job);
+        await updateJob(job.urlKey, { patch: { evalAttempts, lastError: `eval failed: ${evalRes.error}` } });
       }
       outcomes.push({ ...row, outcome: 'eval-failed', reason: evalRes.error });
       continue;
     }
 
-    let updated = transition(job, 'evaluated', { score: evalRes.score, reportPath: evalRes.reportPath, lastError: null });
+    await updateJob(job.urlKey, { transitionTo: 'evaluated', patch: { score: evalRes.score, reportPath: evalRes.reportPath, lastError: null } });
     if (evalRes.score >= threshold) {
-      updated = transition(updated, 'queued');
+      await updateJob(job.urlKey, { transitionTo: 'queued' });
       outcomes.push({ ...row, outcome: 'queued', score: evalRes.score });
       log(`eval-queue:   → ${evalRes.score}/5 QUEUED`);
     } else {
-      transition(updated, 'skipped', { lastError: `score ${evalRes.score} < ${threshold}` });
+      await updateJob(job.urlKey, { transitionTo: 'skipped', patch: { lastError: `score ${evalRes.score} < ${threshold}` } });
       outcomes.push({ ...row, outcome: 'skipped', score: evalRes.score, reason: 'below threshold' });
       log(`eval-queue:   → ${evalRes.score}/5 below threshold`);
     }
