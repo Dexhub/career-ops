@@ -587,7 +587,10 @@ async function finalizeApproval(ctx, intent, committedHash) {
         employerId: diff.scope?.employerId ?? null,
         country: diff.scope?.country ?? null,
         roleFamily: diff.scope?.roleFamily ?? null,
-        locale: diff.scope?.locale ?? 'en',
+        // No invented locale constraint: an unscoped approval applies to any
+        // locale (scopeCompatible treats null as "any"). A defaulted 'en' here
+        // silently blocked reuse against en-US observations (T28 finding).
+        locale: diff.scope?.locale ?? null,
       },
       validFrom: nowIso,
       validUntil: null,

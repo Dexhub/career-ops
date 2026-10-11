@@ -1089,3 +1089,10 @@ Commit: (pending — coordinator commits)
 - T27 and T28 checkboxes 3–6 remain pending; nothing claimed done beyond
   recorded evidence. T29 checkboxes ticked in 06-verification-and-rollout.md.
 Commit: (pending — coordinator commits)
+
+## Coordinator: T28 locale-scope finding resolved (2026-10-11T17:55Z)
+`approveAnswerProposal` defaulted unscoped approvals to `scope.locale:'en'`, and
+`scopeCompatible` matches locale exactly, so such answers could never be reused
+against `en-US` observations (reproduced in the T28 fixture journey). Fix:
+default is now `null` (= any locale, consistent with the other scope fields).
+Explicit locale scopes behave unchanged. Full suites 409/409 after the fix.
