@@ -574,7 +574,13 @@ drafts get coverage `unknown`, never `observed`). CLI: `node auto/learn.mjs
 inspect --json | backfill --dry-run --out <path> | backfill --apply
 --manifest <path> | rebuild --verify` — dry run writes only the `--out`
 artifact; **never run `backfill --apply` against live data before the T27
-activation gate**. Rules: nothing executes at import
+activation gate**. `retrieval.mjs` (T09): `buildContextPacket` -> bounded
+`{answers,stories,procedures,gaps,versions,bytes}` packets (max 12 candidates,
+byte cap from `config/learning.yml`, provenance/gaps/procedures reserved before
+stories); stories are verbatim CV/profile spans with hashes, never synthesized;
+cache keyed by question fingerprints + source hashes + policy/procedure
+versions (never role title); `storeDraftAnswer` keeps generated free text as a
+draft proposal, never a personal fact. Rules: nothing executes at import
 time; learning modules never import `core/db.mjs` (the `learn.mjs` CLI is
 allowed read-only db access for discovery but currently needs only
 `path-resolver.mjs`); no new dependencies.

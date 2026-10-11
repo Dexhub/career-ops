@@ -78,11 +78,11 @@ The user-approval test fixture is passed by the test harness. Production model o
 **Create:** `auto/learning/retrieval.mjs`, `auto/test/learning-context-packet.test.mjs`.
 **Produces:** `buildContextPacket`.
 
-- [ ] Extract reusable experience references from already approved CV/profile material. Maintain source spans, hashes, role/capability tags and public-use restrictions. A story can point to experience; it cannot synthesize a metric or accomplishment absent from its source.
-- [ ] Retrieve only answers relevant to currently observed questions, up to 12 candidates and the configured byte cap. Reserve space for blockers, provenance and the most relevant procedures before optional examples.
-- [ ] When a role-specific free-text answer needs generation, supply a bounded evidence packet and identify which claims may be used. Store output as a draft with source references and validation findings; do not promote its phrasing into a new personal fact.
-- [ ] Cache packets by job/JD revision, question/option fingerprint, source hashes, policy/procedure versions and locale. Invalidate on any relevant change. Do not cache employer-specific prose solely by role title.
-- [ ] Test a large history with one relevant answer, changed source invalidation, insufficient facts, unsupported metrics, country/employer separation and oversized material. Run `node --test auto/test/learning-context-packet.test.mjs`; record packet bytes and model-call counts for cold and warm repeats.
+- [x] Extract reusable experience references from already approved CV/profile material. Maintain source spans, hashes, role/capability tags and public-use restrictions. A story can point to experience; it cannot synthesize a metric or accomplishment absent from its source.
+- [x] Retrieve only answers relevant to currently observed questions, up to 12 candidates and the configured byte cap. Reserve space for blockers, provenance and the most relevant procedures before optional examples.
+- [x] When a role-specific free-text answer needs generation, supply a bounded evidence packet and identify which claims may be used. Store output as a draft with source references and validation findings; do not promote its phrasing into a new personal fact.
+- [x] Cache packets by job/JD revision, question/option fingerprint, source hashes, policy/procedure versions and locale. Invalidate on any relevant change. Do not cache employer-specific prose solely by role title.
+- [x] Test a large history with one relevant answer, changed source invalidation, insufficient facts, unsupported metrics, country/employer separation and oversized material. Run `node --test auto/test/learning-context-packet.test.mjs`; record packet bytes and model-call counts for cold and warm repeats. (8/8 pass; cold 1894 B / 1 model call, warm 1894 B / 0 calls; single-question packet 707 B.)
 
 ```js
 const packet = buildContextPacket(ctx,{applicationId,observations:[noticeQuestion],maxBytes:24000});

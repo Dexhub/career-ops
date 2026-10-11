@@ -192,3 +192,33 @@ Deviations: reconcileApprovals + previewForget + createUserApproval exported
 beyond the three contract functions (needed for crash-recovery and forget
 checkboxes); approveAnswer returns 'already_applied' on repeat (idempotency).
 Commit: (pending — coordinator commits)
+
+## T09 — small, source-bound answer and experience packets (2026-10-11)
+
+Files: auto/learning/retrieval.mjs (new), auto/test/learning-context-packet.test.mjs (new).
+buildContextPacket(ctx,{applicationId,observations,maxBytes,...}) ->
+{answers,stories,procedures,gaps,versions,bytes} per CONTRACTS E. Retrieval
+limited to observed questions (resolveAnswer per observation), max 12
+candidates, byte cap min(maxBytes, config 24000); answers/gaps/provenance and
+up to 5 relevant procedures reserved before optional stories (stories dropped
+first under pressure, dropped answers surface as gaps). Experience stories =
+verbatim CV/profile spans only (loadSourceSnapshot/extractExperienceStories:
+sha256 source hashes, line-span sourceRefs, role/capability tags, publicUse
+applications_only, secret lines skipped, no synthesized claims). Cache keyed
+by dataRoot+applicationId+jdRevision+question-definition ids (normalized text/
+options/locale fingerprint)+source hashes+policyVersion+procedure versions —
+never role title; any source/policy/procedure change misses. storeDraftAnswer
+stores free text as a draft proposal with sourceRefs + unsupported_metric
+findings; no answers record created (never promoted to personal fact).
+Tests: 8/8 pass (fixture isolation first; required verbatim assertion block;
+large history/one relevant answer; changed-source invalidation; insufficient
+facts -> blocked gap; unsupported metrics flagged; country+employer
+separation; oversized material under 2000 B cap). Full suite:
+node --test auto/test/learning-*.test.mjs -> 121 pass, 0 fail.
+Measured: cold packet 1894 B, 1 model call (draft question); warm repeat
+1894 B, 0 model calls; single-question packet 707 B.
+Deviations: exported loadSourceSnapshot/extractExperienceStories/
+storeDraftAnswer/clearContextPacketCache beyond the contract function (needed
+for story extraction, draft storage and test cache isolation); drafts stored
+in the existing proposals collection rather than a new one.
+Commit: (pending — coordinator commits)
