@@ -222,3 +222,47 @@ storeDraftAnswer/clearContextPacketCache beyond the contract function (needed
 for story extraction, draft storage and test cache isolation); drafts stored
 in the existing proposals collection rather than a new one.
 Commit: (pending — coordinator commits)
+
+## T10 — worker integration of continuous capture/retrieval (2026-10-11)
+
+Files: auto/apply-worker.mjs (learningRuntime, preflightExecutor,
+composeApplyPrompt, runInjectedExecutor; gated runApply with injected-executor
+path, trusted learning/meta.json identity binding, finalize call, dataRoot-
+aware paths), auto/learn.mjs (CONTRACTS J: observe-page / resolve-page /
+checkpoint / capture-attempt; locateAttempt with meta.json verification;
+readOwnedInput realpath containment + byte cap), auto/run.mjs (interrupted-
+attempt finalize in stale-applying recovery; injectable pauseFlag for library
+callers), auto/prompts/apply-submit-learning.md (new capture protocol
+appendix; base apply-submit.md unchanged — flag-off prompt is byte-identical,
+asserted by string equality), auto/learning/evidence.mjs (captureAttempt
+allowUnsettled opt-in, finalize path only), auto/test/learning-worker-
+integration.test.mjs (new, 13 tests).
+
+Gating: enabled:false => learningRuntime null; prompt, executor invocation and
+verdicts unchanged; attempt subcommands refuse with "disabled".
+
+Tests: 13/13 new; full suite node --test auto/test/learning-*.test.mjs ->
+134 pass, 0 fail; apply-worker --self-test and run.mjs --self-test pass.
+Scenario evidence: second fake application reused the notice answer with
+0 model calls (answers.json value from memory, resolve file carries answerId/
+sourceRefs/consumed hashes); new question -> missing_answer blocker; failed
+2-page run retained page-1 observations; changed options -> blocked, not
+reused; wrong applicationId claim rejected with store unchanged; no executor
+or degraded capabilities -> tool_unavailable, zero launches, job untouched;
+completed-looking run without captures -> coverage incomplete with legacy
+ingest labeled.
+
+Incident + fix: run.mjs --self-test (required verification) called runCycle as
+a library and its pause check unlinked the LIVE data/auto/pause-requested
+sentinel (the 2026-10-09 incident class, reintroduced by the in-loop pause
+check). Flag restored immediately (empty sentinel; existence is the only
+semantic); no live runner activity occurred in the gap (run.log untouched,
+no new attempt dirs). Fixed by injecting pauseFlag into runCycle, defaulting
+to the live path; the self-test passes a tmp path. The real-cycle entrypoint
+behavior is unchanged.
+
+Deviations: (1) evidence.mjs captureAttempt gained allowUnsettled (default
+false) because finalize runs seconds after the executor writes answers.json —
+inside SETTLE_MS — and legacy ingest would otherwise always reject UNSETTLED;
+discovery/backfill paths unchanged. (2) run.mjs pauseFlag parameter, as above.
+Commit: (pending — coordinator commits)

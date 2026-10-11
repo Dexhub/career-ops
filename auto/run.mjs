@@ -30,7 +30,8 @@ import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
 import { listJobs, pickOrder, submittedCountOn, updateJob } from './state.mjs';
-import { runApply } from './apply-worker.mjs';
+import { learningRuntime, runApply } from './apply-worker.mjs';
+import { finalizeAttemptCapture } from './learn.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { writeDigest } from './digest.mjs';
 
@@ -101,7 +102,10 @@ export function overridePresent() {
   return res.status === 0;
 }
 
-export async function runCycle({ skipScan = false, noSubmit = false, applyOnly = false, log = console.log, apply = runApply } = {}) {
+// `pauseFlag` is injectable so library callers (the self-test) never observe —
+// or unlink — the LIVE data/auto/pause-requested sentinel (2026-10-09 incident:
+// a library caller must never eat a live pause request).
+export async function runCycle({ skipScan = false, noSubmit = false, applyOnly = false, log = console.log, apply = runApply, pauseFlag = PAUSE_FLAG } = {}) {
   const cfg = loadAutoConfig({ fresh: true });
 
   // Scan → eval runs as a background chain (scan feeds the rows eval ranks),
@@ -145,6 +149,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   // Recovery: a job left in `applying` at max attempts (e.g. the worker was
   // killed mid-apply on its last try) can never complete — mark it failed so
   // it stops shadowing the queue and shows up in the digest.
+  const learning = learningRuntime(log); // null unless config/learning.yml enables it
   for (const stale of listJobs('applying')) {
     if ((stale.attempts || 0) >= (cfg.max_attempts ?? 2)) {
       const job = await updateJob(stale.urlKey, {
@@ -152,14 +157,28 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
         patch: { lastError: stale.lastError || 'exhausted attempts (stale applying)' },
       });
       log(`run: recovered stale applying job ${job.company} -> failed`);
+      // T10: an interrupted attempt still finalizes its learning evidence and
+      // enqueues local consolidation. A failure here is logged, never hidden;
+      // this path never manufactures a submission status and never starts
+      // another application.
+      if (learning && stale.execution?.attemptId && stale.auditDir) {
+        try {
+          const capture = await finalizeAttemptCapture(learning.ctx, {
+            attemptId: stale.execution.attemptId, auditDir: stale.auditDir, verdictStatus: 'interrupted',
+          });
+          log(`run: learning capture finalized for interrupted attempt ${stale.execution.attemptId} — coverage=${capture.coverage}`);
+        } catch (err) {
+          log(`run: learning capture FAILED for interrupted attempt ${stale.execution.attemptId}: ${err.message}`);
+        }
+      }
     }
   }
 
   const limit = cfg.daily_soft_limit ?? 100;
   const applied = new Set(); // one attempt per job per cycle
   for (;;) {
-    if (existsSync(PAUSE_FLAG)) {
-      try { unlinkSync(PAUSE_FLAG); } catch { /* already gone */ }
+    if (existsSync(pauseFlag)) {
+      try { unlinkSync(pauseFlag); } catch { /* already gone */ }
       log('run: pause requested — stopping before the next apply');
       break;
     }
@@ -256,6 +275,8 @@ async function selfTest() {
     await runCycle({
       applyOnly: true,
       log: () => {},
+      pauseFlag: join(tmp, 'pause-requested'), // never the live sentinel
+
       apply: ({ needle }) => {
         calls.push(needle);
         const job = lj(readyKey);

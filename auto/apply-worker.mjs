@@ -24,12 +24,16 @@ import process from 'node:process';
 import { flagValue, hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
+import { getCareerOpsRoot } from '../path-resolver.mjs';
 import { loadAutoConfig, loadStandingAnswers } from './lib/config.mjs';
+import { createLearningContext, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
+import { finalizeAttemptCapture } from './learn.mjs';
 import { allocateAttempt, listJobs, loadJob, pickOrder, updateJob } from './state.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
+const LEARNING_PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit-learning.md');
 const CHROME_PROFILE = join(ROOT, 'data', 'auto', 'chrome-profile');
 const ACCOUNTS_FILE = join(ROOT, 'data', 'auto', 'accounts.json'); // gitignored (data/*)
 const DEFAULT_TIMEOUT_MINS = 25;
@@ -101,6 +105,82 @@ export function renderPrompt({ job, submit, auditDir, profileYaml, standingYaml,
   const leftover = out.match(/\{\{[A-Z_]+\}\}/);
   if (leftover) throw new Error(`renderPrompt: unresolved placeholder ${leftover[0]}`);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Continuous learning integration (T10). ALL of it is gated on
+// config/learning.yml `enabled: true`: with the flag off, learningRuntime()
+// returns null and every call site below is a strict no-op, so a flag-off run
+// is byte-for-byte identical to the pre-learning worker.
+
+/** Learning runtime, or null when disabled/unconfigured. Never throws. */
+export function learningRuntime(log = () => {}) {
+  try {
+    const ctx = createLearningContext({ codeRoot: ROOT, dataRoot: getCareerOpsRoot() });
+    const config = readLearningConfig(ctx);
+    if (!config.enabled) return null;
+    return { ctx, config };
+  } catch (err) {
+    log(`apply-worker: learning config unreadable (${err.message}) — continuing without learning`);
+    return null;
+  }
+}
+
+// The executor capability contract (CONTRACTS J): browser capability is the
+// Neo/CDP surface the restricted executor already holds. There is no local
+// Playwright injection on this path, no invented CLI flags, and no fallback
+// to an unrestricted executor — a missing capability is a visible
+// tool_unavailable outcome, never a silent downgrade.
+const REQUIRED_EXECUTOR_TOOLS = Object.freeze(['browseros_snapshot', 'browseros_act', 'browseros_read']);
+
+/** Preflight an injected executor: Neo/CDP tools present, restricted
+ *  capability boundary, task-owned tabs. */
+export function preflightExecutor(executor) {
+  if (!executor || typeof executor.run !== 'function' || typeof executor.capabilities !== 'function') {
+    return { ok: false, reason: 'tool_unavailable: no learning-capable executor was provided' };
+  }
+  let caps;
+  try { caps = executor.capabilities(); } catch (err) {
+    return { ok: false, reason: `tool_unavailable: executor capabilities check failed (${err.message})` };
+  }
+  const tools = Array.isArray(caps?.tools) ? caps.tools : [];
+  const missing = REQUIRED_EXECUTOR_TOOLS.filter((t) => !tools.includes(t));
+  if (missing.length > 0) {
+    return { ok: false, reason: `tool_unavailable: executor lacks required Neo/CDP tools: ${missing.join(', ')}` };
+  }
+  if (caps.boundary !== 'restricted') {
+    return { ok: false, reason: 'tool_unavailable: executor is not capability-restricted — unrestricted fallback is forbidden' };
+  }
+  if (caps.taskOwnedTabs !== true) {
+    return { ok: false, reason: 'tool_unavailable: executor does not confine itself to task-owned tabs' };
+  }
+  return { ok: true };
+}
+
+/** Compose the apply prompt. The learning capture protocol is appended at
+ *  composition time ONLY when learning is enabled; with learning null the
+ *  output is exactly renderPrompt's. */
+export function composeApplyPrompt(args, { learning = null, attemptId = null } = {}) {
+  const base = renderPrompt(args);
+  if (!learning) return base;
+  const extra = readFileSync(LEARNING_PROMPT_TEMPLATE, 'utf8')
+    .replaceAll('{{AUDIT_DIR}}', args.auditDir)
+    .replaceAll('{{ATTEMPT_ID}}', attemptId ?? 'unallocated');
+  return `${base}\n${extra}`;
+}
+
+/** Run the injected (restricted, learning-capable) executor. Child/session
+ *  cleanup is scoped to the executor itself: no pkill, no shared profile. */
+async function runInjectedExecutor({ executor, prompt, auditDir, job, attemptId, submit, timeoutMins, log }) {
+  writeFileSync(join(auditDir, 'prompt.md'), prompt);
+  log(`apply-worker: running injected learning executor (timeout ${timeoutMins}m)`);
+  try {
+    const res = await executor.run({ prompt, auditDir, job, attemptId, submit, timeoutMins });
+    return { timedOut: res?.timedOut === true, exitCode: res?.exitCode ?? 0 };
+  } catch (err) {
+    log(`apply-worker: injected executor error: ${err.message}`);
+    return { timedOut: false, exitCode: 1 };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -279,12 +359,18 @@ function pickJob(needle) {
   return loadJob(pool[0].urlKey);
 }
 
-export async function runApply({ needle, submit = true, agent = 'claude', timeoutMins, log = console.log } = {}) {
+export async function runApply({ needle, submit = true, agent = 'claude', timeoutMins, executor = null, log = console.log } = {}) {
   const cfg = loadAutoConfig();
   const standing = loadStandingAnswers();
   if (!standing || standing.filled_in_by_user !== true) {
     throw new Error('apply-worker: config/standing-answers.yml missing or filled_in_by_user is not true — refusing to start');
   }
+  // Learning gate (T10): null when config/learning.yml is absent/disabled, in
+  // which case everything below behaves exactly as before.
+  const learning = learningRuntime(log);
+  // In production the code checkout IS the data root, so this equals ROOT;
+  // it differs only under test fixtures with CAREER_OPS_ROOT redirected.
+  const dataRoot = learning ? learning.ctx.dataRoot : ROOT;
 
   let job = pickJob(needle);
   if (!job) { log('apply-worker: no resume_ready job found'); return null; }
@@ -292,8 +378,19 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     throw new Error(`apply-worker: resume PDF missing for ${job.company}: ${job.resumePdf}`);
   }
 
+  if (learning) {
+    // Executor preflight BEFORE claiming the attempt: a missing capability is
+    // a visible tool_unavailable verdict, never a launch and never a fallback
+    // to the unrestricted legacy agent path.
+    const pre = preflightExecutor(executor);
+    if (!pre.ok) {
+      log(`apply-worker: ${pre.reason} — refusing to launch an application executor`);
+      return { job, auditDir: null, verdict: { ok: false, status: 'tool_unavailable', reason: pre.reason } };
+    }
+  }
+
   const attemptNo = (job.attempts || 0) + 1;
-  const auditRoot = join(ROOT, 'output', appKey(job), 'audit');
+  const auditRoot = join(dataRoot, 'output', appKey(job), 'audit');
   // Immutable attempt: fresh UUID + exclusively created audit dir — a requeue
   // or retry never reuses (or overwrites) an earlier attempt's directory.
   let attempt = null;
@@ -306,18 +403,28 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     mkdirSync(auditDir, { recursive: true });
   }
 
-  const prompt = renderPrompt({
+  const prompt = composeApplyPrompt({
     job,
     submit,
     auditDir,
-    profileYaml: readFileSync(join(ROOT, 'config', 'profile.yml'), 'utf8'),
-    standingYaml: readFileSync(join(ROOT, 'config', 'standing-answers.yml'), 'utf8'),
-    cvText: readFileSync(join(ROOT, 'cv.md'), 'utf8'),
+    profileYaml: readFileSync(join(dataRoot, 'config', 'profile.yml'), 'utf8'),
+    standingYaml: readFileSync(join(dataRoot, 'config', 'standing-answers.yml'), 'utf8'),
+    cvText: readFileSync(join(dataRoot, 'cv.md'), 'utf8'),
     resumeSha: createHash('sha256').update(readFileSync(job.resumePdf)).digest('hex'),
-  });
+  }, { learning, attemptId: attempt?.attemptId ?? null });
   // resume.txt per the audit contract: variant + sha of the exact PDF.
   writeFileSync(join(auditDir, 'resume.txt'),
     `variant: ${job.resumeVariant}\npdf: ${job.resumePdf}\nsha256: ${createHash('sha256').update(readFileSync(job.resumePdf)).digest('hex')}\n`);
+  if (learning) {
+    // Trusted identity binding for the attempt subcommands (learn.mjs reads
+    // this, never the executor's own claims).
+    mkdirSync(join(auditDir, 'learning'), { recursive: true });
+    writeFileSync(join(auditDir, 'learning', 'meta.json'), JSON.stringify({
+      attemptId: attempt?.attemptId ?? null,
+      applicationId: attempt?.applicationId ?? null,
+      urlKey: job.urlKey,
+    }, null, 2));
+  }
 
   log(`apply-worker: ${job.company} — ${job.role} [${submit ? 'SUBMIT' : 'dry-run'}] -> ${auditDir}`);
 
@@ -360,13 +467,20 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     agentUsed = agentCfg.fallback;
     log(`apply-worker: attempt ${attemptNo} — escalating to fallback agent ${agentUsed}`);
   }
-  const run = runAgent({
-    agent: agentUsed, prompt, auditDir,
-    timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
-    model: agentUsed === 'codex' ? agentCfg.codex_model : agentCfg.claude_model,
-    smallFastModel: agentCfg.claude_small_fast_model,
-    log,
-  });
+  const run = learning
+    ? await runInjectedExecutor({
+      executor, prompt, auditDir, job,
+      attemptId: attempt?.attemptId ?? null, submit,
+      timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
+      log,
+    })
+    : runAgent({
+      agent: agentUsed, prompt, auditDir,
+      timeoutMins: timeoutMins ?? cfg.apply?.timeout_minutes ?? DEFAULT_TIMEOUT_MINS,
+      model: agentUsed === 'codex' ? agentCfg.codex_model : agentCfg.claude_model,
+      smallFastModel: agentCfg.claude_small_fast_model,
+      log,
+    });
 
   harvestCredentials(auditDir, undefined, log);
 
@@ -386,6 +500,20 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   }, null, 2));
 
   log(`apply-worker: verdict status=${verdict.status} ok=${verdict.ok}${verdict.reason ? ` reason="${verdict.reason}"` : ''}`);
+
+  // Finalize learning evidence for every attempt outcome (completed, parked,
+  // failed — interrupted attempts are finalized by run.mjs recovery). A
+  // capture failure is logged visibly and never alters the submission verdict.
+  if (learning && attempt) {
+    try {
+      const capture = await finalizeAttemptCapture(learning.ctx, {
+        attemptId: attempt.attemptId, auditDir, verdictStatus: verdict.status,
+      });
+      log(`apply-worker: learning capture finalized — coverage=${capture.coverage} pages=${capture.pagesObserved} sync=${capture.consolidationTaskId}`);
+    } catch (err) {
+      log(`apply-worker: learning capture FAILED (verdict unchanged): ${err.message}`);
+    }
+  }
 
   if (!submit) return { job, auditDir, verdict }; // dry runs never mutate state
 
@@ -418,7 +546,7 @@ export function syncTrackerApplied(job, auditDir, log = console.log) {
       + [reportNum, day, esc(job.company), esc(job.role), 'Evaluated',
         Number.isFinite(Number(job.score)) ? `${Number(job.score).toFixed(1)}/5` : 'N/A', '❌',
         `[${reportNum}](${job.reportPath})`, 'auto pipeline', job.urlKey].join('\t') + '\n';
-    const addDir = join(ROOT, 'batch', 'tracker-additions');
+    const addDir = join(getCareerOpsRoot(), 'batch', 'tracker-additions');
     mkdirSync(addDir, { recursive: true });
     writeFileSync(join(addDir, `${reportNum}-${slugifySegment(job.company || 'auto')}.tsv`), tsv);
     spawnSync(node, ['merge-tracker.mjs'], { cwd: ROOT, stdio: 'ignore', timeout: 60_000 });

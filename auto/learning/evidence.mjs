@@ -567,9 +567,12 @@ async function commitObservations(ctx, observations, { apply, seen, counters }) 
  * captureAttempt(ctx, {attemptDir, apply}) -> {added, duplicate, rejected,
  * coverage} (CONTRACTS E / T05). attemptDir may be absolute (under dataRoot)
  * or relative; it must match output/<appKey>/audit/<attempt>. apply:false
- * counts without writing the store.
+ * counts without writing the store. allowUnsettled bypasses the SETTLE_MS
+ * quarantine — only for the attempt-finalize path (T10), where the executor
+ * has already exited and the verdict is final, so the write is complete by
+ * construction; history discovery/backfill must never set it.
  */
-export async function captureAttempt(ctx, { attemptDir, apply = false } = {}) {
+export async function captureAttempt(ctx, { attemptDir, apply = false, allowUnsettled = false } = {}) {
   if (typeof attemptDir !== 'string' || attemptDir.length === 0) {
     throw new LearningError('SCHEMA_VALIDATION', 'attemptDir must be a nonempty path');
   }
@@ -596,7 +599,7 @@ export async function captureAttempt(ctx, { attemptDir, apply = false } = {}) {
     rejected.push({ relativePath: answersRel, reason: 'OVERSIZED' });
     return { added: 0, duplicate: 0, rejected, coverage: { gaps } };
   }
-  if (!read.status.settled) {
+  if (!read.status.settled && !allowUnsettled) {
     rejected.push({ relativePath: answersRel, reason: 'UNSETTLED' });
     return { added: 0, duplicate: 0, rejected, coverage: { gaps } };
   }

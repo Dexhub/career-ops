@@ -538,7 +538,11 @@ Rules for agents working here:
   Pause writes `data/auto/pause-requested`; per-agent stops write
   `data/auto/agents/<scan|rank|apply>.stopped` — `run.mjs`/`eval-queue.mjs`
   check these at safe points (between stages, between evals, between applies)
-  and stop gracefully without killing the cycle.
+  and stop gracefully without killing the cycle. Gotcha: `runCycle` consumes
+  (unlinks) the pause flag when it honors it, so library callers — including
+  `node auto/run.mjs --self-test` — must pass their own `pauseFlag` path to
+  `runCycle` or they will eat a live pause request (happened 2026-10-09 and
+  again 2026-10-11; the self-test now injects a tmp path).
 - The upstream web UI still runs as an always-on service
   (`io.career-ops.web-ui`, http://127.0.0.1:3003, production build) behind the
   proxy (port overridable via `CAREER_OPS_WEB_PORT`). Serving the UI is fine;
