@@ -43,6 +43,10 @@ ats_allowlist:
   - lever
   - ashby
   - workable
+  # workday added 2026-10-11 by coordinator: T12 enforcement surfaced that 23/73
+  # historical submissions were Workday (operator-managed credentials/facts),
+  # so the allowlist predated real behavior. See EXECUTION-LOG.md.
+  - workday
 
 agent:
   # Headless agent CLI driving the browser for applies. Cost ladder
