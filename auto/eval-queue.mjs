@@ -2,7 +2,8 @@
 /**
  * auto/eval-queue.mjs — unattended scan→eval bridge (Phase 1 of the auto layer).
  *
- * Reads pending rows from data/pipeline.md, and for each row not yet known to
+ * Reads pending rows from the pipeline_items table (data/career-ops.db,
+ * section 'pending', unchecked), and for each row not yet known to
  * the auto state machine:
  *   1. blacklist gate (data/blacklist.md, opt-in; autonomous lane SKIPS on hit
  *      — there is no human to ask, and the user's own recorded decision wins)
@@ -34,15 +35,16 @@ import { validateFlags, flagValue, safeIntFlag } from '../lib/cli-flags.mjs';
 import { loadAutoConfig } from './lib/config.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { createJob, loadJob, saveJob, transition } from './state.mjs';
+import { listPipelineItems } from '../core/db.mjs';
 
 const ROOT = getCareerOpsRoot();
-const PIPELINE_PATH = join(ROOT, 'data/pipeline.md');
 const BLACKLIST_PATH = join(ROOT, 'data/blacklist.md');
 const JD_TEXT_CAP = 20_000;
 const JD_TIMEOUT_MS = 15_000;
 
 /**
- * Pending rows from data/pipeline.md: `- [ ] url | company | role | ...`.
+ * Parse pending rows in the legacy pipeline.md line format
+ * (`- [ ] url | company | role | ...`), as preserved in pipeline_items.raw.
  * @returns {{url: string, company: string, role: string}[]}
  */
 export function parsePendingRows(text) {
@@ -169,11 +171,10 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
   const gateBudget = cfg.eval.gate_budget_per_cycle ?? Math.max(max * 10, 100);
   const outcomes = [];
 
-  if (!existsSync(PIPELINE_PATH)) {
-    log('eval-queue: no data/pipeline.md — nothing to do');
-    return outcomes;
-  }
-  const rows = parsePendingRows(readFileSync(PIPELINE_PATH, 'utf-8'));
+  // Pending inbox rows; raw preserves the legacy `- [ ] url | company | role`
+  // line, so company/role parse out of it when present.
+  const rows = listPipelineItems({ section: 'pending', checked: 0 }).map((item) =>
+    parsePendingRows(item.raw || '')[0] ?? { url: item.url, company: '', role: '' });
   log(`eval-queue: ${rows.length} pending pipeline rows, evaluating up to ${max} (model ${model}, threshold ${threshold})`);
 
   let processed = 0;

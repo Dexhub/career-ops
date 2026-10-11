@@ -234,9 +234,10 @@ async function selfTest() {
   check('override check runs', typeof overridePresent() === 'boolean');
   check('lock sentinel path under data/auto', LOCK_SENTINEL.includes(join('data', 'auto')));
 
-  // runCycle recovery + apply loop against a temp jobs dir.
+  // runCycle recovery + apply loop against a throwaway DB.
   const tmp = mkdtempSync(join(tmpdir(), 'auto-run-test-'));
-  process.env.CAREER_OPS_AUTO_JOBS_DIR = tmp;
+  const prevDb = process.env.CAREER_OPS_DB;
+  process.env.CAREER_OPS_DB = join(tmp, 'test.db');
   try {
     const seed = (url, company, stages, patch = {}) => {
       let { job } = createJob({ url, company });
@@ -268,7 +269,9 @@ async function selfTest() {
     check('ready job applied exactly once', calls.length === 1 && calls[0] === readyKey);
     check('ready job reached submitted', lj(readyKey).stage === 'submitted');
   } finally {
-    delete process.env.CAREER_OPS_AUTO_JOBS_DIR;
+    (await import('../core/db.mjs')).closeDb();
+    if (prevDb === undefined) delete process.env.CAREER_OPS_DB;
+    else process.env.CAREER_OPS_DB = prevDb;
     rmSync(tmp, { recursive: true, force: true });
   }
 

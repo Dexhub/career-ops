@@ -21,7 +21,7 @@ file has `filled_in_by_user: true`.
 | `apply-worker.mjs` | Headless agent (claude → codex fallback) fills + submits one application via Playwright MCP; audit contract enforced here, not trusted from the agent. |
 | `digest.mjs` | Daily `data/auto/digest-YYYY-MM-DD.md` + macOS notification. |
 | `diagnose.mjs` | Sweeps every audit dir: agent-claim vs verdict divergences, park/fail reasons across jobs, missing answers, recurring generated answers (standing-answer candidates). |
-| `state.mjs` | Job state machine (`data/auto/jobs/*.json`). `node auto/state.mjs --list` to inspect. |
+| `state.mjs` | Job state machine (`auto_jobs` table in `data/career-ops.db`). `node auto/state.mjs --list` to inspect. |
 | `prompts/apply-submit.md` | Prompt template for the apply agent (audit contract, ATS quirks, honesty rules). |
 | `patches/` | The sanctioned AGENTS.md ethical-override patch. Re-apply after `npm run update`; `run.mjs` skips applies and warns if it's missing. |
 | `launchd/io.career-ops.auto.plist` | Optional 6-hourly schedule — **currently disabled** (user runs cycles manually). Re-enable only on request: `cp auto/launchd/io.career-ops.auto.plist ~/Library/LaunchAgents/ && launchctl load ~/Library/LaunchAgents/io.career-ops.auto.plist` |
@@ -56,7 +56,7 @@ waits (60s re-check) while the network is down instead of burning attempts.
 `data/auto/desired-cycle.json` records whether a cycle should be running
 (set on start, cleared on explicit stop or clean completion); the panel's
 watchdog checks every 60s and restarts a dead-but-desired cycle as soon as
-the network is reachable. Job state persists in `data/auto/jobs/`, so a
+the network is reachable. Job state persists in the `auto_jobs` table, so a
 restarted cycle resumes where the dead one stopped. The verifier accepts
 `confirmation_text` nested under `result.confirmation` (incl.
 `confirmed: true` + `evidence[]`).

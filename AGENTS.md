@@ -519,8 +519,8 @@ Rules for agents working here:
   use the global BrowserOS neo MCP instead; it then must export evidence as
   `01-form-filled.pdf`/`02-confirmation.pdf` (verifyAudit accepts `.png` or
   `.pdf`). Luna applies run ~120–200K tokens vs claude's 3–14M.
-- Job state lives in `data/auto/jobs/` (`node auto/state.mjs --list`); audit
-  trails in `output/<app>/audit/`.   Runs are **manual-only** (`node auto/run.mjs`):
+- Job state lives in the `auto_jobs` table of `data/career-ops.db`
+  (`node auto/state.mjs --list`); audit trails in `output/<app>/audit/`.   Runs are **manual-only** (`node auto/run.mjs`):
   the launchd schedule is disabled by user decision (2026-10-07) — do not
   reinstall `io.career-ops.auto.plist` without explicit user approval.
 - Single UI: Mission Control (`auto/panel.mjs` + `auto/panel.html`,

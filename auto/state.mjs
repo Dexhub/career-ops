@@ -2,10 +2,12 @@
 /**
  * auto/state.mjs — per-job state machine for the autonomous apply pipeline.
  *
- * One JSON file per job under data/auto/jobs/, named by a hash of the job's
- * canonical URL key (url-key.mjs normalizeUrl). Flat files, atomic tmp+rename
- * writes, no DB. The state JSON + the audit dir ARE the guard — no broker or
- * canary layers (deliberate; see auto/README.md and the plan's non-goals).
+ * One row per job in the auto_jobs table of data/career-ops.db (core/db.mjs),
+ * keyed by the job's canonical URL key (url-key.mjs normalizeUrl). The full
+ * job object lives in the row's JSON `data` column; hot fields (stage, score,
+ * attempts, ...) are mirrored to typed columns by saveAutoJob. The job record
+ * + the audit dir ARE the guard — no broker or canary layers (deliberate; see
+ * auto/README.md and the plan's non-goals).
  *
  *   discovered → evaluated → queued → resume_ready → applying → submitted
  *                    ↓          ↓          ↓             ↓   ↘ parked
@@ -17,18 +19,19 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { getCareerOpsRoot } from '../path-resolver.mjs';
 import { normalizeUrl } from '../url-key.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { validateFlags } from '../lib/cli-flags.mjs';
+import { listAutoJobs, loadAutoJob, saveAutoJob } from '../core/db.mjs';
 
 const ROOT = getCareerOpsRoot();
 
 /**
- * Resolved at CALL time, not module load, so tests can point it at a temp dir
- * via CAREER_OPS_AUTO_JOBS_DIR after import.
+ * Legacy location of the retired per-job JSON files. Job state now lives in
+ * the auto_jobs table; this path (and jobFileName/jobPath below) is kept only
+ * for callers that still reference the old on-disk layout.
  */
 export function jobsDir() {
   return process.env.CAREER_OPS_AUTO_JOBS_DIR || join(ROOT, 'data/auto/jobs');
@@ -53,8 +56,8 @@ export const LEGAL_TRANSITIONS = Object.freeze({
 });
 
 /**
- * Filesystem name for a job, derivable from the URL alone (company may be
- * unknown at discovery time). sha256 prefix is collision-safe at this scale.
+ * Legacy filesystem name for a job (pre-DB layout), derivable from the URL
+ * alone. sha256 prefix is collision-safe at this scale.
  * @param {string} urlKey - normalizeUrl() output. '' is NOT a key.
  * @returns {string} e.g. "a3f09b2c41d7e8f0.json"
  */
@@ -99,19 +102,14 @@ export function createJob({ url, company = '', role = '', ats = '' }) {
 
 /** @returns {object|null} */
 export function loadJob(urlKey) {
-  const p = jobPath(urlKey);
-  if (!existsSync(p)) return null;
-  return JSON.parse(readFileSync(p, 'utf-8'));
+  if (!urlKey) throw new Error('loadJob: empty urlKey — refuse to key a job on nothing');
+  return loadAutoJob(urlKey);
 }
 
-/** Atomic tmp+rename write. */
+/** One UPSERT: full JSON in `data`, hot fields mirrored to typed columns. */
 export function saveJob(job) {
   if (!job?.urlKey) throw new Error('saveJob: job has no urlKey');
-  mkdirSync(jobsDir(), { recursive: true });
-  const p = jobPath(job.urlKey);
-  const tmp = `${p}.tmp-${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(job, null, 2) + '\n', 'utf-8');
-  renameSync(tmp, p);
+  saveAutoJob(job);
   return job;
 }
 
@@ -144,19 +142,9 @@ export function transition(job, nextStage, patch = {}) {
  * @returns {object[]}
  */
 export function listJobs(stages) {
-  if (!existsSync(jobsDir())) return [];
-  const want = stages ? new Set([].concat(stages)) : null;
-  const jobs = [];
-  for (const f of readdirSync(jobsDir())) {
-    if (!f.endsWith('.json')) continue;
-    try {
-      const job = JSON.parse(readFileSync(join(jobsDir(), f), 'utf-8'));
-      if (!want || want.has(job.stage)) jobs.push(job);
-    } catch {
-      console.warn(`auto/state: skipping unreadable job file ${f}`);
-    }
-  }
-  return jobs;
+  const want = !stages ? null : [].concat(stages);
+  if (want && want.length === 0) return [];
+  return listAutoJobs(want);
 }
 
 /**
@@ -190,15 +178,15 @@ export function submittedCountOn(day) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-test (runs against a temp dir; never touches real state)
+// Self-test (runs against a throwaway DB; never touches real state)
 // ---------------------------------------------------------------------------
 async function runSelfTest() {
   const os = await import('node:os');
   const fs = await import('node:fs');
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'auto-state-'));
-  process.env.CAREER_OPS_AUTO_JOBS_DIR = tmp;
-  // jobsDir() resolves the env var at call time, so the module's own exports
-  // can be exercised directly against the temp dir.
+  process.env.CAREER_OPS_DB = join(tmp, 'test.db');
+  // core/db.mjs resolves CAREER_OPS_DB at open time, so the module's own
+  // exports can be exercised directly against the throwaway database.
   const mod = { createJob, loadJob, transition, listJobs, submittedCountOn, jobFileName, pickOrder };
   const url = 'https://job-boards.greenhouse.io/example/jobs/123?utm_source=x';
   let pass = 0; let fail = 0;
@@ -261,7 +249,8 @@ async function runSelfTest() {
     assert(threw, 'empty key must throw');
   });
 
-  rmSync(tmp, { recursive: true, force: true });
+  (await import('../core/db.mjs')).closeDb();
+  fs.rmSync(tmp, { recursive: true, force: true });
   console.log(`auto/state self-test: ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);
 }

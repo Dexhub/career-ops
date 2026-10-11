@@ -118,8 +118,9 @@ export function cancelPause() {
 // ---------- watchdog ----------
 // A cycle that should be running but has died (crash, kill -9, reboot, system
 // sleep gone wrong) is restarted as soon as the network is reachable. Job
-// state persists in data/auto/jobs, so the restarted cycle resumes where the
-// dead one stopped (stale `applying` rows are recovered by run.mjs itself).
+// state persists in the auto_jobs table (data/career-ops.db), so the restarted
+// cycle resumes where the dead one stopped (stale `applying` rows are
+// recovered by run.mjs itself).
 
 async function probeNetwork() {
   try {
@@ -762,12 +763,12 @@ async function selfTest() {
   check('operator payload has cycle/workers/applying', 'cycle' in op && 'workers' in op && 'applying' in op);
   check('file guard accepts .log inside output', safeOutputPath('output/../x.log') === null);
 
-  // requeue against a temp jobs dir — never touches real state
+  // requeue against a throwaway DB — never touches real state
   const os = await import('node:os');
   const fs = await import('node:fs');
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'auto-panel-'));
-  const prevDir = process.env.CAREER_OPS_AUTO_JOBS_DIR;
-  process.env.CAREER_OPS_AUTO_JOBS_DIR = tmp;
+  const prevDb = process.env.CAREER_OPS_DB;
+  process.env.CAREER_OPS_DB = join(tmp, 'test.db');
   try {
     const { createJob } = await import('./state.mjs');
     const { job } = createJob({ url: 'https://boards.greenhouse.io/acme/jobs/123', company: 'acme', role: 'cto' });
@@ -816,8 +817,9 @@ async function selfTest() {
       for (const [a, on] of Object.entries(before)) setAgentEnabled(a, on);
     }
   } finally {
-    if (prevDir === undefined) delete process.env.CAREER_OPS_AUTO_JOBS_DIR;
-    else process.env.CAREER_OPS_AUTO_JOBS_DIR = prevDir;
+    (await import('../core/db.mjs')).closeDb();
+    if (prevDb === undefined) delete process.env.CAREER_OPS_DB;
+    else process.env.CAREER_OPS_DB = prevDb;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 
