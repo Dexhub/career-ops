@@ -1,0 +1,209 @@
+{
+  "comment": "Synthetic T16 cohort. Every value is invented; no real employer, person or application appears here. The ai_transformation_leadership cohort is exactly: 100 repeated observations of ONE requisition at company co-syn-x plus four single observations of four more requisitions across co-syn-y and co-syn-z = 5 distinct jobs, 3 distinct companies, 104 raw rows.",
+  "boilerplateQuestion": {
+    "originalText": "How did you hear about this role?",
+    "fieldType": "select",
+    "locale": "en",
+    "options": [
+      { "value": "linkedin", "label": "LinkedIn" },
+      { "value": "jobboard", "label": "Job board" },
+      { "value": "other", "label": "Other" }
+    ],
+    "required": true
+  },
+  "kubernetesQuestion": {
+    "originalText": "How many years of Kubernetes production experience do you have?",
+    "fieldType": "text",
+    "locale": "en",
+    "required": true
+  },
+  "terraformQuestion": {
+    "originalText": "Describe your experience with Terraform, Ansible and Azure governance.",
+    "fieldType": "textarea",
+    "locale": "en",
+    "required": false
+  },
+  "relocationQuestion": {
+    "originalText": "Are you willing to relocate for this position?",
+    "fieldType": "select",
+    "locale": "en",
+    "options": [
+      { "value": "yes", "label": "Yes" },
+      { "value": "no", "label": "No" }
+    ],
+    "required": true
+  },
+  "noticePeriodQuestion": {
+    "originalText": "What is your notice period in weeks?",
+    "fieldType": "number",
+    "locale": "en",
+    "required": true
+  },
+  "availabilityQuestion": {
+    "originalText": "What is your earliest availability date?",
+    "fieldType": "date",
+    "locale": "en",
+    "required": true
+  },
+  "mlPlatformQuestion": {
+    "originalText": "Describe a machine learning platform you have operated at scale.",
+    "fieldType": "textarea",
+    "locale": "en",
+    "required": false
+  },
+  "repeatedJob": {
+    "applicationId": "app-syn-alpha",
+    "companyId": "co-syn-x",
+    "employerName": "Synthetic X GmbH",
+    "atsVendor": "synthetic-ats",
+    "roleTitle": "Head of AI Transformation",
+    "country": "DE",
+    "repeats": 100,
+    "observedAt": "2026-09-10T00:00:00.000Z",
+    "coverage": "observed",
+    "answerDisposition": "reused"
+  },
+  "singleJobs": [
+    {
+      "applicationId": "app-syn-beta",
+      "companyId": "co-syn-y",
+      "employerName": "Synthetic Y AG",
+      "atsVendor": "synthetic-ats",
+      "roleTitle": "Director of AI Strategy",
+      "country": "DE",
+      "attemptId": "att-syn-beta-1",
+      "question": "boilerplateQuestion",
+      "observedAt": "2026-09-01T00:00:00.000Z",
+      "coverage": "observed",
+      "answerDisposition": "confirmed"
+    },
+    {
+      "applicationId": "app-syn-gamma",
+      "companyId": "co-syn-y",
+      "employerName": "Synthetic Y AG",
+      "atsVendor": "synthetic-ats",
+      "roleTitle": "AI Transformation Lead",
+      "country": "DE",
+      "question": "boilerplateQuestion",
+      "observedAt": "2026-09-12T00:00:00.000Z",
+      "coverage": "observed",
+      "answerDisposition": "unanswered"
+    },
+    {
+      "applicationId": "app-syn-delta",
+      "companyId": "co-syn-z",
+      "employerName": "Synthetic Z BV",
+      "atsVendor": "synthetic-ats",
+      "roleTitle": "Chief AI Officer",
+      "country": "DE",
+      "question": "boilerplateQuestion",
+      "observedAt": "2026-09-15T00:00:00.000Z",
+      "coverage": "observed",
+      "answerDisposition": "unanswered"
+    },
+    {
+      "applicationId": "app-syn-epsilon",
+      "companyId": "co-syn-z",
+      "employerName": "Synthetic Z BV",
+      "atsVendor": "synthetic-ats",
+      "roleTitle": "VP AI Adoption",
+      "country": "DE",
+      "question": "kubernetesQuestion",
+      "observedAt": "2026-09-20T00:00:00.000Z",
+      "coverage": "partially_observed",
+      "answerDisposition": "unanswered"
+    }
+  ],
+  "multiTagJob": {
+    "applicationId": "app-syn-eng",
+    "companyId": "co-syn-eng",
+    "employerName": "Synthetic Eng NV",
+    "atsVendor": "synthetic-ats",
+    "roleTitle": "Head of AI Engineering",
+    "country": "NL",
+    "question": "mlPlatformQuestion",
+    "observedAt": "2026-09-18T00:00:00.000Z",
+    "coverage": "observed",
+    "answerDisposition": "unanswered"
+  },
+  "sparseJob": {
+    "applicationId": "app-syn-sa",
+    "companyId": "co-syn-sa",
+    "employerName": "Synthetic SA Oy",
+    "atsVendor": "synthetic-ats-2",
+    "roleTitle": "Senior Solutions Architect",
+    "questions": ["terraformQuestion", "relocationQuestion"],
+    "observedAt": "2026-09-25T00:00:00.000Z",
+    "coverage": "observed",
+    "answerDisposition": "unanswered"
+  },
+  "twoCompanyJobs": [
+    {
+      "applicationId": "app-syn-se1",
+      "companyId": "co-syn-se1",
+      "employerName": "Synthetic SE One",
+      "atsVendor": "synthetic-ats-a",
+      "roleTitle": "Senior Software Engineer",
+      "question": "noticePeriodQuestion",
+      "observedAt": "2026-09-26T00:00:00.000Z",
+      "coverage": "observed",
+      "answerDisposition": "unanswered"
+    },
+    {
+      "applicationId": "app-syn-se2",
+      "companyId": "co-syn-se2",
+      "employerName": "Synthetic SE Two",
+      "atsVendor": "synthetic-ats-b",
+      "roleTitle": "Backend Developer",
+      "question": "noticePeriodQuestion",
+      "observedAt": "2026-09-27T00:00:00.000Z",
+      "coverage": "observed",
+      "answerDisposition": "unanswered"
+    }
+  ],
+  "reclassifiedJob": {
+    "applicationId": "app-syn-rc",
+    "companyId": "co-syn-rc",
+    "employerName": "Synthetic RC SARL",
+    "atsVendor": "synthetic-ats",
+    "roleTitle": "Transformation Manager",
+    "country": "FR",
+    "question": "availabilityQuestion",
+    "observedAt": "2026-09-28T00:00:00.000Z",
+    "coverage": "observed",
+    "answerDisposition": "unanswered"
+  },
+  "cvMarkdown": "# Platform Engineering\n\n- Operated Kubernetes clusters in production for 40 synthetic teams\n- Deployed workloads on Azure for a regulated synthetic client\n",
+  "topicSources": [
+    {
+      "id": "src-syn-report",
+      "text": "Synthetic sampled report: Kubernetes appeared in 4 of 5 sampled requisitions. Observed share 80% within this sample only."
+    }
+  ],
+  "proposedTopics": [
+    {
+      "topic": "Kubernetes demand in sampled roles",
+      "sourceId": "src-syn-report",
+      "quote": "Kubernetes appeared in 4 of 5 sampled requisitions.",
+      "prose": "Observed share 80% within this sample only."
+    },
+    {
+      "topic": "Fabricated market percentage",
+      "sourceId": "src-syn-report",
+      "quote": "Kubernetes appeared in 4 of 5 sampled requisitions.",
+      "prose": "Required by 93% of the entire market."
+    },
+    {
+      "topic": "Quote missing from source",
+      "sourceId": "src-syn-report",
+      "quote": "Employers demand ten years of Kubernetes.",
+      "prose": "unsupported"
+    },
+    {
+      "topic": "Unknown source citation",
+      "sourceId": "src-syn-nonexistent",
+      "quote": "anything",
+      "prose": "unsupported"
+    }
+  ]
+}

@@ -584,3 +584,20 @@ attempt 1 failed no-confirmation (retry w/ Sonnet next cycle), rula parked
 31). breakthru/bmo/ngc requeues not yet reached. hpe stale applying will be
 reconciled by T14 recovery at next cycle start. No crash loops; learning
 branch did not disturb the pipeline. Pipeline resumed after Phase 3 commits.
+
+## T16 complete (2026-10-11T13:55Z)
+Created `auto/learning/intelligence.mjs` (ROLE_FAMILIES taxonomy,
+classifyRoleTitle multi-tag heuristics, recordRoleCorrection as approved
+'positioning' proposal — titles never rewritten, classifyQuestionOrigin,
+joinCapabilitiesToExperience 3-way split, screenProposedTopics quote/percentage
+screening, deriveRoleInsights + saveRoleInsight) and
+`auto/test/learning-role-intelligence.test.mjs` with synthetic fixture
+`auto/test/fixtures/learning/role-intelligence.json`.
+
+Deviation (documented): the plan's verbatim assertion snippet consumes
+`deriveRoleInsights(...)` without await, so derivation is SYNCHRONOUS and
+returns draft D6-validated insight objects; persistence is the separate async
+`saveRoleInsight` (commitRecord, status 'draft', revision history). Required
+snippet passes verbatim: distinctJobs 5, distinctCompanies 3,
+rawOccurrences 104, sourceIds nonempty. 15 new tests; full learning suite
+228/228 pass (213 prior intact). No live files touched; no cycles run.
