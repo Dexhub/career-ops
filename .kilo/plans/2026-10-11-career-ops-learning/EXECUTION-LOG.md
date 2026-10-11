@@ -1048,3 +1048,44 @@ Commit: (pending — coordinator commits)
 - Gotchas for next agent: (1) approval re-hashes the standing file at commit — the committed answer binds the POST-write hash, not the proposal's pre-hash; compute current hash for revocation. (2) locale is part of the question-definition id (`questions.mjs:125-130`) — you cannot relax a locale mismatch by changing the observation. (3) cross-process index staleness: a panel-committed record needs `rebuildIndexes` in a separate driver process before `listRecords` sees it.
 - Evidence: `reports/t28-journey.md` (+ screenshots in Neo session `kilo/t28-fixture-journey`). Fixture roots left for audit; fixture panel stopped; live panel untouched.
 Commit: (pending — coordinator commits)
+
+## T29 — Document operation, limitations and next-agent recovery (2026-10-11)
+
+- Extended `auto/learning/README.md` (T26 operator guide kept intact) with the
+  T29 operations guide: startup/mounting (panel-hosted API, fixed asset
+  manifest), `config/learning.yml` flags (enabled:false, mode:shadow,
+  zero_budget cloud), explicit roots (`createLearningContext`,
+  `learningDataRoot`), source precedence (resolveAnswer 5-step order,
+  SOURCE_FILE_KEYS), propose/approve flow (CSRF, post-write standing hash
+  binding, CONFLICTING_SOURCE_EDIT, index rebuild on every mutating POST),
+  learner pause/resume (sentinel in learning root only), cloud budget
+  exhaustion (CLOUD_BUDGET_EXCEEDED, reservations in reviewRuns, maxAttempts:1),
+  procedure rollback (approval-gated, new-revision restore, pinned versions),
+  privacy (preview implemented; **apply honestly documented as 403
+  NOT_AVAILABLE**; no export/erasure in this build, D07 gated), command table
+  (all 10 learn.mjs subcommands with side effects, verified against USAGE +
+  dispatch + api.mjs LIST_ROUTES/POST_ROUTES + migrate.mjs exports),
+  12-row troubleshooting table, evaluated-scope statement (T18 step allowlist
+  + held-out fixture cases; T16 ROLE_FAMILIES cohorts) and explicit
+  non-promises (no all-questions/guaranteed-accuracy/auto code repair/
+  universal ATS/zero cloud cost claims).
+- Doc commands verified by execution (read-only forms): `metrics` and
+  `rebuild --verify` report `store: absent` without creating one
+  (`ls data/auto/learning` exits 1 after); `inspect --json` read-only (129
+  settled entries); `review --once --local-only` refused safely while
+  disabled.
+- Tests re-run after docs finalized: `node --test auto/test/learning-*.test.mjs
+  auto/learning/cloud/test/*.test.mjs` → **409 pass / 0 fail** (expected 409).
+- Git hygiene: diff is `auto/learning/README.md` + plan/report files only;
+  scanned clean of PII/credentials/ARNs/backup files.
+  `config/standing-answers.yml` untouched.
+- Completion report written per EXECUTOR.md:
+  `.kilo/plans/2026-10-11-career-ops-learning/reports/completion-report.md`
+  — four states (implemented: yes; offline: 409/409; activated: NO, T27
+  pending; live journey: NO, D06 pending), gated capabilities, unresolved
+  decisions (D01–D07 pending; T28 locale-scope finding; npm ci deferred;
+  live panel restart pending T27), first safe recovery action (read-only
+  inspect sequence; never retry unknown-outcome paid calls/submissions).
+- T27 and T28 checkboxes 3–6 remain pending; nothing claimed done beyond
+  recorded evidence. T29 checkboxes ticked in 06-verification-and-rollout.md.
+Commit: (pending — coordinator commits)

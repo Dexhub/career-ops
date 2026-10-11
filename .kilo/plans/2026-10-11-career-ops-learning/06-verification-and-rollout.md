@@ -94,11 +94,11 @@ T28 synthetic status: `offline_verified: yes`, `live_journey_verified: false` (r
 
 ## T29. Document operation, limitations and next-agent recovery
 
-- [ ] Document startup, flags, roots, source precedence, question/answer approval, reviewer pause/resume, budget exhaustion, procedure rollback, privacy/export/forget, migration and recovery commands. Every command must correspond to an implemented CLI/API and include its side effects.
-- [ ] Add a troubleshooting table: missing source, unreadable data, stale index, revoked answer, unmapped question, no Neo connection, pending verification, uncertain submission, tracker sync failure, cloud disabled, unknown paid-call outcome and denied proposal.
-- [ ] Verify docs do not promise all possible employer questions, guaranteed accuracy, automatic code repair, universal ATS coverage, or zero cloud cost. State which procedure classes and role cohorts were actually evaluated.
-- [ ] Rerun affected targeted tests after documentation/config examples are finalized, verify example schemas, and inspect git status. No user PII, live artifacts, credentials, AWS identifiers not intended for source, or backup files belong in the source diff.
-- [ ] Produce the completion report using `EXECUTOR.md`. Include exact evidence paths, unresolved decisions and the first safe recovery action for an interrupted run. Mark task checkboxes only where the recorded evidence supports completion.
+- [x] Document startup, flags, roots, source precedence, question/answer approval, reviewer pause/resume, budget exhaustion, procedure rollback, privacy/export/forget, migration and recovery commands. Every command must correspond to an implemented CLI/API and include its side effects.
+- [x] Add a troubleshooting table: missing source, unreadable data, stale index, revoked answer, unmapped question, no Neo connection, pending verification, uncertain submission, tracker sync failure, cloud disabled, unknown paid-call outcome and denied proposal.
+- [x] Verify docs do not promise all possible employer questions, guaranteed accuracy, automatic code repair, universal ATS coverage, or zero cloud cost. State which procedure classes and role cohorts were actually evaluated.
+- [x] Rerun affected targeted tests after documentation/config examples are finalized, verify example schemas, and inspect git status. No user PII, live artifacts, credentials, AWS identifiers not intended for source, or backup files belong in the source diff.
+- [x] Produce the completion report using `EXECUTOR.md`. Include exact evidence paths, unresolved decisions and the first safe recovery action for an interrupted run. Mark task checkboxes only where the recorded evidence supports completion.
 
 ## Final acceptance
 
