@@ -23,7 +23,8 @@ import {
 } from './answers.mjs';
 import { resolveBlocker } from './workflow.mjs';
 import { promoteProcedure, createPromotionApproval } from './procedures.mjs';
-import { runReview, reviewStatus } from './reviewer.mjs';
+import { runReview, reviewStatus, isLearnerPaused, setLearnerPaused } from './reviewer.mjs';
+import { cloudEnabled } from './cloud-client.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(here, '..', '..');
@@ -39,11 +40,12 @@ const OP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 const LIST_ROUTES = Object.freeze({
   questions: 'questions', answers: 'answers', blockers: 'blockers',
   insights: 'insights', procedures: 'procedures', proposals: 'proposals',
+  accounts: 'accounts', // lifecycle/verification state only; refs are masked
 });
 
 const POST_ROUTES = new Set([
   'answers/propose', 'answers/approve', 'blockers/resolve', 'procedures/promote',
-  'proposals/decision', 'review', 'privacy/preview', 'privacy/apply',
+  'proposals/decision', 'review', 'learner/pause', 'privacy/preview', 'privacy/apply',
 ]);
 
 // LearningError code -> HTTP status (CONTRACTS G: 409 stale, 403 missing
@@ -278,9 +280,16 @@ function handleQuestion(res, ctx, feature, url) {
 function handleStatus(res, ctx, feature) {
   let review = null;
   try { review = reviewStatus(ctx); } catch (err) { review = { error: err.message }; }
+  // Cloud lane: honest enabled/reason pair — never hidden, never guessed.
+  let cloud = null;
+  try { cloud = cloudEnabled(ctx); } catch (err) { cloud = { enabled: false, reason: 'config_error', error: err.message }; }
+  let learner = null;
+  try { learner = { paused: isLearnerPaused(ctx) }; } catch { learner = { paused: null }; }
   return send(res, 200, {
     feature,
     review,
+    cloud,
+    learner,
     storePresent: existsSync(learningDataRoot(ctx)),
     csrfToken: issueCsrfToken(),
   });
@@ -415,6 +424,14 @@ async function handlePost(req, res, ctx, feature, sub, deps) {
         ...(body.limit !== undefined ? { limit: body.limit } : {}),
       });
       return send(res, 200, { report, opId: body.opId });
+    }
+    case 'learner/pause': {
+      // T23: pause/resume the LEARNER (reviewer runs) independently of the
+      // application pipeline. Touches only the learning data root sentinel —
+      // never data/auto/pause-requested, never any cycle or worker state.
+      validateBody(body, { required: { opId: 'string', paused: 'bool' } });
+      const result = (deps.setLearnerPaused ?? setLearnerPaused)(ctx, body.paused);
+      return send(res, 200, { paused: result.paused, opId: body.opId });
     }
     case 'privacy/preview': {
       validateBody(body, {

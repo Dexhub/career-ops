@@ -14,6 +14,9 @@ import {
   knowledgeRows, pendingProposalRows, blockerRows, approvalReadback,
   renderKnowledgeView,
 } from './profile.mjs';
+import { insightRows, buildInsightCards, screenGeneratedCards, renderIntelligenceView } from './intelligence.mjs';
+import { renderOperationsView } from './operations.mjs';
+import { proposalRows, approvalScopeNote, renderProposalsView } from './proposals.mjs';
 
 const ASSET_BASE = '/auto/assets/learning/';
 
@@ -51,7 +54,10 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
     busy: false,
     readback: null,
     error: null,
-    data: null, // {status, questions, answers, blockers, proposals}
+    selectedFamily: null,
+    opsReadback: null,
+    propReadback: null,
+    data: null, // {status, questions, answers, blockers, proposals, insights, procedures, accounts, metrics}
     freshness: { mode: null, preview: null, jobs: [], error: null },
   };
 
@@ -59,13 +65,19 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
 
   async function loadLearning() {
     const status = await client.status({ key: 'status' });
-    const [questions, answers, blockers, proposals] = await Promise.all([
+    const [questions, answers, blockers, proposals, insights, procedures, accounts] = await Promise.all([
       client.listAll('questions', { key: 'questions' }),
       client.listAll('answers', { key: 'answers' }),
       client.listAll('blockers', { key: 'blockers' }),
       client.listAll('proposals', { key: 'proposals' }),
+      client.listAll('insights', { key: 'insights' }),
+      client.listAll('procedures', { key: 'procedures' }),
+      client.listAll('accounts', { key: 'accounts' }),
     ]);
-    state.data = { status, questions, answers, blockers, proposals };
+    // Metrics endpoint returns {metrics, feature}; null metrics stays null.
+    let metrics = null;
+    try { metrics = (await client.list('metrics', { key: 'metrics' }))?.metrics ?? null; } catch { metrics = null; }
+    state.data = { status, questions, answers, blockers, proposals, insights, procedures, accounts, metrics };
   }
 
   function renderLearning() {
@@ -77,7 +89,10 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
       return;
     }
     const head = el(doc, 'div', { className: 'lrn-head' });
-    for (const [key, label] of [['questions', 'Questions'], ['knowledge', 'Candidate knowledge']]) {
+    for (const [key, label] of [
+      ['questions', 'Questions'], ['knowledge', 'Candidate knowledge'],
+      ['intelligence', 'Role intelligence'], ['operations', 'Operations'], ['proposals', 'Proposals'],
+    ]) {
       const b = el(doc, 'button', { className: `lrn-tab${state.tab === key ? ' lrn-here' : ''}`, text: label });
       b.addEventListener('click', () => { state.tab = key; renderLearning(); });
       head.append(b);
@@ -115,7 +130,7 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
         groups: familyGroups({ families: [], questionsById, answers: d.answers.items, proposals: d.proposals.items }),
         onFilter: (filters) => { state.filters = filters; renderLearning(); },
       });
-    } else {
+    } else if (state.tab === 'knowledge') {
       renderKnowledgeView(doc, body, {
         rows: knowledgeRows({ answers: d.answers.items }),
         proposals: pendingProposalRows(d.proposals.items),
@@ -128,6 +143,46 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
         onReveal: (id) => { state.revealed.add(id); renderLearning(); },
         onApprove: (preview) => approve(preview),
         onResolveBlocker: (b) => resolveBlocker(b),
+      });
+    } else if (state.tab === 'intelligence') {
+      // Fixed cards from current data, screened: unsupported/code card types
+      // are refused and surfaced, never rendered.
+      const { accepted, refused } = screenGeneratedCards(buildInsightCards({
+        questions: d.questions.items,
+        blockers: d.blockers.items,
+        insights: d.insights.items,
+        procedures: d.procedures.items,
+        metrics: d.metrics,
+      }));
+      renderIntelligenceView(doc, body, {
+        rows: insightRows(d.insights.items),
+        cards: accepted,
+        refusedCards: refused,
+        selectedFamily: state.selectedFamily,
+        onSelectFamily: (fam) => { state.selectedFamily = fam; renderLearning(); },
+        feature,
+      });
+    } else if (state.tab === 'operations') {
+      renderOperationsView(doc, body, {
+        metrics: d.metrics,
+        review: d.status?.review ?? null,
+        learner: d.status?.learner ?? null,
+        cloud: d.status?.cloud ?? null,
+        accounts: d.accounts.items,
+        procedures: d.procedures.items,
+        busy: state.busy,
+        readback: state.opsReadback,
+        onPauseLearner: (paused) => pauseLearner(paused),
+        onRunReview: () => runLocalReview(),
+        onPrivacyPreview: () => privacyPreview(),
+      });
+    } else {
+      renderProposalsView(doc, body, {
+        rows: proposalRows(d.proposals.items),
+        busy: state.busy,
+        readback: state.propReadback,
+        feature,
+        onDecide: (p, decision) => decideProposal(p, decision),
       });
     }
   }
@@ -189,6 +244,91 @@ export function mountLearningUI({ doc = globalThis.document, client = createLear
       state.error = describeError(err);
     }
     await refreshLearning(); // committed state from re-read
+    state.busy = false;
+    renderLearning();
+  }
+
+  // ---- T23 operations/proposals actions ----------------------------------------
+  // Every consequential POST is followed by a mandatory server re-read; the
+  // readback always reflects committed state, never the request we sent.
+
+  async function pauseLearner(paused) {
+    state.busy = true;
+    state.opsReadback = null;
+    renderLearning();
+    try {
+      await client.post('learner/pause', { opId: opId(), paused });
+    } catch (err) {
+      state.error = describeError(err);
+    }
+    try {
+      await loadLearning();
+      const p = state.data.status?.learner?.paused;
+      state.opsReadback = p === true
+        ? 'Learner is PAUSED (server state). Review runs are refused; the application pipeline is unaffected.'
+        : 'Learner is running (server state).';
+    } catch (err) { state.error = describeError(err); }
+    state.busy = false;
+    renderLearning();
+  }
+
+  async function runLocalReview() {
+    const ok = globalThis.confirm?.('Run a LOCAL-ONLY review now? No cloud calls; no application cycle is started.') ?? true;
+    if (!ok) return;
+    state.busy = true;
+    state.opsReadback = null;
+    renderLearning();
+    try {
+      const out = await client.post('review', { opId: opId() });
+      const r = out?.report ?? {};
+      state.opsReadback = `Local review ${r.runId ?? 'run'} finished: ${r.processedSources ?? r.processed ?? '?'} source(s) processed.`;
+    } catch (err) {
+      state.error = describeError(err);
+    }
+    try { await loadLearning(); } catch (err) { state.error = describeError(err); }
+    state.busy = false;
+    renderLearning();
+  }
+
+  async function privacyPreview() {
+    const target = globalThis.prompt?.('Preview what forgetting would touch. Target (question text or answer id):', '') ?? null;
+    if (!target) return;
+    state.busy = true;
+    state.opsReadback = null;
+    renderLearning();
+    try {
+      const out = await client.post('privacy/preview', { opId: opId(), targets: [target] });
+      state.opsReadback = `Privacy preview (nothing deleted): ${JSON.stringify({ ...out, opId: undefined, csrfToken: undefined })}`;
+    } catch (err) {
+      state.error = describeError(err);
+    }
+    state.busy = false;
+    renderLearning();
+  }
+
+  async function decideProposal(p, decision) {
+    const verdict = decision === 'approve' ? 'approved' : 'rejected';
+    const ok = globalThis.confirm?.(
+      `Mark proposal ${p.id} as ${verdict}?\n\n${approvalScopeNote(p.kind)}`,
+    ) ?? true;
+    if (!ok) return;
+    state.busy = true;
+    state.propReadback = null;
+    renderLearning();
+    try {
+      await client.post('proposals/decision', {
+        opId: opId(), proposalId: p.id, expectedRevision: p.expectedRevision, decision: verdict,
+      });
+    } catch (err) {
+      state.error = describeError(err);
+    }
+    try {
+      await loadLearning();
+      const after = state.data.proposals.items.find((x) => x.id === p.id) ?? null;
+      state.propReadback = after
+        ? `Server state: proposal ${p.id} is now "${after.status}" (revision ${after.revision}). ${approvalScopeNote(after.data?.kind)}`
+        : `Server state: proposal ${p.id} no longer listed.`;
+    } catch (err) { state.error = describeError(err); }
     state.busy = false;
     renderLearning();
   }

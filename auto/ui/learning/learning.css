@@ -46,3 +46,17 @@
 .lrn-family summary{cursor:pointer}
 .lrn-proposal-row{font-size:12px;color:hsl(32 90% 38%);margin-top:4px}
 .dark .lrn-proposal-row{color:hsl(38 90% 65%)}
+
+/* T23: Role Intelligence / Operations / Proposals views. */
+.lrn-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin:8px 0}
+.lrn-cards .lrn-card{margin:0}
+.lrn-cards h3,.lrn-insight h3,.lrn-proposal h3,.lrn-ops-section h3{font-size:13px;margin:0 0 6px}
+.lrn-insight,.lrn-proposal,.lrn-ops-section{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin:8px 0;background:var(--surface)}
+.lrn-insight h4{font-size:12px;color:var(--muted);margin:10px 0 4px}
+.lrn-kv{font-size:13px;margin:2px 0}
+.lrn-warn{color:hsl(32 90% 38%);font-size:12px;border-left:3px solid hsl(38 90% 50%);padding-left:8px}
+.dark .lrn-warn{color:hsl(38 90% 65%)}
+.lrn-scope{color:var(--muted);font-size:12px;border-left:3px solid var(--border);padding-left:8px;margin:6px 0}
+.lrn-ops-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.lrn-contradictions p{color:hsl(0 72% 45%);font-size:12px;margin:2px 0}
+.dark .lrn-contradictions p{color:hsl(0 85% 72%)}

@@ -631,6 +631,22 @@ queue freshness preview uses read-only `GET /api/auto/queue-preview?mode=`
 in `auto/panel.mjs` (shared comparator via `pickOrder`; never mutates live
 order; job summaries carry `dates` + `lastTransition`). Tests:
 `auto/test/learning-ui-data.test.mjs`.
+
+Learning UI (T23): `auto/ui/learning/{intelligence,operations,proposals}.mjs`
+add the Role intelligence / Operations / Proposals tabs (same manifest, same
+`textContent`-only rules). Shares below `SAMPLE_FLOOR=5` render as counts +
+"below sample floor"; malformed analytics values read "unknown", never 0/NaN.
+`screenGeneratedCards` allows only the six fixed insight-card types and
+refuses any card with a code/html payload (shown as needing implementation
+review). Learner pause is a sentinel at `data/auto/learning/pause-requested`
+(`reviewer.mjs` `isLearnerPaused`/`setLearnerPaused`; `runReview` refuses
+with REVIEW_DISABLED while paused) — fully independent of the pipeline's
+`data/auto/pause-requested`. api.mjs additions: `accounts` list route, POST
+`learner/pause` `{opId, paused}`, status now carries `cloud`
+(`cloudEnabled` reason) and `learner.paused`; `reviewStatus` includes
+`paused` on every path (exact-shape tests depend on it). Proposal decisions
+POST `proposals/decision` with `expectedRevision`; UI scope notes state an
+answer approval grants no code/publishing permission.
 Execution policy (T12): `auto/lib/config.mjs` exports `POLICY_RANGES` (one
 validation table shared with the panel's Settings whitelist),
 `resolveExecutionPolicy()` (frozen, digested `policyVersion`; garbled or

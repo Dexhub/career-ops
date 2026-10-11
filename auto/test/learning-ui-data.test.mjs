@@ -318,3 +318,162 @@ test('blockerRows: resume point and resolution visibility', () => {
   assert.equal(rows[0].resolution.answerId, 'ans-1');
   assert.equal(rows[1].question, null);
 });
+
+// --- T23: Role Intelligence / Operations / Proposals view models ----------------
+
+const { insightRows, capabilityRows, shareLabel, windowLabel, buildInsightCards,
+  screenGeneratedCards, SUPPORTED_CARD_TYPES, SAMPLE_FLOOR } = await import('../ui/learning/intelligence.mjs');
+const { fmtMs, fmtRate, fmtUsd, reuseSummary, timeSummary, budgetSummary,
+  procedureRows, reviewerSummary, cloudSummary } = await import('../ui/learning/operations.mjs');
+const { proposalRows, approvalScopeNote, sourceLabel, evaluationSummary } = await import('../ui/learning/proposals.mjs');
+
+test('intelligence: HTML/script strings stay inert data in every derived field', () => {
+  const hostile = '<script>alert(1)</script><img src=x onerror=alert(2)>';
+  const rows = insightRows([{
+    id: 'ins-1', status: 'draft',
+    data: {
+      roleFamily: hostile, distinctJobs: 2, distinctCompanies: 1, rawOccurrences: 3,
+      statistics: [{ definitionId: 'd1', label: hostile, distinctJobs: 2, distinctCompanies: 1, rawOccurrences: 3, shareOfSampledJobs: 1, origin: 'unknown', sourceIds: [hostile] }],
+      contradictions: [{ type: hostile, titles: [hostile] }],
+      recommendations: { alreadySupported: [{ capability: hostile, quote: hostile, storyId: 's1' }] },
+    },
+  }]);
+  // The strings pass through verbatim (rendering is textContent-only), never
+  // parsed, stripped, or interpreted as markup by the view model.
+  assert.equal(rows[0].roleFamily, hostile);
+  assert.ok(rows[0].capabilities[0].label.includes('<script>'));
+  assert.ok(rows[0].drafts[0].draft.includes('<script>'));
+  assert.equal(rows[0].contradictions[0].type, hostile);
+});
+
+test('intelligence: tiny cohorts show counts and limitations, never confident shares', () => {
+  assert.match(shareLabel(0.5, 2), /below sample floor/);
+  assert.match(shareLabel(0.5, null), /below sample floor/);
+  assert.equal(shareLabel(0.5, SAMPLE_FLOOR), `50% of ${SAMPLE_FLOOR} sampled jobs`);
+  assert.equal(shareLabel('80%', 10), 'unknown (malformed)');
+  assert.equal(shareLabel(4.2, 10), 'unknown (malformed)');
+  const rows = insightRows([{ id: 'ins-2', status: 'draft', data: { roleFamily: 'qa', distinctJobs: 2 } }]);
+  assert.equal(rows[0].smallSample, true);
+});
+
+test('intelligence: missing dates become honest unknown windows, never guessed', () => {
+  assert.equal(windowLabel(null, null), 'evidence window unknown');
+  assert.equal(windowLabel(null, '2026-10-11T00:00:00Z'), 'unknown start → 2026-10-11');
+  assert.equal(windowLabel('2026-01-02T00:00:00Z', undefined), '2026-01-02 → unknown end');
+});
+
+test('intelligence: long multilingual question labels are clipped, not mangled', () => {
+  const long = `Beschreiben Sie Ihre Erfahrung mit 自动化测试 και συστήματα CI/CD — ${'х'.repeat(300)}`;
+  const caps = capabilityRows({ distinctJobs: 9, statistics: [{ definitionId: 'd', label: long, distinctJobs: 9, distinctCompanies: 3, rawOccurrences: 9, shareOfSampledJobs: 1, origin: 'unknown', sourceIds: [] }] });
+  assert.ok(caps[0].label.length <= 200);
+  assert.ok(caps[0].label.endsWith('…'));
+  assert.ok(caps[0].label.includes('自动化测试'));
+});
+
+test('insight cards: all six supported types, auto-populated, honest when empty', () => {
+  const cards = buildInsightCards({});
+  assert.deepEqual(cards.map((c) => c.type), [...SUPPORTED_CARD_TYPES]);
+  assert.match(cards.find((c) => c.type === 'question_trend').body, /No repeated question/);
+  const withData = buildInsightCards({
+    questions: [{ id: 'q-1', data: { occurrenceCount: 4, normalizedText: 'synthetic visa question?' } }],
+    blockers: [{ id: 'blk-1', status: 'open', data: { question: 'salary?' } }],
+  });
+  assert.match(withData.find((c) => c.type === 'question_trend').body, /Seen 4×/);
+  assert.match(withData.find((c) => c.type === 'unresolved_information').body, /1 open\/waiting blocker/);
+});
+
+test('insight cards: unsupported and code-bearing card types are refused as proposals', () => {
+  const { accepted, refused } = screenGeneratedCards([
+    { type: 'question_trend', title: 'ok', body: 'fine', evidence: [] },
+    { type: 'market_dominance_chart', title: 'nope', body: 'x', evidence: [] },
+    { type: 'outcome_summary', title: 'sneaky', body: 'x', evidence: [], html: '<div onclick=hack()>' },
+  ]);
+  assert.equal(accepted.length, 1);
+  assert.equal(refused.length, 2);
+  assert.match(refused[0].reason, /unsupported card type .*implementation review/);
+  assert.match(refused[1].reason, /code payload .*implementation-review proposal/);
+});
+
+test('operations: malformed analytics values read as unknown, never zero or NaN', () => {
+  assert.equal(fmtMs('fast'), 'unknown');
+  assert.equal(fmtMs(-5), 'unknown');
+  assert.equal(fmtMs(3900000), '1h 05m');
+  assert.equal(fmtUsd('free'), 'unknown');
+  assert.equal(fmtRate(null), 'unknown');
+  assert.match(fmtRate({ numerator: 1, denominator: 2, rate: null, reason: 'sample_below_floor' }), /below 5-sample floor/);
+  assert.equal(fmtRate({ numerator: 3, denominator: 10, rate: 0.3 }), '30% (3/10)');
+  const b = budgetSummary({ modelUsage: { runs: 3, knownCostUsd: Number.NaN, runsWithUnknownCost: 2, tokens: { total: 'many' } } });
+  assert.equal(b.knownCost, 'unknown');
+  assert.equal(b.tokens, 'unknown');
+  assert.match(budgetSummary(null).knownCost, /unknown/);
+  const r = reuseSummary({ reuse: { byDisposition: { reused: 'lots' }, newQuestionRate: { rate: 'high' } } });
+  assert.equal(r.dispositions[0].count, 0);
+  assert.equal(r.newQuestionRate, 'unknown');
+  const t = timeSummary({ time: { waitMsTotal: 'soon', activeMsKnownTotal: 60000 } });
+  assert.equal(t.wait, 'unknown');
+  assert.equal(t.activeKnown, '1m');
+});
+
+test('operations: revoked procedures and malformed dates stay visible and honest', () => {
+  const now = new Date('2026-10-11T00:00:00Z');
+  const rows = procedureRows([
+    { id: 'proc-1', status: 'revoked', revision: 3, data: { atsVendor: 'synthetic-ats', lastVerifiedAt: '2026-10-01T00:00:00Z' } },
+    { id: 'proc-2', status: 'active', revision: 1, data: { lastVerifiedAt: 'not-a-date' } },
+    { id: 'proc-3', status: 'candidate', data: {} },
+  ], now);
+  assert.equal(rows[0].revoked, true);
+  assert.equal(rows[0].staleness, '10d since verified');
+  assert.equal(rows[1].staleness, 'unknown (malformed date)');
+  assert.equal(rows[2].staleness, 'never verified');
+  assert.equal(rows[2].scope, 'unknown scope');
+});
+
+test('operations: reviewer and cloud summaries surface pause and disabled reasons', () => {
+  const rs = reviewerSummary(
+    { reviewEnabled: true, paused: true, due: false, dueAt: '2026-10-11T06:00:00Z', cursor: { processed: 7, updatedAt: '2026-10-10T00:00:00Z' } },
+    { paused: true },
+  );
+  assert.equal(rs.paused, true);
+  assert.equal(rs.cursorProcessed, 7);
+  assert.equal(rs.dueAt, '2026-10-11 06:00');
+  assert.match(cloudSummary({ enabled: false, reason: 'disabled_in_config' }).text, /config\/learning\.yml/);
+  assert.match(cloudSummary(null).text, /unknown/);
+  assert.equal(cloudSummary({ enabled: true }).enabled, true);
+});
+
+test('proposals: rows carry why/affected/evidence/baseline/evaluation/risk/rollback', () => {
+  const rows = proposalRows([{
+    id: 'prop-1', status: 'proposed', revision: 2,
+    data: {
+      kind: 'answer_update', intendedBenefit: 'reuse the synthetic visa answer',
+      affectedSources: [{ fileKey: 'standing-answers.yml', selector: 'custom.visa', sha256: 'a'.repeat(64) }],
+      evidenceIds: ['q-1', 'q-2'], baseline: { reused: 0 },
+      evaluationResult: { pass: true, cases: [{ name: 'replay', result: 'pass' }] },
+      risk: 'low', requiredApprovals: ['user'], rollbackVersion: 1, diff: { op: 'set' },
+    },
+  }, {
+    id: 'prop-2', status: 'rolled_back', revision: 4, data: { kind: 'code', rollbackVersion: 2 },
+  }]);
+  assert.equal(rows[0].why, 'reuse the synthetic visa answer');
+  assert.match(rows[0].affected[0], /^standing-answers\.yml@a{12} custom\.visa$/);
+  assert.equal(rows[0].evaluation.label, 'passed');
+  assert.equal(rows[0].evaluation.cases[0].result, 'pass');
+  assert.equal(rows[0].previousRevision, 1);
+  assert.equal(rows[0].decidable, true);
+  assert.equal(rows[1].rollback, 'ROLLED BACK to version 2');
+  assert.equal(rows[1].decidable, false);
+  // Missing fields degrade to honest placeholders, never invented values.
+  const bare = proposalRows([{ id: 'prop-3', status: 'draft', revision: 1, data: {} }])[0];
+  assert.equal(bare.why, 'not recorded');
+  assert.deepEqual(bare.affected, ['unknown source/component']);
+  assert.equal(bare.evaluation.label, 'pending — not yet evaluated');
+  assert.equal(evaluationSummary('passed!').label, 'unknown (malformed evaluation result)');
+  assert.equal(sourceLabel(null), 'unknown source');
+});
+
+test('proposals: approval scope differentiates answers from code and publishing', () => {
+  assert.match(approvalScopeNote('answer_update'), /not permission to modify code/);
+  assert.match(approvalScopeNote('code'), /does not grant permission to modify code/);
+  assert.match(approvalScopeNote('positioning'), /does NOT publish .*LinkedIn/i);
+  assert.match(approvalScopeNote('mystery'), /no code changes, no publishing/);
+});

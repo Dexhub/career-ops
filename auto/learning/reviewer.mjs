@@ -110,6 +110,32 @@ async function mutateState(ctx, fn) {
 }
 
 // ---------------------------------------------------------------------------
+// Learner pause (T23): one sentinel under the LEARNING data root. Pausing the
+// learner blocks review runs (local and cloud) independently of the
+// application pipeline — this module never touches the pipeline's own
+// data/auto/pause-requested sentinel. Live capture during applications still
+// follows config/learning.yml `enabled`.
+
+export function learnerPausePath(ctx) {
+  return join(learningDataRoot(ctx), 'pause-requested');
+}
+
+export function isLearnerPaused(ctx) {
+  return existsSync(learnerPausePath(ctx));
+}
+
+/** setLearnerPaused(ctx, paused) -> {paused}. Atomic write / idempotent rm. */
+export function setLearnerPaused(ctx, paused) {
+  const path = learnerPausePath(ctx);
+  if (paused === true) {
+    writeFileAtomic(path, `${JSON.stringify({ pausedAt: ctx.now().toISOString() })}\n`);
+  } else {
+    rmSync(path, { force: true });
+  }
+  return { paused: existsSync(path) };
+}
+
+// ---------------------------------------------------------------------------
 // Due-time logic (pure).
 
 /**
@@ -140,30 +166,37 @@ export function reviewDue(state, now) {
  * into the panel.
  */
 export function reviewStatus(ctx) {
+  const paused = isLearnerPaused(ctx);
   let config;
   try {
     config = readLearningConfig(ctx);
   } catch {
-    return { enabled: false, reviewEnabled: false, due: false };
+    return { enabled: false, reviewEnabled: false, paused, due: false };
   }
   if (!config.enabled || !config.review.enabled) {
-    return { enabled: config.enabled, reviewEnabled: false, due: false };
+    return { enabled: config.enabled, reviewEnabled: false, paused, due: false };
   }
   let state;
   try {
     state = readReviewerState(ctx);
   } catch {
-    return { enabled: true, reviewEnabled: true, due: false };
+    return { enabled: true, reviewEnabled: true, paused, due: false };
   }
-  // Enabled in config but never run: the first run is due immediately.
-  const due = state.enabledAt ? reviewDue(state, ctx.now()) : true;
+  // Enabled in config but never run: the first run is due immediately. A
+  // paused learner is never "due" — the pause is visible, not silently late.
+  const due = !paused && (state.enabledAt ? reviewDue(state, ctx.now()) : true);
   return {
     enabled: true,
     reviewEnabled: true,
+    paused,
     due,
     dueAt: state.dueAt,
     lastRunAt: state.lastRunAt,
     activeRunId: state.activeRunId,
+    cursor: {
+      processed: Object.keys(state.cursor?.processed ?? {}).length,
+      updatedAt: state.cursor?.updatedAt ?? null,
+    },
   };
 }
 
@@ -433,6 +466,10 @@ export async function runReview(ctx, options = {}) {
   }
   if (!config.review.enabled) {
     throw new LearningError('REVIEW_DISABLED', 'review is disabled (config/learning.yml review.enabled: false) — review refused');
+  }
+  if (isLearnerPaused(ctx)) {
+    throw new LearningError('REVIEW_DISABLED',
+      'the learner is paused (learning pause-requested sentinel) — review refused; unpause it from the panel first');
   }
   if (!localOnly) verifyCloudApproval(ctx, approvalId);
   const batchLimit = Number.isInteger(limit) && limit > 0 ? limit : config.review.max_new_attempts;

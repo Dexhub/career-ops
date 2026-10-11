@@ -84,7 +84,8 @@ test('fixture isolation: all roots live under the scratch dir, never the checkou
 test('reviewer refuses while learning or review is disabled; status reports not due', async () => {
   setConfig(LEARNING_OFF);
   await assert.rejects(() => reviewer.runReview(ctx, { localOnly: true }), { code: 'REVIEW_DISABLED' });
-  assert.deepEqual(reviewer.reviewStatus(ctx), { enabled: false, reviewEnabled: false, due: false });
+  // T23: reviewStatus also reports the learner-pause sentinel.
+  assert.deepEqual(reviewer.reviewStatus(ctx), { enabled: false, reviewEnabled: false, paused: false, due: false });
   setConfig(REVIEW_OFF);
   await assert.rejects(() => reviewer.runReview(ctx, { localOnly: true }), { code: 'REVIEW_DISABLED' });
   assert.equal(reviewer.reviewStatus(ctx).due, false);

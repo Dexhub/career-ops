@@ -52,12 +52,12 @@ For parallel work, one agent owns `questions.mjs`, another `profile.mjs`; only t
 
 **Create:** `auto/ui/learning/{intelligence.mjs,operations.mjs,proposals.mjs}`; extend pure view-model tests.
 
-- [ ] Build Role Intelligence: role family and cohort controls, observed capabilities, distinct job/company counts, denominators, evidence window, capture gaps, source references, contradictory evidence and grounded positioning drafts. Below supported sample sizes, show counts/limitations rather than a confident conclusion.
-- [ ] Build Operations: memory reuse/new-question rates, active versus waiting time, capture failures, blockers, account-verification state, procedure version/scope/staleness, reviewer cursor/next due time, budget reservations and unknown costs. Missing usage is labeled unknown.
-- [ ] Build Proposals: why the change was suggested, affected source/component, evidence, baseline, evaluation cases/results, risk, approval requirement, previous version and rollback status. Differentiate an answer approval from permission to modify code or publish LinkedIn content.
-- [ ] Make observed knowledge automatically populate fixed insight cards. Supported card types are question trend, role capability, unresolved information, operational friction, procedure candidate and outcome summary. Unsupported generated card/code types are refused and shown as a proposal requiring implementation review.
-- [ ] Add explicit controls to pause the learner independently of applications, run a local-only review, inspect cloud-disabled reasons and preview a privacy/export action. A reviewer button must never start an application cycle.
-- [ ] Test source strings containing HTML/script, tiny cohorts, missing dates, long multilingual questions, malformed analytics values and revoked procedures. Use Neo to confirm navigation preserves unrelated queue/control behavior.
+- [x] Build Role Intelligence: role family and cohort controls, observed capabilities, distinct job/company counts, denominators, evidence window, capture gaps, source references, contradictory evidence and grounded positioning drafts. Below supported sample sizes, show counts/limitations rather than a confident conclusion.
+- [x] Build Operations: memory reuse/new-question rates, active versus waiting time, capture failures, blockers, account-verification state, procedure version/scope/staleness, reviewer cursor/next due time, budget reservations and unknown costs. Missing usage is labeled unknown.
+- [x] Build Proposals: why the change was suggested, affected source/component, evidence, baseline, evaluation cases/results, risk, approval requirement, previous version and rollback status. Differentiate an answer approval from permission to modify code or publish LinkedIn content.
+- [x] Make observed knowledge automatically populate fixed insight cards. Supported card types are question trend, role capability, unresolved information, operational friction, procedure candidate and outcome summary. Unsupported generated card/code types are refused and shown as a proposal requiring implementation review.
+- [x] Add explicit controls to pause the learner independently of applications, run a local-only review, inspect cloud-disabled reasons and preview a privacy/export action. A reviewer button must never start an application cycle.
+- [x] Test source strings containing HTML/script, tiny cohorts, missing dates, long multilingual questions, malformed analytics values and revoked procedures. Use Neo to confirm navigation preserves unrelated queue/control behavior.
 
 ## T24. Verify accessibility, usability and scale before activation
 

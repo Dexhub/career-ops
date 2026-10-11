@@ -424,3 +424,50 @@ test('panel dispatch: panel.mjs routes learning paths to the handler', async () 
     await new Promise((r) => panel.close(r));
   }
 });
+
+// --- T23: learner pause — independent of the application pipeline -------------
+
+test('learner/pause: pauses ONLY the learner, blocks review, and is reversible', async () => {
+  // Status reflects the running learner plus the cloud lane reason.
+  let status = await call('GET', '/api/auto/learning/status');
+  assert.equal(status.json.learner.paused, false);
+  assert.equal(status.json.cloud.enabled, false); // no cloud config -> honest reason
+  assert.equal(typeof status.json.cloud.reason, 'string');
+
+  // Strict schema: unknown fields and non-bool paused are rejected.
+  const bad = await post('/api/auto/learning/learner/pause', { opId: 'op-pause-001', paused: 'yes' });
+  assert.equal(bad.status, 422);
+  const extra = await post('/api/auto/learning/learner/pause', { opId: 'op-pause-002', paused: true, cycle: 'start' });
+  assert.equal(extra.status, 422);
+
+  const pause = await post('/api/auto/learning/learner/pause', { opId: 'op-pause-003', paused: true });
+  assert.equal(pause.status, 200);
+  assert.equal(pause.json.paused, true);
+
+  status = await call('GET', '/api/auto/learning/status');
+  assert.equal(status.json.learner.paused, true);
+  assert.equal(status.json.review.paused, true);
+  assert.equal(status.json.review.due, false); // paused is never silently "due"
+
+  // A paused learner refuses review runs with a visible 403, not a silent skip.
+  // (review.enabled is false in this fixture config anyway; the pause check must
+  // not mask that order — enable review for this call via config.)
+  setConfig('schema_version: 1\nenabled: true\nmode: shadow\nreview:\n  enabled: true\n');
+  const refused = await post('/api/auto/learning/review', { opId: 'op-pause-004' });
+  assert.equal(refused.status, 403);
+  assert.match(refused.json.error, /paused/);
+  setConfig(ENABLED);
+
+  // The sentinel lives under the LEARNING data root — the pipeline pause file
+  // (data/auto/pause-requested) is untouched.
+  const { existsSync: ex } = await import('node:fs');
+  const { learnerPausePath } = await import('../learning/reviewer.mjs');
+  assert.ok(learnerPausePath(ctx).includes('learning'));
+  assert.equal(ex(join(fixture.dataRoot, 'data', 'auto', 'pause-requested')), false);
+
+  const resume = await post('/api/auto/learning/learner/pause', { opId: 'op-pause-005', paused: false });
+  assert.equal(resume.status, 200);
+  assert.equal(resume.json.paused, false);
+  status = await call('GET', '/api/auto/learning/status');
+  assert.equal(status.json.learner.paused, false);
+});

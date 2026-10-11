@@ -904,3 +904,66 @@ Gotchas: blocker `resumePoint` must be one of workflow.mjs EXECUTION_PHASES
 (`in_progress`, not `filling`); `openBlocker` stores `question` as a plain
 string, so blocker view models accept both string and object question shapes.
 Commit: (pending — coordinator commits)
+
+## T23 — intelligence, operations and proposal views (2026-10-11)
+
+Created `auto/ui/learning/{intelligence.mjs,operations.mjs,proposals.mjs}`;
+wired three new tabs in `index.mjs` (coordinator-owned file; also extended
+`loadLearning` to fetch insights/procedures/accounts/metrics and added action
+handlers `pauseLearner`, `runLocalReview`, `privacyPreview`, `decideProposal`
+— every action re-reads server state for its readback). T23 styles appended
+to `learning.css`. `panel.mjs` untouched (manifest already listed the files).
+
+Role Intelligence: cohort selector, capability tables with distinct-job/
+company counts and denominators, evidence windows (honest "unknown" when
+dates are missing), capture gaps, contradictions, grounded positioning drafts
+(approved evidence only, applications_only). Below SAMPLE_FLOOR=5 the share
+column reads "below sample floor (n/5 sampled jobs) — counts only". Fixed
+insight cards auto-populate for exactly the six supported types;
+`screenGeneratedCards` refuses unsupported types and any card carrying a
+code/html payload, surfacing them as "requires implementation review".
+
+Operations: reuse vs new-question rates (floor-aware `fmtRate`), active vs
+waiting time (unknown active time excluded, not zeroed), capture failures/
+blockers, account verification, procedure version/scope/staleness with
+REVOKED marker, reviewer cursor + next due, budget with unknown costs
+labeled unknown. Controls: pause learner, run local-only review, privacy/
+export preview — no control can start an application cycle.
+
+Learner pause (new): sentinel `data/auto/learning/pause-requested` via
+`learnerPausePath/isLearnerPaused/setLearnerPaused` in reviewer.mjs —
+independent of the pipeline's `data/auto/pause-requested`. `runReview`
+refuses with `REVIEW_DISABLED` while paused; `reviewStatus` reports
+`paused`/`due:false`/cursor (paused now included in the disabled early
+returns too). api.mjs: `accounts` list route, POST `learner/pause`
+(strict `{opId, paused:bool}`), status extended with `cloud` (honest
+`cloudEnabled` reason, config errors reported not masked) and `learner`.
+
+Proposals: why suggested, affected `source@hash selector`, evidence,
+baseline, evaluation cases, risk, revision/previous, rollback status;
+scope notes differentiate answer approval from code changes and LinkedIn
+publishing; confirm dialog repeats the scope note.
+
+Tests: 347/347 (`node --test auto/test/learning-*.test.mjs
+auto/learning/cloud/test/*.test.mjs`) — 335 prior + 12 new (hostile
+HTML/script strings stay inert data, tiny cohorts, missing dates, long
+multilingual labels clipped, malformed analytics → unknown never NaN/zero,
+revoked procedures, card screening, scope notes, API learner/pause).
+One existing assertion updated: learning-reviewer.test.mjs disabled-path
+`deepEqual` now includes the additive `paused:false` field.
+
+Neo verification against an isolated fixture panel on :3012 (mkdtemp root,
+synthetic store seeded with insights/procedures/accounts/attempts, real
+`handleLearningRequest`; NEVER the live :3001 panel): all five tabs render;
+small-sample insight shows counts-only label; contradictions + grounded
+drafts visible; Operations shows cloud "disabled: cloud_disabled", revoked
+procedure, unknown-cost labeling; Pause learner → readback "PAUSED (server
+state)", resume clears it, pipeline pause file never created (checked live
+and fixture roots); Proposals approve → confirm dialog with scope note →
+server readback revision 2 (previous: 1); full reload restored approved
+state. Queue/cycle controls stayed present and untouched across navigation.
+
+Gotchas: `reviewStatus` early returns must carry `paused` or exact-shape
+test deepEquals cascade (a failing assert skips the config restore and
+poisons later tests in the file).
+Commit: (pending — coordinator commits)
