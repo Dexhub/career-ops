@@ -220,6 +220,8 @@
   <span class="count">submitted today <b id="subCount">0</b><span id="subLimit"></span></span>
   <span class="bar"><i id="subBar" style="width:0"></i></span>
   <span class="spacer"></span>
+  <button id="scanNow" class="ghost" title="One-shot scan for new postings — nothing scans on a schedule; only this button">Scan jobs</button>
+  <button id="mailSync" class="ghost" title="One-shot: read new Gmail replies (BrowserOS Neo, read-only) and sync them to your applications">Sync mail</button>
   <label class="opt"><input type="checkbox" id="skipScan" checked> skip scan</label>
   <button id="start" class="primary">Start cycle</button>
   <button id="pause" class="warn" title="Finish the current application, then stop — no mid-form kill">Pause after current</button>
@@ -710,6 +712,8 @@ document.addEventListener('click',async e=>{
   }
   const row=e.target.closest('tr.job');
   if(row)return showDetail(row.dataset.key);
+  if(e.target.id==='scanNow'){e.target.disabled=true;const r=await post('scan');if(!r.ok)alert(r.error);e.target.textContent=r.ok?'Scanning…':'Scan jobs';setTimeout(()=>{e.target.disabled=false;e.target.textContent='Scan jobs';refresh();},4000);return;}
+  if(e.target.id==='mailSync'){e.target.disabled=true;const r=await post('mail-sync');if(!r.ok)alert(r.error);e.target.textContent=r.ok?'Syncing…':'Sync mail';setTimeout(()=>{e.target.disabled=false;e.target.textContent='Sync mail';refresh();},4000);return;}
   if(e.target.id==='start'){await post('start',{skipScan:$('skipScan').checked});refresh();}
   if(e.target.id==='pause'){await post('pause');refresh();}
   if(e.target.id==='stop'){

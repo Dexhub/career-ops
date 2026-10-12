@@ -450,6 +450,46 @@ export function analyticsPayload() {
   };
 }
 
+// ---------- user-triggered one-shots: job scan + mail sync ----------
+// Nothing scans or reads mail on a schedule (user directive 2026-10-12):
+// both run ONLY when the user clicks the panel button (or runs the CLI).
+
+const SCAN_ONESHOT_LOG = join(ROOT, 'data', 'auto', 'scan-manual.log');
+const MAIL_SYNC_LOG = join(ROOT, 'data', 'auto', 'mail-sync.log');
+let scanChild = null;
+let mailSyncChild = null;
+
+export function startJobScan({ cmd = null } = {}) {
+  if (scanChild && processAlive(scanChild.pid)) return { ok: false, error: 'scan already running' };
+  const fd = openSync(SCAN_ONESHOT_LOG, 'a');
+  const [bin, ...args] = cmd ?? [process.execPath, join(ROOT, 'scan.mjs'), '--quiet'];
+  const child = spawn(bin, args, { cwd: ROOT, detached: true, stdio: ['ignore', fd, fd] });
+  closeSync(fd);
+  child.on('exit', () => { if (scanChild === child) scanChild = null; });
+  child.unref();
+  scanChild = child;
+  return { ok: true, pid: child.pid };
+}
+
+export function startMailSync({ cmd = null } = {}) {
+  if (mailSyncChild && processAlive(mailSyncChild.pid)) return { ok: false, error: 'mail sync already running' };
+  const fd = openSync(MAIL_SYNC_LOG, 'a');
+  const [bin, ...args] = cmd ?? [process.execPath, join(ROOT, 'auto', 'mail-sync.mjs')];
+  const child = spawn(bin, args, { cwd: ROOT, detached: true, stdio: ['ignore', fd, fd] });
+  closeSync(fd);
+  child.on('exit', () => { if (mailSyncChild === child) mailSyncChild = null; });
+  child.unref();
+  mailSyncChild = child;
+  return { ok: true, pid: child.pid };
+}
+
+export function oneShotState() {
+  return {
+    scanning: !!(scanChild && processAlive(scanChild.pid)),
+    mailSyncing: !!(mailSyncChild && processAlive(mailSyncChild.pid)),
+  };
+}
+
 // ---------- radar (startup intel) ----------
 
 const RADAR_LOG = join(ROOT, 'data', 'auto', 'radar.log');
@@ -918,6 +958,9 @@ export function createPanelServer() {
           const body = await readBody(req);
           return send(res, 200, startRadarScan({ refresh: !!body.refresh }));
         }
+        if (req.method === 'POST' && p === '/api/auto/scan') return send(res, 200, startJobScan());
+        if (req.method === 'POST' && p === '/api/auto/mail-sync') return send(res, 200, startMailSync());
+        if (req.method === 'GET' && p === '/api/auto/oneshots') return send(res, 200, oneShotState());
         if (req.method === 'POST' && p === '/api/auto/radar/update') {
           const body = await readBody(req);
           return send(res, 200, updateRadarEntry(body.id, body.patch ?? {}));
