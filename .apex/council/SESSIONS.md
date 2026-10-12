@@ -150,3 +150,22 @@ remaining findings (1 P1). Coordinator fixed all six directly:
 - P3 digest variant proposals: proposeResumeVariants(fbSubmitted) — parked-only
   fixtures no longer claim "shipped default" (digest.mjs).
 Full suite: 449/449 (448 + 1 new P1 pin). Delta re-review #2 requested.
+
+## 2026-10-12 09:40Z — Coordinator: round 3 fix + REVIEW_PASS + resume
+- Delta re-review #2 returned REVIEW_FAIL with 1 remaining P2: tracker-rot
+  proposals classified `Unknown` because classifyReply saw no rejection keywords
+  in synthetic snippets. Fix: trackerRotCompatFields() now also emits
+  signal:'rejection' (reply-ingest.mjs), which classifyReply honors ahead of
+  keywords. Repro verified through real scanTrackerRot -> classifyReply path:
+  propose branch -> Rejected, update branch -> Rejected. Suite 449/449.
+- Delta re-review #3 (ses_ed0e53b20ffeXlppCrZAQV43Ed): REVIEW_PASS. Fix verified
+  at reply-ingest.mjs:82 (shared by both branches); adjacent pasted-message
+  behavior intact (signal stays null, Rejected/Interview/Auto-confirmation
+  classification unchanged).
+- All delivery work committed on learning-system: 63545fa5 (no push, per user
+  directive).
+- Pipeline resumed: desired-cycle.json running:true, cycle started in background
+  (node auto/run.mjs --skip-scan). Early live evidence: `run: learning
+  mode=shadow` logged; dispatch-gate parked fox (already-applied) — duplicate
+  gate working live; toast Staff SWE GTM&AI submit attempt in flight.
+- Next: verify one full shadow cycle per Worker G checklist, then .apex/RESULT.md.
