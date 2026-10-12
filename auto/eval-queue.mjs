@@ -116,8 +116,74 @@ export function blacklistHit(rules, company, url) {
 }
 
 /**
+ * Strip `<think>...</think>` blocks (including multi-line) from text before
+ * any score regex is applied. Eval models (e.g. gemma-4-e4b) emit think
+ * blocks that contain lines like "Confidence Score: 5/5" which an unanchored
+ * regex would match ahead of the real score.
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripThinkBlocks(text) {
+  // Non-greedy; 's' flag makes . match newlines.
+  return text.replace(/<think>.*?<\/think>/gs, '');
+}
+
+/**
+ * Parse the score from a saved report file body.
+ *
+ * Priority (F1 fix):
+ *   1. yaml trailer: `score: X` (case-insensitive key, after stripping think
+ *      blocks). The trailer is the canonical machine-readable rung.
+ *   2. Body line: `**Score:** X/5` or `Score: X/5` at the START of a line
+ *      (after stripping markdown emphasis ** and __); NOT mid-sentence
+ *      "Confidence Score:" variants.
+ *
+ * Returns `{score: number|null, source: 'yaml'|'body'|null}`.
+ * @param {string} body
+ * @returns {{score: number|null, source: string|null}}
+ */
+export function parseReportScore(body) {
+  const clean = stripThinkBlocks(body);
+
+  // ── Rung 1: yaml trailer ────────────────────────────────────────────────
+  // The trailer is a fenced yaml block near the end of the report, typically:
+  //   ```yaml
+  //   score: 3.8
+  //   ```
+  // Accept: `score:` key (case-insensitive), optional surrounding whitespace,
+  // numeric value. Scan the LAST yaml fence block so embedded yaml examples
+  // in the body do not win.
+  const yamlFences = [...clean.matchAll(/```ya?ml\s*\n([\s\S]*?)```/gi)];
+  for (let i = yamlFences.length - 1; i >= 0; i--) {
+    const block = yamlFences[i][1];
+    const m = block.match(/^score\s*:\s*([\d.]+)\s*$/im);
+    if (m) {
+      const v = Number(m[1]);
+      if (Number.isFinite(v) && v >= 0 && v <= 5) return { score: v, source: 'yaml' };
+    }
+  }
+
+  // ── Rung 2: body line ──────────────────────────────────────────────────
+  // Match `**Score:** X/5` or `Score: X/5` (with or without markdown
+  // emphasis) anchored at the BEGINNING of a line. Excludes mid-sentence
+  // "Confidence Score: X/5" which would have a non-whitespace prefix.
+  for (const line of clean.split('\n')) {
+    // Strip markdown emphasis (**text** or __text__) then test line start.
+    const stripped = line.replace(/\*\*|__/g, '').trim();
+    const m = stripped.match(/^Score:\s*([\d.]+)\s*\/\s*5/i);
+    if (m) {
+      const v = Number(m[1]);
+      if (Number.isFinite(v) && v >= 0 && v <= 5) return { score: v, source: 'body' };
+    }
+  }
+
+  return { score: null, source: null };
+}
+
+/**
  * Run ollama-eval.mjs on JD text; parse score + report path from its output.
- * @returns {{score: number|null, reportPath: string|null, ok: boolean, error?: string}}
+ * Score provenance (yaml | body | stdout) is returned in `scoreSource`.
+ * @returns {{score: number|null, reportPath: string|null, scoreSource: string|null, ok: boolean, error?: string}}
  */
 export function runOllamaEval({ jdText, url, model, baseUrl }) {
   const dir = mkdtempSync(join(tmpdir(), 'auto-eval-'));
@@ -147,26 +213,49 @@ export function runOllamaEval({ jdText, url, model, baseUrl }) {
         OPENAI_TIMEOUT_MS: process.env.OPENAI_TIMEOUT_MS || '900000',
       },
     });
-    const out = `${res.stdout || ''}\n${res.stderr || ''}`;
+    const rawOut = `${res.stdout || ''}\n${res.stderr || ''}`;
     if (res.status !== 0) {
-      return { score: null, reportPath: null, ok: false, error: out.trim().split('\n').slice(-3).join(' | ') };
+      return { score: null, reportPath: null, scoreSource: null, ok: false, error: rawOut.trim().split('\n').slice(-3).join(' | ') };
     }
-    const scoreM = out.match(/Score:\s*([\d.]+)\s*\/\s*5/);
-    const reportM = out.match(/Report saved:\s*(reports\/\S+\.md)/);
-    let score = scoreM ? Number(scoreM[1]) : null;
-    // Fallback: some models (observed: gemma-4-e4b via LM Studio) skip the
-    // machine-readable SCORE_SUMMARY trailer, so the runner prints "?/5" even
-    // though the saved report body contains the score. Parse it from there.
-    if (!Number.isFinite(score) && reportM) {
+
+    const reportM = rawOut.match(/Report saved:\s*(reports\/\S+\.md)/);
+    let score = null;
+    let scoreSource = null;
+
+    // ── Prefer the saved report body (yaml trailer → body line) ──────────
+    // This is more reliable than the runner's stdout summary, which is (a)
+    // unanchored and (b) printed BEFORE the model's think block is stripped.
+    if (reportM) {
       try {
         const body = readFileSync(join(ROOT, reportM[1]), 'utf-8');
-        const m = body.match(/\*\*Score:\*\*\s*([\d.]+)\s*\/\s*5/) || body.match(/^score:\s*([\d.]+)\s*$/m);
-        if (m) score = Number(m[1]);
-      } catch { /* report unreadable — keep score null */ }
+        const parsed = parseReportScore(body);
+        if (parsed.score !== null) {
+          score = parsed.score;
+          scoreSource = parsed.source; // 'yaml' or 'body'
+        }
+      } catch { /* report unreadable — fall through to stdout */ }
     }
+
+    // ── Fallback: stdout summary line (stripped of think blocks) ─────────
+    // Only reached when no report was saved or the report had no parseable
+    // score. Strip think blocks first so "Confidence Score: 5/5" in a
+    // streamed think block cannot hijack the match. Leading whitespace is
+    // allowed because both runners indent their summary ("  Score: X/5" —
+    // ollama-eval.mjs/openai-eval.mjs); "Confidence Score:" is still excluded
+    // by its non-whitespace prefix.
+    if (!Number.isFinite(score)) {
+      const cleanOut = stripThinkBlocks(rawOut);
+      const scoreM = cleanOut.match(/^\s*Score:\s*([\d.]+)\s*\/\s*5/m);
+      if (scoreM) {
+        score = Number(scoreM[1]);
+        scoreSource = 'stdout';
+      }
+    }
+
     return {
       score: Number.isFinite(score) ? score : null,
       reportPath: reportM ? reportM[1] : null,
+      scoreSource: Number.isFinite(score) ? scoreSource : null,
       ok: Number.isFinite(score),
       error: Number.isFinite(score) ? undefined : 'no score in eval output',
     };
@@ -286,15 +375,15 @@ export async function runEvalQueue({ limit, dryRun = false, log = console.log } 
       continue;
     }
 
-    await updateJob(job.urlKey, { transitionTo: 'evaluated', patch: { score: evalRes.score, reportPath: evalRes.reportPath, lastError: null } });
+    await updateJob(job.urlKey, { transitionTo: 'evaluated', patch: { score: evalRes.score, reportPath: evalRes.reportPath, scoreSource: evalRes.scoreSource, lastError: null } });
     if (evalRes.score >= threshold) {
       await updateJob(job.urlKey, { transitionTo: 'queued' });
       outcomes.push({ ...row, outcome: 'queued', score: evalRes.score });
-      log(`eval-queue:   → ${evalRes.score}/5 QUEUED`);
+      log(`eval-queue:   → ${evalRes.score}/5 QUEUED [source:${evalRes.scoreSource}]`);
     } else {
       await updateJob(job.urlKey, { transitionTo: 'skipped', patch: { lastError: `score ${evalRes.score} < ${threshold}` } });
       outcomes.push({ ...row, outcome: 'skipped', score: evalRes.score, reason: 'below threshold' });
-      log(`eval-queue:   → ${evalRes.score}/5 below threshold`);
+      log(`eval-queue:   → ${evalRes.score}/5 below threshold [source:${evalRes.scoreSource}]`);
     }
   }
   log(`eval-queue: done — ${processed} evaluated, ${touched} rows gate-checked, ${outcomes.length} outcomes`);

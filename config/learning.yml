@@ -1,5 +1,16 @@
+# SHADOW mode (T2.1, 2026-10-12). Flags that make this "shadow":
+#   enabled: true + mode: shadow  -> apply path unchanged (same agent, prompt,
+#       retries, recovery, queue order); after each submit-attempt verdict
+#       apply-worker captures the attempt's audit artifacts (answers.json)
+#       into data/auto/learning. Capture-only; failures never alter verdicts.
+#   review.enabled: false, review.auto_promote_procedures: false -> no reviewer.
+#   queue.mode: existing -> original queue order.
+#   cloud.enabled: false, daily_usd_cap: 0, max_calls_per_day: 0 -> no spend.
+# mode: active (executor swap, intent reconciliation, sweeps) is user-gated
+# (T27, D01-D07). Rollback: set enabled: false. An invalid file that is not
+# explicitly enabled: false makes cycles refuse to start (fail-closed).
 schema_version: 1
-enabled: false
+enabled: true
 mode: shadow
 capture:
   max_artifact_bytes: 2097152

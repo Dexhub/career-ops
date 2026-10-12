@@ -114,10 +114,11 @@ test('malformed config throws and is never overwritten; future version refused',
   assert.throws(() => readLearningConfig(ctx), (err) => err.code === 'CONFIG_MALFORMED');
 });
 
-test('the checked-in config/learning.yml carries the CONTRACTS F defaults', () => {
+test('the checked-in config/learning.yml is CONTRACTS F defaults, enabled only in shadow mode (T2.1)', () => {
   // Read-only look at the checkout: parse it through the same validator by
   // pointing a context's dataRoot at the repo root (no writes happen).
+  // Shadow = defaults with enabled:true; review/cloud/queue stay at defaults.
   const ctx = createLearningContext({ codeRoot: repoRoot, dataRoot: repoRoot, now: fixedClock() });
   const config = readLearningConfig(ctx);
-  assert.deepEqual(config, structuredClone(LEARNING_CONFIG_DEFAULTS));
+  assert.deepEqual(config, { ...structuredClone(LEARNING_CONFIG_DEFAULTS), enabled: true, mode: 'shadow' });
 });

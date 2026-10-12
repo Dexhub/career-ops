@@ -19,7 +19,7 @@
 
 import './lib/sanitize-env.mjs';
 import { createServer, request as httpRequest } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, closeSync, existsSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -229,26 +229,66 @@ export function safeOutputPath(relPath) {
   return existsSync(abs) && statSync(abs).isFile() ? abs : null;
 }
 
-/** parked/failed → queued with attempts reset. The state machine enforces legality. */
-export async function requeueJob(urlKey) {
+/**
+ * parked/failed → queued with attempts reset. The state machine enforces
+ * legality. For jobs whose failure indicates an unknown submission outcome
+ * (confirmation_text empty / no-confirmation patterns — T0.3), this is a
+ * safety-blocked operation: the caller must pass force:true and the response
+ * carries a warning string so the UI can surface it before allowing the requeue.
+ *
+ * @param {string} urlKey
+ * @param {{force?: boolean}} [opts]  force:true bypasses the T0.3 unknown-outcome block
+ * @returns {Promise<{ok, stage?, error?, code?, warning?}>}
+ */
+export async function requeueJob(urlKey, { force = false } = {}) {
+  // T0.3: pre-flight the unknown-outcome check before the state-machine write,
+  // so we can attach a warning even when force:true is passed.
+  let unknownOutcomeWarning = null;
+  const job = loadJob(urlKey);
+  if (job) {
+    const err = String(job.lastError ?? '');
+    if (/confirmation_text[\s_]empty|no[-_]confirmation|confirmation.*empty|unknown.*submission|submission.*unknown/i.test(err)) {
+      unknownOutcomeWarning = 'attempt may have actually submitted — verify with the employer before requeueing';
+      if (!force) {
+        return {
+          ok: false,
+          code: 'SUBMISSION_OUTCOME_UNKNOWN',
+          error: `${job.urlKey} failed with an unknown submission outcome — ${unknownOutcomeWarning}`,
+          warning: unknownOutcomeWarning,
+        };
+      }
+    }
+  }
   try {
-    const job = await updateJob(urlKey, { transitionTo: 'queued', patch: { attempts: 0, lastError: null } });
-    return { ok: true, stage: job.stage };
+    const updated = await updateJob(urlKey, {
+      transitionTo: 'queued',
+      patch: { attempts: 0, lastError: null, ...(force ? { force: true } : {}) },
+    });
+    return {
+      ok: true,
+      stage: updated.stage,
+      ...(unknownOutcomeWarning ? { warning: unknownOutcomeWarning } : {}),
+    };
   } catch (err) {
     return {
       ok: false,
       error: err.code === 'JOB_NOT_FOUND' ? 'job not found' : err.message,
-      // T14: surface the typed refusal (e.g. SUBMISSION_OUTCOME_UNKNOWN) so
-      // bulk/panel callers can tell a safety refusal from a plain error.
+      // T14 / T0.3: surface the typed refusal so bulk/panel callers can tell
+      // a safety refusal from a plain error.
       ...(err.code ? { code: err.code } : {}),
+      ...(unknownOutcomeWarning ? { warning: unknownOutcomeWarning } : {}),
     };
   }
 }
 
-/** Bulk retry: requeue each key independently; one refusal never blocks the rest. */
-export async function requeueJobs(keys) {
+/**
+ * Bulk retry: requeue each key independently; one refusal never blocks the rest.
+ * @param {string[]} keys
+ * @param {{force?: boolean}} [opts]
+ */
+export async function requeueJobs(keys, { force = false } = {}) {
   const results = [];
-  for (const key of (Array.isArray(keys) ? keys : [])) results.push({ key, ...(await requeueJob(key)) });
+  for (const key of (Array.isArray(keys) ? keys : [])) results.push({ key, ...(await requeueJob(key, { force })) });
   return { ok: results.every((r) => r.ok), requeued: results.filter((r) => r.ok).length, results };
 }
 
@@ -524,14 +564,79 @@ function liveAttempt() {
   };
 }
 
-export function operatorPayload() {
-  const cycle = cycleState();
+// ---------- T2.3: stale-activity alarm ----------
+
+// Threshold: if the cycle is running and no activity signal (run.log mtime or
+// job-record update) moved in this many milliseconds, something is stuck.
+const STALE_ACTIVITY_THRESHOLD_MS = 2 * 60 * 60 * 1000;
+
+// Debounce: fire the macOS notification at most once per half-hour to avoid
+// spam if the panel is polled repeatedly while the cycle is stuck.
+let lastStaleNotifyAt = 0;
+const STALE_NOTIFY_DEBOUNCE_MS = 30 * 60 * 1000;
+
+/**
+ * Check whether the cycle is running but has been silent for > 2h.
+ * Pure computation — does not fire the notification itself (see statusPayload).
+ *
+ * @param {object} cycle — from cycleState()
+ * @param {string|null} lastActivityAt — ISO timestamp of last run.log mtime, or null
+ * @param {number} [nowMs] — injectable for tests
+ * @returns {{ stale: boolean, silenceMs: number|null, lastActivityAt: string|null }}
+ */
+export function staleActivityAlarm(cycle, lastActivityAt, nowMs = Date.now()) {
+  if (!cycle?.running) return { stale: false, silenceMs: null, lastActivityAt };
+  if (!lastActivityAt) return { stale: false, silenceMs: null, lastActivityAt: null };
+  const silenceMs = nowMs - new Date(lastActivityAt).getTime();
+  const stale = silenceMs > STALE_ACTIVITY_THRESHOLD_MS;
+  return { stale, silenceMs, lastActivityAt };
+}
+
+/**
+ * Freshest activity timestamp across BOTH signals: run.log mtime (only moves
+ * when the cycle runs under launchd, which redirects stdout there) and the
+ * newest job-record update (DB-backed — moves on every transition regardless
+ * of how the cycle was launched). Manually-launched cycles never touch
+ * run.log, so the job signal is what prevents a permanent false alarm.
+ *
+ * @param {Array<{updatedAt?: string|null}>} [jobs] — pre-loaded summaries; loads fresh when omitted
+ * @returns {string|null} ISO timestamp or null when neither signal exists
+ */
+function lastActivityIso(jobs = null) {
   let logMtime = null;
   try { logMtime = statSync(RUN_LOG).mtime.toISOString(); } catch { /* no log yet */ }
+  let jobAt = null;
+  for (const j of (jobs ?? jobSummaries())) {
+    const at = j.updatedAt ?? null;
+    if (at && (!jobAt || at > jobAt)) jobAt = at;
+  }
+  return [logMtime, jobAt].filter(Boolean).sort().at(-1) ?? null;
+}
+
+/** Fire a macOS notification for the stale-activity alarm (debounced). */
+function maybeNotifyStale(alarmInfo) {
+  if (!alarmInfo.stale) return;
+  const now = Date.now();
+  if (now - lastStaleNotifyAt < STALE_NOTIFY_DEBOUNCE_MS) return;
+  lastStaleNotifyAt = now;
+  const hours = (alarmInfo.silenceMs / 3_600_000).toFixed(1);
+  const msg = `Auto pipeline appears stuck — no activity for ${hours}h`;
+  try {
+    spawnSync('osascript', ['-e',
+      `display notification ${JSON.stringify(msg)} with title "career-ops auto ⚠️"`]);
+  } catch { /* best effort */ }
+}
+
+
+export function operatorPayload() {
+  const cycle = cycleState();
+  const lastActivityAt = lastActivityIso();
+  const alarm = staleActivityAlarm(cycle, lastActivityAt);
   return {
     cycle,
     pauseRequested: pauseRequested(),
-    lastActivityAt: logMtime,
+    lastActivityAt,
+    staleActivityAlarm: alarm,
     workers: parseWorkers(logTail(400), cycle.running),
     applying: liveAttempt(),
     agents: agentFlags(),
@@ -563,8 +668,17 @@ function statusPayload() {
     maxAttempts = cfg.max_attempts ?? 2;
   } catch { /* config absent */ }
   const day = new Date().toISOString().slice(0, 10);
+  const cycle = cycleState();
+
+  // T2.3: heartbeat + stale-activity alarm (activity = max of run.log mtime
+  // and freshest job update — see lastActivityIso)
+  const lastActivityAt = lastActivityIso(jobs);
+  const alarm = staleActivityAlarm(cycle, lastActivityAt);
+  // Fire macOS notification if stale (debounced — won't spam on every /api/auto/status poll)
+  if (alarm.stale) maybeNotifyStale(alarm);
+
   return {
-    cycle: cycleState(),
+    cycle,
     pauseRequested: pauseRequested(),
     counts,
     maxAttempts,
@@ -574,6 +688,14 @@ function statusPayload() {
     workingOn: applying ? `${applying.company} — ${applying.role}` : null,
     digestToday: existsSync(join(ROOT, 'data', 'auto', `digest-${day}.md`)),
     learningReview: learningReviewInfo(),
+    // T2.3: heartbeat line — panel clients poll /api/auto/status; this tells them
+    // the panel is alive and when the pipeline last showed activity.
+    heartbeat: { at: new Date().toISOString(), lastActivityAt },
+    // T2.3: stale-activity alarm — prominently surfaces stuck cycles
+    staleActivity: alarm.stale
+      ? { stale: true, silenceMs: alarm.silenceMs, lastActivityAt: alarm.lastActivityAt,
+          message: `⚠️  Pipeline appears stuck — no activity for ${((alarm.silenceMs ?? 0) / 3_600_000).toFixed(1)}h` }
+      : { stale: false },
     logTail: logTail(),
   };
 }
@@ -759,7 +881,8 @@ export function createPanelServer() {
         if (req.method === 'POST' && p === '/api/auto/resume') return send(res, 200, cancelPause());
         if (req.method === 'POST' && p === '/api/auto/requeue') {
           const body = await readBody(req);
-          return send(res, 200, body.keys ? await requeueJobs(body.keys) : await requeueJob(body.key));
+          const force = !!body.force;
+          return send(res, 200, body.keys ? await requeueJobs(body.keys, { force }) : await requeueJob(body.key, { force }));
         }
         if (req.method === 'POST' && p === '/api/auto/rerank') {
           const body = await readBody(req);

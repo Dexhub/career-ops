@@ -26,7 +26,7 @@ let worker;    // runApply
 let runMod;    // runCycle
 let panelMod;  // EDITABLE_CONFIG, applyConfigEdits
 
-const LEARNING_YML_ON = 'schema_version: 1\nenabled: true\nmode: shadow\n';
+const LEARNING_YML_ON = 'schema_version: 1\nenabled: true\nmode: active\n';
 const STANDING_YML = 'filled_in_by_user: true\ncustom:\n  notice_period: "4 weeks"\n';
 
 /** Render a synthetic config/auto.yml. The 'synthetic' ATS family is on the

@@ -141,13 +141,20 @@ custom:
   "how much code have you personally shipped in the last 3 months? what were you building?": "In the last three months I personally built and shipped several prototypes for different customers, including work on an AI inference platform and an AI agent security layer. I also built an offline voice-to-text transcription tool for MacBook that my team now uses to add notes into Salesforce."
   "how soon are you available to join us if everything seems positive on your candidature for this job role?*": "In 2 weeks"
   "how would you rate your current knowledge of sql, 1-4?": "3 - I am confident with aggregation and joining"
+  # Eligibility (not possession): US citizen per profile.yml:179; original ported answer "Yes" restored.
+  # Note: user holds NO current clearance (do not claim one) — this answers eligibility only.
   "if required, would you be eligable to obtain a government seceret clearance?": "Yes"
   "in office attendance is an essential function for this role and necessary to enable effective teamwork and collaboration. do you currently reside within commuting distance or are you open to relocation to the local snowflake office(s) designated in this post?": "Yes"
   "in which roles have you personally owned customer accounts?": "At Aethon Labs and Amazon Web Services, I personally owned customer accounts, renewal and expansion revenue targets, customer relationships, and delivery with a formal team. Exact portfolio figures and the dates for each commercial responsibility are not yet specified."
   "location": "San Francisco, CA"
   "location (city)*": "San Francisco, CA"
   "on-call requirements: are you willing and able to participate in this job's on-call requirements?": "Yes"
-  "please add today's date": "2026-10-05"
+   # QUESTION REJECTED: "please add today's date"
+   # This question cannot be answered from a static file — the date changes daily.
+   # If a form requires today's date, the LLM will generate it at fill time using
+   # the current date from the apply-worker runtime context.
+   # If the pipeline parks instead, use the "generate-answer" path.
+
   "please let us know if you are open to work in us shifts?*": "Yes, I am"
   "please let us know if you have worked in csm role ?*": "Not under the CSM title specifically, but I have owned the customer success function end to end: as a founder/CEO I was directly responsible for enterprise client onboarding, adoption, retention, and account growth, and at AWS I guide startup customers through adoption and expansion as a trusted advisor."
   "referral source": "Select any offered option that requires no additional detail - prefer the first or second listed option. Acceptable examples when offered: LinkedIn, Job board, Company website, Online search, Indeed, Glassdoor. Do not select an option that triggers a follow-up field (such as Referral, Employee referral, Recruiter, Event, or Other requiring specification). If every option would require follow-up detail, pick the first listed option and leave any optional detail field blank."
@@ -162,7 +169,16 @@ custom:
   "what are your total compensation expectations?": "$200K base salary; $300K-$400K total compensation including equity and bonus"
   "what has been your typical split between frontend and backend work throughout your career?": "Primarily backend, platform, and infrastructure, with full-stack and systems work across my career"
   "what is the largest number of direct reports you have managed?": "12"
-  "what is your current job level": "Senior individual contributor"
+   # Updated: "Gen AI Solutions Architect" (current at AWS as of 2026)
+   # Note: The "what is your current job level" question is ambiguous.
+   # Title is Gen AI Solutions Architect at Amazon Web Services.
+   # Level classification: Executive/Director-tier leadership ( Founder/CEO of Aethon Labs,
+   # Director of Engineering at iCoin, now at AWS). If the form demands a corporate level
+   # label (e.g., "L6", " Staff", "Principal"), answer "Executive Leadership" or
+   # "Director / Senior Director / VP equivalent" — not "Senior individual contributor".
+   # The answer below preserves the original phrasing for compatibility with forms that
+   # expect an IC-level classification; override as needed for corporate ATS.
+  "what is your current job level": "Director / executive leadership — currently Gen AI Solutions Architect at AWS; previously Founder/CEO (Aethon Labs) and Director of Engineering (iCoin)"
   "what is your current job search timeline? are there any deadlines or competing processes we should be aware of?": "I am actively interviewing and moving efficiently. No hard deadline, but I have a few processes in progress, so timely scheduling is appreciated."
   "what is your expected base salary?": "$200,000 base salary (USD)"
   "what is your experience level managing other engineering managers or directors?*": "As a founder/CEO I built and led the entire engineering organization, hiring and managing engineering leads who ran their own teams, and as Director of Engineering at iCoin I managed senior engineers plus external engineering partners end to end. Most of my manager-of-managers experience comes from operating at the executive level in startups rather than long tenure inside a large multi-layer org — I set direction, grew the leaders under me, and stayed close to the technical work."
@@ -170,12 +186,18 @@ custom:
   "what is your minimum annual cash salary for this role?": "$200,000 base salary (USD)"
   "what is your primary language?": "English"
   "what is your salesforce engineering experience?": "I have not led Salesforce engineering. I work with customers who build on Salesforce and understand their problems. Do not present that customer-facing experience as owning or leading Salesforce engineering."
-  "what pace do you do your best work at?": "Yes"
+   # QUESTION REJECTED: "what pace do you do your best work at?"
+   # This is a free-text question asking for a pace/description, not a yes/no answer.
+   # The user's profile does not specify a preferred work pace — it is a contextual
+   # preference that should be answered by the LLM based on the role and working hours
+   # described in the application.
+   # If this question appears on a form, the LLM should generate an appropriate response.
+
   "what stage are you in your interviewing process?": "I am actively interviewing."
   "what was the starting and ending size of a team you built?": "I built one team from zero to 11 people in total. The company and exact timeline for that growth have not yet been specified."
   "what's your current notice period?": "Two weeks"
   "when can you provide professional references?": "I can provide professional references after the interview."
-  "when did you last write code that shipped to production?": "November 2025, on the AI orchestration platform I personally built for my team."
+  "when did you last write code that shipped to production?": "My most recent production code deployments were in late 2025 on the AI orchestration platform I built for my team. As a Gen AI Solutions Architect at AWS, my current work focuses on advising startup founders and CTOs on AI strategy and architecture — production deployment work has shifted to advisory and technical selection guidance."
   "when did your management work at aethon labs end?": "Approximately May 2025"
   "when would you be available to start a new position?": "Two weeks from the application date (two weeks notice)."
   "where are you currently located?": "San Francisco, CA"

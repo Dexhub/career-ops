@@ -28,7 +28,7 @@ let runApply;
 let getRecord;
 let createLearningContext;
 
-const LEARNING_ON = 'schema_version: 1\nenabled: true\nmode: shadow\n';
+const LEARNING_ON = 'schema_version: 1\nenabled: true\nmode: active\n';
 const LEARNING_OFF = 'schema_version: 1\nenabled: false\nmode: shadow\n';
 const TENANT = 'jobs.example.test';
 

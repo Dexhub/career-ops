@@ -101,3 +101,11 @@ above across every job — exact failing step per attempt (transcript +
 snapshots in the audit dir), reasons grouped across jobs, and which
 questions keep needing generated answers (add those to
 `config/standing-answers.yml` so they become deterministic).
+
+## Eval scoring notes
+
+After any change to the eval model or the score-extraction logic, run
+`node auto/eval-score-audit.mjs` (dry-run) to confirm no mis-scored jobs
+exist in the queue. If a golden-reference eval harness (`auto/eval-golden.mjs`)
+is added in future, run it after every eval-model change to validate score
+stability before re-enabling the cycle.

@@ -265,6 +265,18 @@ export async function updateJob(urlKey, { expectedVersion, patch = {}, transitio
         throw typedError('SUBMISSION_OUTCOME_UNKNOWN',
           `updateJob: ${urlKey} has an unreconciled submission attempt — requeue refused until reconciliation confirms non-submission`);
       }
+      // T0.3 (dispatch-gate): an attempt whose failure detail indicates the
+      // submission outcome is unknown (empty confirmation / no-confirmation /
+      // confirmation_text empty patterns) must not be casually requeued — even
+      // when the learning layer is off and submissionPossible was never set.
+      // A force:true flag on the patch bypasses this for explicit operator override.
+      if (transitionTo === 'queued' && job.stage === 'failed' && !patch.force) {
+        const err = String(job.lastError ?? '');
+        if (/confirmation_text[\s_]empty|no[-_]confirmation|confirmation.*empty|unknown.*submission|submission.*unknown/i.test(err)) {
+          throw typedError('SUBMISSION_OUTCOME_UNKNOWN',
+            `updateJob: ${urlKey} failed with an unknown submission outcome ("${err.slice(0, 80)}") — verify with the employer before requeueing, or pass force:true`);
+        }
+      }
     }
     for (const [key, value] of Object.entries(patch)) {
       if (NESTED_PATCH_KEYS.includes(key) && value && typeof value === 'object'

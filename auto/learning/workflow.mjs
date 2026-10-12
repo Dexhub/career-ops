@@ -956,6 +956,21 @@ export async function executeTrackerSync({
   if (!verified) {
     return { outcome: 'failed', error: 'post-write verification failed: canonical tracker does not show Applied on the verified row/link' };
   }
+  // Seed the follow-up pin for this newly-Applied row. Best-effort: a seeding
+  // failure must never fail the tracker sync — the status write already committed
+  // and that is the authoritative result. seedFollowup() is idempotent, so a
+  // re-run of executeTrackerSync (e.g. after a crash in the sweep) does nothing.
+  // This mirrors set-status.mjs's post-commit seeding for the learning path, so
+  // both paths stay in parity. Worker F (outcome-brief/follow-up-seeding task).
+  if (vrow.num != null) {
+    try {
+      const { seedFollowup } = await import('../../followup-seed.mjs');
+      await seedFollowup(vrow.num, { assumeApplied: true });
+    } catch {
+      // Silently tolerated — same policy as set-status.mjs's seeding block.
+    }
+  }
+
   return { outcome: 'completed', reportNum, rowNum: vrow.num ?? null, recreated };
 }
 

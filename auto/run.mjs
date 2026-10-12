@@ -30,11 +30,12 @@ import { hasFlag, validateFlags } from '../lib/cli-flags.mjs';
 import { isMainModule } from '../lib/is-main-module.mjs';
 import { loadAutoConfig, resolveExecutionPolicy } from './lib/config.mjs';
 import { listJobs, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
-import { learningRuntime, runApply, syncTrackerApplied } from './apply-worker.mjs';
+import { resolveLearning, runApply, syncTrackerApplied } from './apply-worker.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
 import { reconcileAttempt, trackerSyncTaskId } from './learning/workflow.mjs';
 import { agentEnabled } from './lib/agent-flags.mjs';
 import { writeDigest } from './digest.mjs';
+import { checkDispatchGate } from './dispatch-gate.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // Sentinel path for the run lock. pipeline-lock derives a .lock dir next to
@@ -108,6 +109,11 @@ export function overridePresent() {
 // a library caller must never eat a live pause request).
 export async function runCycle({ skipScan = false, noSubmit = false, applyOnly = false, log = console.log, apply = runApply, pauseFlag = PAUSE_FLAG } = {}) {
   const cfg = loadAutoConfig({ fresh: true });
+  // T2.1: resolve learning BEFORE any stage starts. An invalid config that is
+  // not explicitly disabled throws here (fail-closed), never a silent legacy
+  // downgrade. shadow = capture-only inside runApply; active = full integration.
+  const learningState = resolveLearning(log);
+  if (learningState.mode !== 'off') log(`run: learning mode=${learningState.mode}`);
 
   // Scan → eval runs as a background chain (scan feeds the rows eval ranks),
   // in parallel with resume-select + the apply loop, so already-queued jobs
@@ -151,7 +157,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   // killed mid-apply on its last try) can never complete — mark it failed so
   // it stops shadowing the queue and shows up in the digest.
   const policy = resolveExecutionPolicy({ cfg }); // T12: explicit refusal on garbled config
-  const learning = learningRuntime(log); // null unless config/learning.yml enables it
+  const learning = learningState.active; // null unless learning is enabled in mode: active
   for (const stale of listJobs('applying')) {
     // T13 (learning-gated): a job waiting on a persisted blocker is not a
     // stale attempt — never retro-fail it; resolution resumes the SAME
@@ -295,6 +301,22 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
     }
     applied.add(next.urlKey);
 
+    // T0.2 pre-dispatch identity gate: check for already-applied, declined-
+    // cooldown, and employer-cap violations BEFORE spending any browser time.
+    const gateResult = checkDispatchGate(next);
+    if (gateResult.park) {
+      try {
+        await updateJob(next.urlKey, {
+          transitionTo: 'parked',
+          patch: { lastError: gateResult.reason },
+        });
+        log(`run: dispatch-gate parked ${next.company} (${gateResult.rule}) — ${gateResult.reason}`);
+      } catch (err) {
+        log(`run: dispatch-gate park failed for ${next.company}: ${err.message}`);
+      }
+      continue; // no jitter: gate refusal spends no browser time
+    }
+
     let applyRes = null;
     try {
       applyRes = await apply({ needle: next.urlKey, agent: cfg.agent?.primary ?? 'claude', log });
@@ -317,7 +339,7 @@ export async function runCycle({ skipScan = false, noSubmit = false, applyOnly =
   await awaitEval();
 
   if (!applyOnly) {
-    try { writeDigest({ log }); } catch (err) { console.warn(`run: digest failed: ${err.message}`); }
+    try { await writeDigest({ log }); } catch (err) { console.warn(`run: digest failed: ${err.message}`); }
   }
 }
 

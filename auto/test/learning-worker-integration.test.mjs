@@ -17,7 +17,7 @@ const repoRoot = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'
 // Module handles — dynamically imported AFTER the fixture sets
 // CAREER_OPS_ROOT/CAREER_OPS_DB, because auto/lib/config.mjs and state.mjs
 // resolve their roots at import time.
-let runApply; let preflightExecutor; let composeApplyPrompt; let renderPrompt; let learningRuntime;
+let runApply; let resolveLearning; let preflightExecutor; let composeApplyPrompt; let renderPrompt; let learningRuntime;
 let observePage; let resolvePage; let recordCheckpoint; let finalizeAttemptCapture; let locateAttempt;
 let createLearningContext; let state; let storeMod; let normalizeQuestion; let hashText;
 let clearContextPacketCache; let commitRecord; let getRecord; let listRecords;
@@ -32,7 +32,7 @@ const STANDING_YML = [
   '',
 ].join('\n');
 
-const LEARNING_YML_ON = 'schema_version: 1\nenabled: true\nmode: shadow\n';
+const LEARNING_YML_ON = 'schema_version: 1\nenabled: true\nmode: active\n';
 const LEARNING_YML_OFF = 'schema_version: 1\nenabled: false\nmode: shadow\n';
 
 // Synthetic question content (never real employer/user data).
@@ -175,7 +175,7 @@ before(async () => {
   writeFileSync(join(fixture.dataRoot, 'resume.pdf'), 'synthetic-pdf');
 
   ({
-    runApply, preflightExecutor, composeApplyPrompt, renderPrompt, learningRuntime,
+    runApply, resolveLearning, preflightExecutor, composeApplyPrompt, renderPrompt, learningRuntime,
   } = await import('../apply-worker.mjs'));
   ({
     observePage, resolvePage, recordCheckpoint, finalizeAttemptCapture, locateAttempt,
@@ -219,6 +219,26 @@ test('flag off: learningRuntime is null and the composed prompt is byte-identica
     assert.ok(!composeApplyPrompt(args, { learning: null }).includes('observe-page'));
   } finally {
     writeFileSync(join(fixture.dataRoot, 'config', 'learning.yml'), LEARNING_YML_ON);
+  }
+});
+
+test('T2.1: invalid config fails closed unless explicitly disabled; shadow is capture-only', () => {
+  const cfgPath = join(fixture.dataRoot, 'config', 'learning.yml');
+  try {
+    for (const bad of ['schema_version: 1\nenabled: true\nbogus: 1\n', 'enabled: true\n: : [\n']) {
+      writeFileSync(cfgPath, bad);
+      assert.throws(() => resolveLearning(() => {}), /fail-closed/);
+      assert.throws(() => learningRuntime(() => {}), /fail-closed/);
+    }
+    writeFileSync(cfgPath, 'schema_version: 1\nenabled: false\nbogus: 1\n');
+    assert.equal(resolveLearning(() => {}).mode, 'off');
+    writeFileSync(cfgPath, 'schema_version: 1\nenabled: true\nmode: shadow\n');
+    const s = resolveLearning(() => {});
+    assert.equal(s.mode, 'shadow');
+    assert.equal(s.active, null); // no executor swap, reconciliation or sweeps
+    assert.ok(s.shadow.ctx);
+  } finally {
+    writeFileSync(cfgPath, LEARNING_YML_ON);
   }
 });
 

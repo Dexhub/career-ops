@@ -26,7 +26,9 @@ import { isMainModule } from '../lib/is-main-module.mjs';
 import { slugifySegment } from '../application-artifacts.mjs';
 import { getCareerOpsRoot } from '../path-resolver.mjs';
 import { loadAutoConfig, loadStandingAnswers, resolveExecutionPolicy } from './lib/config.mjs';
-import { createLearningContext, readLearningConfig } from './learning/context.mjs';
+import { parseAgentUsage } from './lib/usage-parser.mjs';
+import * as yaml from 'js-yaml';
+import { createLearningContext, learningConfigPath, readLearningConfig } from './learning/context.mjs';
 import { normalizeAuditAnswers } from './learning/evidence.mjs';
 import { finalizeAttemptCapture } from './learn.mjs';
 import {
@@ -64,6 +66,35 @@ export function savedCredentialsFor(url, file = ACCOUNTS_FILE) {
   } catch {
     return 'None on file for this employer — create the account if the form requires one.';
   }
+}
+
+/** Return a copy of `prompt` with every ATS account password replaced by
+ *  [REDACTED]. Usernames/emails are left intact (not sensitive, needed for
+ *  audit trace). Loads the current password list at call time so a newly
+ *  harvested credential is always covered.
+ *  Fail-closed: when accounts.json is missing, unreadable, or malformed,
+ *  OR when no passwords are found to redact, any password-looking line in the
+ *  prompt is stripped rather than returning raw text. Never throws. */
+export function redactPromptForAudit(prompt, file = ACCOUNTS_FILE) {
+  let out = prompt;
+  try {
+    const accounts = JSON.parse(readFileSync(file, 'utf8'));
+    if (accounts && typeof accounts === 'object') {
+      for (const acct of Object.values(accounts)) {
+        const pw = acct?.password;
+        if (pw && typeof pw === 'string' && pw.length > 0) {
+          out = out.split(pw).join('[REDACTED]');
+        }
+      }
+    }
+  } catch { /* fall through to unconditional structural scrub below */ }
+  // Fail-closed: ALWAYS scrub password-bearing lines structurally. Finding a
+  // stored password in the store does not prove the prompt was sanitized —
+  // the prompt may contain an older/removed credential that no current
+  // account matches. Known passwords above are replaced anywhere they occur;
+  // this line scrub catches everything shaped like a credential line.
+  out = out.replace(/^(password\s*:.*)/gim, 'password: [REDACTED]');
+  return out;
 }
 
 export function harvestCredentials(auditDir, file = ACCOUNTS_FILE, log = () => {}) {
@@ -117,17 +148,42 @@ export function renderPrompt({ job, submit, auditDir, profileYaml, standingYaml,
 // returns null and every call site below is a strict no-op, so a flag-off run
 // is byte-for-byte identical to the pre-learning worker.
 
-/** Learning runtime, or null when disabled/unconfigured. Never throws. */
-export function learningRuntime(log = () => {}) {
+/**
+ * Resolve the learning mode from config/learning.yml (T2.1):
+ *   off    — disabled (or `mode: off`): legacy worker, no learning writes.
+ *   shadow — legacy apply path UNCHANGED (same agent, prompt, retries,
+ *            queue order, recovery); after each verdict the attempt's audit
+ *            artifacts are captured into the learning store. Capture-only.
+ *   active — the full T10–T15 integration (injected restricted executor,
+ *            submission-intent reconciliation, blocker/tracker sweeps).
+ *            User-gated (T27/D01–D07); refuses without an injected executor.
+ * Fail-closed: an invalid config that does not explicitly say
+ * `enabled: false` THROWS — it never silently downgrades to the legacy path.
+ */
+export function resolveLearning(log = () => {}) {
+  const ctx = createLearningContext({ codeRoot: ROOT, dataRoot: getCareerOpsRoot() });
+  let config;
   try {
-    const ctx = createLearningContext({ codeRoot: ROOT, dataRoot: getCareerOpsRoot() });
-    const config = readLearningConfig(ctx);
-    if (!config.enabled) return null;
-    return { ctx, config };
+    config = readLearningConfig(ctx);
   } catch (err) {
-    log(`apply-worker: learning config unreadable (${err.message}) — continuing without learning`);
-    return null;
+    let raw = null;
+    try { raw = yaml.load(readFileSync(learningConfigPath(ctx), 'utf8')); } catch { raw = null; }
+    if (raw && typeof raw === 'object' && raw.enabled === false) {
+      log(`apply-worker: learning config invalid (${err.message}) but enabled: false — learning stays off`);
+      return { mode: 'off', active: null, shadow: null };
+    }
+    throw new Error(`apply-worker: config/learning.yml is invalid and not explicitly disabled — refusing to run (fail-closed): ${err.message}`);
   }
+  if (!config.enabled || config.mode === 'off') return { mode: 'off', active: null, shadow: null };
+  const rt = { ctx, config };
+  return config.mode === 'active'
+    ? { mode: 'active', active: rt, shadow: null }
+    : { mode: 'shadow', active: null, shadow: rt };
+}
+
+/** Active learning runtime, or null when off/shadow. Throws on invalid config. */
+export function learningRuntime(log = () => {}) {
+  return resolveLearning(log).active;
 }
 
 // The executor capability contract (CONTRACTS J): browser capability is the
@@ -176,7 +232,7 @@ export function composeApplyPrompt(args, { learning = null, attemptId = null } =
 /** Run the injected (restricted, learning-capable) executor. Child/session
  *  cleanup is scoped to the executor itself: no pkill, no shared profile. */
 async function runInjectedExecutor({ executor, prompt, auditDir, job, attemptId, submit, timeoutMins, log }) {
-  writeFileSync(join(auditDir, 'prompt.md'), prompt);
+  writeFileSync(join(auditDir, 'prompt.md'), redactPromptForAudit(prompt));
   log(`apply-worker: running injected learning executor (timeout ${timeoutMins}m)`);
   try {
     const res = await executor.run({ prompt, auditDir, job, attemptId, submit, timeoutMins });
@@ -283,7 +339,9 @@ function mcpConfigFor(auditDir) {
 function runAgent({ agent, prompt, auditDir, timeoutMins, model, smallFastModel, log }) {
   const timeout = timeoutMins * 60 * 1000;
   const promptPath = join(auditDir, 'prompt.md');
-  writeFileSync(promptPath, prompt);
+  // Write a redacted copy for the audit record; the in-memory `prompt` string
+  // with real credentials is passed directly to the agent process below.
+  writeFileSync(promptPath, redactPromptForAudit(prompt));
 
   // Model override from config (cost experiments): claude reads env vars,
   // codex takes -m. Empty/missing keeps the CLI's own default.
@@ -404,7 +462,8 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   }
   // Learning gate (T10): null when config/learning.yml is absent/disabled, in
   // which case everything below behaves exactly as before.
-  const learning = learningRuntime(log);
+  const learningState = resolveLearning(log); // throws on invalid config (fail-closed)
+  const learning = learningState.active;
   // In production the code checkout IS the data root, so this equals ROOT;
   // it differs only under test fixtures with CAREER_OPS_ROOT redirected.
   const dataRoot = learning ? learning.ctx.dataRoot : ROOT;
@@ -665,11 +724,13 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   // so every audit dir is self-contained for later diagnosis (a divergence
   // between the two is itself a finding: the agent claimed something the
   // artifacts don't support).
+  const usage = parseAgentUsage(auditDir, agentUsed);
   writeFileSync(join(auditDir, 'verdict.json'), JSON.stringify({
     ...verdict, submit, attempt: attemptNo, agent: agentUsed,
     model: (agentUsed === 'codex' ? agentCfg.codex_model : agentCfg.claude_model) || 'cli-default',
     timedOut: run.timedOut === true,
     exitCode: run.exitCode ?? null, verdictAt: new Date().toISOString(),
+    usage: usage.source === 'none' ? null : usage,
   }, null, 2));
 
   log(`apply-worker: verdict status=${verdict.status} ok=${verdict.ok}${verdict.reason ? ` reason="${verdict.reason}"` : ''}`);
@@ -685,6 +746,20 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
       log(`apply-worker: learning capture finalized — coverage=${capture.coverage} pages=${capture.pagesObserved} sync=${capture.consolidationTaskId}`);
     } catch (err) {
       log(`apply-worker: learning capture FAILED (verdict unchanged): ${err.message}`);
+    }
+  }
+
+  // T2.1 shadow mode: the legacy attempt above ran unchanged; capture its
+  // audit artifacts into the learning store. Capture-only — a failure is
+  // logged and never alters the verdict, job state, retries or queue order.
+  if (learningState.shadow && attempt) {
+    try {
+      const capture = await finalizeAttemptCapture(learningState.shadow.ctx, {
+        attemptId: attempt.attemptId, auditDir, verdictStatus: verdict.status,
+      });
+      log(`apply-worker: learning shadow capture — coverage=${capture.coverage} answers+${capture.legacyIngest.added} dup=${capture.legacyIngest.duplicate} rejected=${capture.legacyIngest.rejected}`);
+    } catch (err) {
+      log(`apply-worker: learning shadow capture FAILED (verdict unchanged): ${err.message}`);
     }
   }
 
@@ -777,8 +852,19 @@ async function finalizeVerdict(job, auditDir, verdict, attemptNo, maxAttempts, l
   } else if (attemptNo >= maxAttempts) {
     updated = await updateJob(job.urlKey, { transitionTo: 'failed', patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
   } else {
-    // stay in applying; next cycle retries once more
-    updated = await updateJob(job.urlKey, { patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
+    // F1 safety: an unknown-outcome failure (no-confirmation / confirmation_text empty / etc.)
+    // must NEVER stay in `applying` for auto-retry — the submission may have already gone through.
+    // Transition to `failed` so the existing state.mjs guard (SUBMISSION_OUTCOME_UNKNOWN) blocks
+    // casual requeue; the panel's force-requeue path remains the only re-entry after human review.
+    // Same regex as state.mjs ~:275 (keep in sync).
+    const unknownOutcome = /confirmation_text[\s_]empty|no[-_]confirmation|confirmation.*empty|unknown.*submission|submission.*unknown/i;
+    if (unknownOutcome.test(String(verdict.reason ?? ''))) {
+      updated = await updateJob(job.urlKey, { transitionTo: 'failed', patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
+      log(`apply-worker: ${job.company} — unknown submission outcome; moved to failed (attempts=${attemptNo}/${maxAttempts}) to prevent auto-retry`);
+    } else {
+      // stay in applying; next cycle retries once more
+      updated = await updateJob(job.urlKey, { patch: { auditDir, lastError: verdict.reason, execution: doneExecution } });
+    }
   }
   log(`apply-worker: ${updated.company} -> stage ${updated.stage}`);
   return { job: updated, auditDir, verdict };
@@ -821,6 +907,17 @@ function selfTest() {
   check('saved credentials injected for matching host',
     savedCredentialsFor('https://acme.wd1.myworkdayjobs.com/job/1', credFile).includes('p4ss!Word123456'));
   check('harvest ignores missing file', harvestCredentials('/tmp/nonexistent-dir-xyz', credFile) === false);
+
+  // redactPromptForAudit
+  const redactFile = join(credTmp, 'accounts-redact.json');
+  writeFileSync(redactFile, JSON.stringify({ 'host.example.com': { email: 'user@example.com', password: 'supersecret99!' } }));
+  const rawPrompt = 'email: user@example.com\npassword: supersecret99!\nSome other text';
+  const redacted = redactPromptForAudit(rawPrompt, redactFile);
+  check('redactPromptForAudit removes password value', !redacted.includes('supersecret99!'));
+  check('redactPromptForAudit keeps email', redacted.includes('user@example.com'));
+  check('redactPromptForAudit inserts [REDACTED]', redacted.includes('[REDACTED]'));
+  check('redactPromptForAudit with missing file strips password line (fail-closed)',
+    !redactPromptForAudit(rawPrompt, '/tmp/no-such-accounts.json').includes('supersecret99!'));
 
   // verifyAudit
   const tmp = `/tmp/apply-audit-${Date.now()}`;

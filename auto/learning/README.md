@@ -81,9 +81,11 @@ record it in the canonical tracker — do not pretend the rollback erased it.
 
 Everything below describes only implemented commands and routes, verified
 against `auto/learn.mjs`, `auto/learning/api.mjs` and `auto/learning/*.mjs`
-on branch `learning-system`. **Current status: NOT activated.** T27 has not
-run; `config/learning.yml` ships `enabled: false`, and the live panel process
-still runs pre-learning code until an operator restart (pending T27).
+on branch `learning-system`. **Current status: SHADOW (T2.1, 2026-10-12),
+not activated.** `config/learning.yml` is `enabled: true, mode: shadow`:
+the apply path is unchanged and only post-verdict attempt capture runs.
+T27 (active mode, backfill `--apply`) has not run, and the live panel
+process still runs pre-learning code until an operator restart.
 
 ## Startup and flags
 
@@ -94,8 +96,12 @@ still runs pre-learning code until an operator restart (pending T27).
   paths, no wildcards). Side effect of starting the panel: the usual panel
   behavior only; learning routes refuse consequential actions while disabled.
 - `config/learning.yml` (schema_version 1) is the single feature switch:
-  - `enabled` (currently `false`) gates the whole layer; `mode` is one of
-    `shadow | active | off` (currently `shadow`).
+  - `enabled` (currently `true`) gates the whole layer; `mode` is one of
+    `shadow | active | off` (currently `shadow`). `shadow`: legacy apply
+    unchanged + post-verdict `finalizeAttemptCapture` (capture-only).
+    `active`: injected-executor integration (T10–T15), user-gated; with no
+    production executor it refuses every job (`tool_unavailable`). `off` or
+    `enabled: false`: legacy, no learning writes.
   - `review.enabled` (false) gates the reviewer; `review.interval_minutes`,
     `max_new_attempts`, `concurrency`, `auto_promote_procedures` bound it.
   - `cloud.enabled` (false) plus `daily_usd_cap: 0` / `max_calls_per_day: 0`:
@@ -103,7 +109,9 @@ still runs pre-learning code until an operator restart (pending T27).
     flips `cloud.enabled` — spend requires an explicit nonzero budget (D03).
   - Defaults are frozen in `auto/learning/context.mjs`
     (`LEARNING_CONFIG_DEFAULTS`); malformed/unsupported config fails visibly
-    (`CONFIG_MALFORMED` / `CONFIG_UNSUPPORTED_VERSION` → HTTP 500).
+    (`CONFIG_MALFORMED` / `CONFIG_UNSUPPORTED_VERSION` → HTTP 500). The
+    pipeline (`run.mjs`/`apply-worker.mjs` `resolveLearning`) fails closed:
+    invalid config not explicitly `enabled: false` throws at cycle start.
 
 ## Roots
 

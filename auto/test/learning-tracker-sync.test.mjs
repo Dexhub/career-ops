@@ -32,7 +32,7 @@ let createLearningContext;
 before(async () => {
   fixture = createLearningFixture();
   writeFileSync(join(fixture.dataRoot, 'config', 'learning.yml'),
-    'schema_version: 1\nenabled: true\nmode: shadow\n');
+    'schema_version: 1\nenabled: true\nmode: active\n');
   state = await import('../state.mjs');
   workflow = await import('../learning/workflow.mjs');
   ({ getRecord, listRecords } = await import('../learning/store.mjs'));

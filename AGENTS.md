@@ -549,6 +549,66 @@ Rules for agents working here:
   the panel self-test while an operator pause is meant to stay set, or
   restore `data/auto/pause-requested` afterward (unfixed; needs an injectable
   flag path like run.mjs).
+  **T2.3 stale-activity alarm (2026-10-12):** `statusPayload()` now includes
+  `heartbeat: { at, lastActivityAt }` + `staleActivity: { stale, silenceMs, ... }`.
+  When the cycle is running and `run.log` has not been touched for >2h, the status
+  payload includes `staleActivity.stale=true` + a human-readable `message`, and a
+  macOS notification fires (debounced to ≤1 per 30 min). `operatorPayload()` also
+  includes `staleActivityAlarm`. `staleActivityAlarm(cycle, lastActivityAt, nowMs)`
+  is exported for tests. Scan cadence (skipScan) remains a USER DECISION; see
+  digest "Decisions needed" section.
+- **Safety defect fixes (2026-10-12, branch learning-system):**
+  - **F1 (P1)** `auto/apply-worker.mjs finalizeVerdict`: unknown-outcome verdicts (reason matches
+    `no-confirmation` / `confirmation_text empty` etc.) with attempts left were left in `applying`
+    and auto-retried next cycle. Fixed: those verdicts now transition to `failed` so the existing
+    `state.mjs` SUBMISSION_OUTCOME_UNKNOWN guard blocks auto-requeue; force-requeue via panel
+    remains the only re-entry path.
+  - **F2 (P1)** `auto/dispatch-gate.mjs loadGateData`: tracker rows were loaded with
+    `status: 'Applied'` only; after a status update to Rejected/Interview/Offer/etc. a row
+    vanished from duplicate/cooldown protection. Fixed: now loads all
+    `SUBMITTED_TRACKER_STATUSES` (`Applied`, `Responded`, `Interview`, `Offer`, `Hired`, `Rejected`).
+  - **F3 (P1)** `auto/apply-worker.mjs redactPromptForAudit`: returned the raw prompt when
+    `accounts.json` was missing/unreadable/malformed. Fixed: fail-closed — unknown-credential
+    scenarios now scrub `password: …` lines to `[REDACTED]` instead of persisting raw text.
+   - **F4 (P2)** `auto/dispatch-gate.mjs` employer-cap: `>2` compared against others-only count
+     (excluding candidate), so 2 others + candidate = 3 total passed. Fixed: changed to `>=2`
+     (at most 2 total including candidate = block at 3). Test updated to match.
+   - **F5 (P2)** `auto/reply-ingest.mjs classifyEmail`: records written to `data/reply-candidates.json`
+     were missing `message_id`, `from`, `subject`, `body_snippet` that `reply-watch.mjs`/`reply-matcher.mjs`
+     consume. Fixed: `classifyEmail` now synthesises a stable SHA-1 `message_id` from from+subject+body
+     and carries `from`/`subject`/`body_snippet` alongside the new fields.
+   - **F6 (P2)** `auto/reply-ingest.mjs appendCandidates`: dedup key for unmatched rejections was the
+     constant `null::pasted-text::rejected`, so only the first unmatched rejection was kept. Fixed: unmatched
+     records use a content hash (company+source+detectedOutcome+evidenceSnippet) so distinct employers
+     do not collide.
+   - **F7 (P2)** `auto/reply-ingest.mjs loadCandidates/appendCandidates`: a corrupt/non-array
+     `reply-candidates.json` was silently treated as `[]`, causing the next append to overwrite the file.
+     Fixed: `loadCandidates` throws with a clear message on corrupt/non-array content;
+     `appendCandidates` uses write-then-rename (like `paste-reply.mjs`) so a mid-write crash cannot corrupt.
+   - **F8 (P2)** `auto/outcome-brief.mjs computeBrief`: outcome counts were joined via a broad notes
+     string-match (378 tracker rows) instead of the actual auto-submitted cohort (93 jobs). Fixed: outcomes
+     are now joined via URL normalisation against `auto_jobs.urlKey`; falls back to notes-match only when
+     `urlKey` set is empty (bootstrap case).
+   - **F11 (P2)** `auto/digest.mjs buildDigest`: backlog line reported only `discovered` auto_jobs (9) as
+     "unranked"; the real upstream pipeline inbox (`pipeline_items` pending+unchecked = 2,662) was invisible.
+     Fixed: `writeDigest` fetches the pipeline inbox count and passes it to `buildDigest`; the backlog line
+     now shows both: **9 unranked (auto_jobs)** · **2662 pipeline inbox (pending+unchecked)**.
+   - **F12 (P2)** `auto/digest.mjs aggregateParkDrain/buildDigest`: resume-fallback count (56) was reported
+     as "applications that SHIPPED the default resume" but only 34 were actually submitted; the other 22 were
+     parked/failed/pending. Fixed: `aggregateParkDrain` now carries a `stage` field on each fallback; the
+     digest splits them into **submitted** (34) vs **selected-but-not-submitted** (22) with a Stage column.
+   - **F13 (P2)** `auto/digest.mjs computeCostLine`: daily cost aggregation read `submittedAt || timestamp`
+     but `apply-worker` writes `verdictAt` (line 722), so new usage-bearing verdicts never counted toward
+     "today". Fixed: fallback chain is now `submittedAt || verdictAt || timestamp`.
+
+  `parseReportScore(body)` and `stripThinkBlocks(text)`. Score parse order:
+  (1) yaml trailer `score:` key in the last yaml fence block (case-insensitive);
+  (2) `**Score:** X/5` or `Score: X/5` anchored at line start after stripping
+  markdown emphasis; (3) stdout fallback (think blocks stripped). Provenance is
+  stored as `job.scoreSource` (`'yaml'|'body'|'stdout'`). Run
+  `node auto/eval-score-audit.mjs` (dry-run) after any eval-model change to
+  catch mis-scored jobs. After applying corrections the queue shows 7 jobs
+  corrected (2 re-parked, 5 score-updated).
 - The upstream web UI still runs as an always-on service
   (`io.career-ops.web-ui`, http://127.0.0.1:3003, production build) behind the
   proxy (port overridable via `CAREER_OPS_WEB_PORT`). Serving the UI is fine;
@@ -609,6 +669,16 @@ read-only `learningReview` due-ness field; the reviewer has no path to
 time; learning modules never import `core/db.mjs` (the `learn.mjs` CLI is
 allowed read-only db access for discovery but currently needs only
 `path-resolver.mjs`); no new dependencies.
+Learning modes (T2.1, `apply-worker.mjs:resolveLearning`, resolved at
+`runCycle` start and in `runApply`): `enabled:false`/`mode: off` = legacy;
+`mode: shadow` (live config since 2026-10-12) = legacy apply path unchanged
+plus post-verdict `finalizeAttemptCapture` of the attempt audit dir into
+`data/auto/learning` (capture-only, failures logged, verdict untouched);
+`mode: active` = full T10–T15 integration (injected restricted executor —
+none exists in production yet, so active refuses every job with
+`tool_unavailable`; user-gated T27/D01–D07). An invalid `config/learning.yml`
+that is not explicitly `enabled: false` throws at cycle start (fail-closed).
+Tests exercising the integrated path must write `mode: active`.
 Panel learning API (T21): `auto/learning/api.mjs` serves `/api/auto/learning/*`
 (CONTRACTS G) and fixed-manifest assets at `/auto/assets/learning/<name>` from
 `auto/ui/learning/` (manifest const in `auto/panel.mjs`; no user paths). GETs
@@ -703,6 +773,53 @@ store writes plaintext ATS passwords to live logs/state outside learning.
 Tests: `node --test auto/test/learning-*.test.mjs` — isolated via
 `auto/test/helpers/learning.mjs` (mkdtemp fixture sets `CAREER_OPS_ROOT` +
 `CAREER_OPS_DB`); they never touch the live checkout or data.
+
+### Auto pipeline outcome loop (`auto/outcome-brief.mjs`, `auto/reply-ingest.mjs`)
+
+Added 2026-10-11 (Worker F). Closes the zero-follow-up gap for 92 auto submissions.
+
+**Follow-up seeding parity:** `auto/learning/workflow.mjs` `executeTrackerSync` now
+calls `seedFollowup(rowNum, {assumeApplied:true})` after a successful Applied write,
+so the learning path and the `set-status.mjs` path both seed the `follow_up_next`
+table. Best-effort (never fails the sync).
+
+**Backfill:** `node auto/outcome-brief.mjs --seed-backfill` seeds all Applied rows
+with no existing pin (idempotent; run 2026-10-11: 23 seeded, 366 already had pins).
+
+**Reply ingestion (propose-only):**
+`auto/reply-ingest.mjs` — NEVER reads any mailbox. Inputs: `--file`/`--text` pasted
+email, or `--scan-tracker-rot` (scans Applied rows for "Gmail decision verified …
+declined" notes pattern). Outputs proposals to `data/reply-candidates.json` (append,
+deduped, never auto-applied). Run `--scan-tracker-rot` to surface any new tracker
+rot. Existing `paste-reply.mjs` / `reply-watch.mjs` remain unchanged.
+
+**Outcome brief:** `node auto/outcome-brief.mjs` — weekly Markdown brief to stdout
+and `data/auto/outcome-brief-YYYY-MM-DD.md`. Exports `computeBrief()` / `formatBrief()`
+for digest integration. `--json` for programmatic use. Label fix (2026-10-12):
+zero-outcomes message now uses `totalAutoSubmitted` (from `auto_jobs` stage=submitted),
+not the tracker-match count `autoAppsCount`.
+
+**Daily digest (extended, 2026-10-12):** `node auto/digest.mjs [--dry-run]` — writes
+`data/auto/digest-YYYY-MM-DD.md` + macOS notification. Extended sections:
+- Park-reason Pareto (all-time; score-correction count highlighted)
+- Park-drain loop (T1.2): "Answer N questions to unlock M parked jobs" with 4
+  deferred policy prompts (EEO-when-no-decline, quirky culture, non-USD OTE,
+  attestations) plus proposed `config/standing-answers.yml` YAML snippets —
+  PROPOSALS ONLY, never auto-applied.
+- Resume-variant coverage (T2.2): lists apps that shipped default CV + proposals
+  for new variants (Principal IC, CTO/VPE, Public-sector archetypes); no files written.
+- Per-ATS success/park rates table.
+- Backlog economics line (discovered/parked/submitted counts).
+- Cost/day line (from verdict.json usage data; honest about 0% coverage).
+- Stale parked jobs (>3 days).
+- Outcome brief section (from `outcome-brief.mjs`, lazy import).
+- Decisions-needed block: push channel, scan cadence, standing answers, resume variants.
+Push channel (email vs Telegram) is a USER DECISION — not implemented. Channel is
+pluggable: `writeDigest({ channel })` accepts a `{ name, send }` object.
+`auto/digest.mjs` exports: `buildDigest`, `aggregateParkDrain`, `computeCostLine`, `sendDigest`.
+Tests: `node --test auto/test/digest-sections.test.mjs`.
+
+Tests: `node --test auto/test/outcome-brief-reply-ingest.test.mjs`.
 
 ## Stack and Conventions
 
