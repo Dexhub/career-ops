@@ -258,3 +258,6 @@ documents/*
 # PII (e.g. cv/jane-doe-master-cv.pdf). #1723
 data/intake-state.json
 data/agent-inbox.md
+
+# Resume variant drafts (derived from cv.md — personal data, pending review)
+drafts/

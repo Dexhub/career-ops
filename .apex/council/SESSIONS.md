@@ -169,3 +169,9 @@ Full suite: 449/449 (448 + 1 new P1 pin). Delta re-review #2 requested.
   mode=shadow` logged; dispatch-gate parked fox (already-applied) — duplicate
   gate working live; toast Staff SWE GTM&AI submit attempt in flight.
 - Next: verify one full shadow cycle per Worker G checklist, then .apex/RESULT.md.
+
+## Follow-up delivery wave (2026-10-12, post-RESULT)
+- Task A reuse bridge (council-builder): ses_ecfe80e80ffed5T7MSHiHGsNgr
+- Task B mail-sync (council-builder): ses_ecfe7b5a1ffegQoGwzISJJCNEE
+- Task C resume drafts (council-builder): ses_ecfe78427ffe5qYA2G3LGrNPLF
+- Done directly: branch pushed; standing answers/facts in config; 8 parks requeued; Mon+Thu scan via io.career-ops.auto-scan.plist

@@ -28,6 +28,11 @@ salary:
   expectation_text: "$200K base; $300K-$400K total compensation including equity and bonus"
   # Used when the form asks for a minimum.
   minimum_usd: 200000
+  # Non-USD base-salary expectations (user-approved 2026-10-12).
+  expectation_eur: "180000"
+  expectation_gbp: "160000"
+  expectation_cad: "260000"
+  expectation_aud: "310000"
 
 availability:
   notice_period: "Two weeks"
@@ -44,6 +49,14 @@ how_did_you_hear: "Company Website"
 # Recurring question text (lowercased, trimmed) -> verbatim answer.
 # Matching is exact-first, then fuzzy by the apply worker.
 custom:
+  # Quirky personality/culture answers (user-approved 2026-10-12; policy for
+  # novel ones lives in profile.yml application_facts.open_ended_personality_policy).
+  "what is your spirit animal?": "Wolf — collaborative, adaptive, and driven."
+  "describe yourself in one word?": "Builder."
+  # Attestation checkboxes (user-approved 2026-10-12; see
+  # profile.yml application_facts.attestation_policy).
+  "i certify that the information provided is true and complete": "Yes"
+  "i acknowledge the terms of the background check authorization": "Yes"
   "address line 2": "Apartment 504"
   "are you a u.s. citizen?": "Yes"
   "are you a citizen of another country?": "No — United States citizenship only"
