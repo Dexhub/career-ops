@@ -9,9 +9,25 @@
 # mode: active (executor swap, intent reconciliation, sweeps) is user-gated
 # (T27, D01-D07). Rollback: set enabled: false. An invalid file that is not
 # explicitly enabled: false makes cycles refuse to start (fail-closed).
+#
+# reuse block (active-lite, 2026-10-12):
+#   reuse.enabled: true  -> in shadow mode, build a compact "learned answers"
+#       context from the local store for the current job and inject it into the
+#       worker prompt as suggestions. Never changes the executor or mode.
+#   reuse.auto_approve_safe: true -> at cycle start, promote answers that are
+#       in a non-sensitive family from proposed/candidate to approved, tagged
+#       promoted_by:'auto_safe_policy'. Sensitive families (EEO/demographics,
+#       eligibility/visa/work-authorization, compensation) are NEVER auto-approved.
+#   reuse.max_context_bytes: 0 -> 0 means use retrieval.max_context_bytes cap.
+#   Rollback: set reuse.enabled: false. Missing reuse block defaults to off
+#   (backward compatible: old configs without this key behave unchanged).
 schema_version: 1
 enabled: true
 mode: shadow
+reuse:
+  enabled: true
+  auto_approve_safe: true
+  max_context_bytes: 0
 capture:
   max_artifact_bytes: 2097152
   max_fields_per_page: 100

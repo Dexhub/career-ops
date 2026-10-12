@@ -23,6 +23,15 @@ export const LEARNING_CONFIG_DEFAULTS = Object.freeze({
     max_candidates: 12,
     max_context_bytes: 24000,
   }),
+  // reuse defaults: off when the block is absent (backward-compatible).
+  // reuse.enabled: false means NO context injection and NO auto-promotion.
+  // reuse.auto_approve_safe: false means captured answers stay as-is.
+  // reuse.max_context_bytes: 0 means use retrieval.max_context_bytes.
+  reuse: Object.freeze({
+    enabled: false,
+    auto_approve_safe: false,
+    max_context_bytes: 0,
+  }),
   review: Object.freeze({
     enabled: false,
     interval_minutes: 360,
@@ -143,7 +152,7 @@ export function readLearningConfig(ctx) {
     throw new LearningError('CONFIG_UNSUPPORTED_VERSION',
       `config/learning.yml schema_version ${String(raw.schema_version)} is not supported (expected ${CONFIG_SCHEMA_VERSION}); refusing to guess`);
   }
-  const known = new Set(['schema_version', 'enabled', 'mode', 'capture', 'retrieval', 'review', 'queue', 'cloud']);
+  const known = new Set(['schema_version', 'enabled', 'mode', 'capture', 'retrieval', 'reuse', 'review', 'queue', 'cloud']);
   for (const key of Object.keys(raw)) {
     if (!known.has(key)) {
       throw new LearningError('CONFIG_MALFORMED', `unknown top-level config key: ${key}`);
@@ -159,6 +168,13 @@ export function readLearningConfig(ctx) {
     }),
     retrieval: mergeSection(LEARNING_CONFIG_DEFAULTS.retrieval, raw.retrieval, 'retrieval', {
       max_candidates: expectNonNegativeNumber,
+      max_context_bytes: expectNonNegativeNumber,
+    }),
+    // reuse block: defaults to off when the key is absent (backward-compat).
+    // Invalid keys are still rejected (fail-closed for malformed config).
+    reuse: mergeSection(LEARNING_CONFIG_DEFAULTS.reuse, raw.reuse, 'reuse', {
+      enabled: expectBoolean,
+      auto_approve_safe: expectBoolean,
       max_context_bytes: expectNonNegativeNumber,
     }),
     review: mergeSection(LEARNING_CONFIG_DEFAULTS.review, raw.review, 'review', {

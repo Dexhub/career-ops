@@ -118,7 +118,14 @@ test('the checked-in config/learning.yml is CONTRACTS F defaults, enabled only i
   // Read-only look at the checkout: parse it through the same validator by
   // pointing a context's dataRoot at the repo root (no writes happen).
   // Shadow = defaults with enabled:true; review/cloud/queue stay at defaults.
+  // active-lite (T-active-lite): reuse.enabled and reuse.auto_approve_safe are
+  // additionally true in the checked-in config (the bridge is live in shadow mode).
   const ctx = createLearningContext({ codeRoot: repoRoot, dataRoot: repoRoot, now: fixedClock() });
   const config = readLearningConfig(ctx);
-  assert.deepEqual(config, { ...structuredClone(LEARNING_CONFIG_DEFAULTS), enabled: true, mode: 'shadow' });
+  assert.deepEqual(config, {
+    ...structuredClone(LEARNING_CONFIG_DEFAULTS),
+    enabled: true,
+    mode: 'shadow',
+    reuse: { enabled: true, auto_approve_safe: true, max_context_bytes: 0 },
+  });
 });

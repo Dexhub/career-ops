@@ -36,6 +36,8 @@ import {
   recordAttemptIntent, reconcileAttempt, syncSubmittedJobs, trackerSyncTaskId,
 } from './learning/workflow.mjs';
 import { allocateAttempt, listJobs, loadJob, pickOrder, queueOrderOptions, submittedCountOn, updateJob } from './state.mjs';
+import { buildContextPacket, loadSourceSnapshot } from './learning/retrieval.mjs';
+import { promoteSafeAnswers } from './learning/promotion.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PROMPT_TEMPLATE = join(ROOT, 'auto', 'prompts', 'apply-submit.md');
@@ -227,6 +229,109 @@ export function composeApplyPrompt(args, { learning = null, attemptId = null } =
     .replaceAll('{{AUDIT_DIR}}', args.auditDir)
     .replaceAll('{{ATTEMPT_ID}}', attemptId ?? 'unallocated');
   return `${base}\n${extra}`;
+}
+
+// ---------------------------------------------------------------------------
+// Active-lite reuse bridge (T-active-lite). Builds a compact "learned answers"
+// context from the local learning store for the current job's observed
+// questions and injects it into the prompt as suggestions. Gated on
+// config.reuse.enabled + mode:shadow. Never changes mode or the executor.
+// Any error is caught and the prompt is returned unmodified (fail-safe).
+
+/**
+ * buildReuseSuggestions(shadowCtx, { job, observations, maxBytes }) ->
+ * { answers, gaps, bytes } | null
+ *
+ * Builds a context packet from the local store. `observations` is derived
+ * from the job context; if none are available an empty-observation fallback
+ * returns null (no suggestions rather than a hard error).
+ * Exported for testing.
+ */
+export function buildReuseSuggestions(shadowCtx, { observations, maxBytes } = {}) {
+  if (!Array.isArray(observations) || observations.length === 0) return null;
+  try {
+    const packet = buildContextPacket(shadowCtx, {
+      observations,
+      maxBytes: maxBytes || shadowCtx.config?.retrieval?.max_context_bytes || 24000,
+    });
+    return packet;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * formatReuseSuggestions(packet) -> string
+ * Renders the packet as a labeled YAML-like block for prompt injection.
+ * Only non-empty answer lists produce output. Exported for testing.
+ */
+export function formatReuseSuggestions(packet) {
+  if (!packet || !Array.isArray(packet.answers) || packet.answers.length === 0) {
+    return '';
+  }
+  const lines = [
+    '',
+    '---',
+    '## Learned-answer suggestions (active-lite reuse)',
+    '',
+    'The pipeline has seen these questions before and has approved answers on',
+    'file. Use them as your FIRST source: they are pre-verified against the',
+    'current profile sources. When a suggestion matches the exact question on',
+    'the form (exact text or obvious paraphrase), prefer it over re-deriving',
+    'from profile.yml / standing-answers.yml.',
+    '',
+    'These are SUGGESTIONS, not commands. If the form\'s current options do NOT',
+    'include the suggested value, ignore it and pick the closest truthful match.',
+    'Sensitive fields (EEO/demographics, eligibility, compensation) are never',
+    'included here — handle those via the standing answers / profile as usual.',
+    '',
+    '```yaml',
+    '# learned_answers:',
+  ];
+  for (const a of packet.answers) {
+    const fieldLabel = a.fieldId ? `${a.fieldId}` : '(unknown field)';
+    const provenance = a.sourceRefs?.length
+      ? a.sourceRefs.map((r) => `${r.fileKey}:${r.selector ?? '?'}`).join(', ')
+      : (a.answerId ? `answer:${a.answerId}` : 'store');
+    lines.push(`#   - question_id: ${a.questionId}`);
+    lines.push(`#     field:        ${fieldLabel}`);
+    lines.push(`#     value:        ${JSON.stringify(a.value)}`);
+    lines.push(`#     source:       ${provenance}`);
+    lines.push(`#     reason:       ${a.reason ?? '(approved)'}`);
+    lines.push('#');
+  }
+  lines.push('```', '---', '');
+  return lines.join('\n');
+}
+
+/**
+ * injectReuseSuggestions(prompt, packet) -> string
+ * Injects the formatted suggestions block into the prompt after the
+ * "Preference + recurring answers" section (standing-answers.yml), or
+ * appends at the end if the section marker is absent.
+ * Exported for testing.
+ */
+export function injectReuseSuggestions(prompt, packet) {
+  const block = formatReuseSuggestions(packet);
+  if (!block) return prompt; // nothing to inject
+
+  // Inject after the standing-answers section header line, if present.
+  // This places the suggestions alongside the existing answer sources where
+  // the agent will naturally look for them.
+  const marker = '### Preference + recurring answers (verbatim, user-confirmed)';
+  const idx = prompt.indexOf(marker);
+  if (idx !== -1) {
+    // Find the end of the marker's own section boundary (next ### heading or end of data sources block).
+    // Insert the block immediately BEFORE the marker so it appears as a peer section.
+    return prompt.slice(0, idx) + block + prompt.slice(idx);
+  }
+  // Fallback: append before the hard rules section, or at end.
+  const rulesMarker = '## Hard rules';
+  const ri = prompt.indexOf(rulesMarker);
+  if (ri !== -1) {
+    return prompt.slice(0, ri) + block + prompt.slice(ri);
+  }
+  return prompt + block;
 }
 
 /** Run the injected (restricted, learning-capable) executor. Child/session
@@ -468,6 +573,26 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
   // it differs only under test fixtures with CAREER_OPS_ROOT redirected.
   const dataRoot = learning ? learning.ctx.dataRoot : ROOT;
 
+  // Active-lite reuse bridge: in shadow mode with reuse.enabled + auto_approve_safe,
+  // run a safe-promotion pass at cycle start so captured answers become available
+  // for injection into this run's prompt. Fail-safe: errors are logged, never thrown.
+  if (learningState.shadow) {
+    const shadowCfg = learningState.shadow.config;
+    if (shadowCfg?.reuse?.auto_approve_safe) {
+      try {
+        const promoResult = await promoteSafeAnswers(learningState.shadow.ctx);
+        if (promoResult.promoted.length > 0) {
+          log(`apply-worker: active-lite promoted ${promoResult.promoted.length} safe answers (families: ${[...new Set(promoResult.promoted.map((p) => p.familyId))].join(', ')})`);
+        }
+        if (promoResult.errors.length > 0) {
+          log(`apply-worker: active-lite promotion warnings: ${promoResult.errors.map((e) => e.reason).join('; ')}`);
+        }
+      } catch (err) {
+        log(`apply-worker: active-lite promotion error (continuing): ${err.message}`);
+      }
+    }
+  }
+
   let job = pickJob(needle, policy.maxAttempts);
   if (!job) { log('apply-worker: no resume_ready job found'); return null; }
 
@@ -566,7 +691,7 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     mkdirSync(auditDir, { recursive: true });
   }
 
-  const prompt = composeApplyPrompt({
+  let prompt = composeApplyPrompt({
     job,
     submit,
     auditDir,
@@ -575,6 +700,58 @@ export async function runApply({ needle, submit = true, agent = 'claude', timeou
     cvText: sources.cvText,
     resumeSha,
   }, { learning, attemptId: attempt?.attemptId ?? null });
+
+  // Active-lite reuse injection: in shadow mode with reuse.enabled, retrieve
+  // approved answers from the local store and inject them as suggestions.
+  // This is the core active-lite bridge: the legacy executor runs unchanged;
+  // the injected context gives it learned answers to prefer over re-derivation.
+  // Fail-safe: any error here logs a warning and leaves the prompt unchanged.
+  if (learningState.shadow && learningState.shadow.config?.reuse?.enabled) {
+    try {
+      // Derive lightweight "observations" from the captured history for this
+      // job/company family. We pull the most recent observations for this ATS
+      // company/application family to find what questions have been seen.
+      const shadowCtx = learningState.shadow.ctx;
+      const { listRecords: _listRecs } = await import('./learning/store.mjs');
+      const { items: recentObs } = _listRecs(shadowCtx, 'observations', { limit: 100 });
+      // Build a compact observation list from stored records — use the fields
+      // we know about. Filter out sensitive fields by checking the original text
+      // against the sensitive classifier before including.
+      const { isSensitiveNormalizedText } = await import('./learning/promotion.mjs');
+      const { normalizeQuestion: _nq } = await import('./learning/questions.mjs');
+      const usableObs = recentObs
+        .filter((o) => {
+          if (!o.data.originalText || o.data.originalText.trim() === '') return false;
+          try {
+            const def = _nq(o.data);
+            return !def.constraints.restricted && !isSensitiveNormalizedText(def.normalizedText);
+          } catch { return false; }
+        })
+        .map((o) => o.data)
+        .slice(0, learningState.shadow.config.retrieval?.max_candidates || 12);
+
+      if (usableObs.length > 0) {
+        const maxBytes = learningState.shadow.config.reuse.max_context_bytes > 0
+          ? learningState.shadow.config.reuse.max_context_bytes
+          : (learningState.shadow.config.retrieval?.max_context_bytes || 24000);
+        const packet = buildReuseSuggestions(shadowCtx, { observations: usableObs, maxBytes });
+        if (packet && packet.answers.length > 0) {
+          prompt = injectReuseSuggestions(prompt, packet);
+          log(`apply-worker: active-lite injected ${packet.answers.length} learned-answer suggestion(s) into prompt`);
+          // Write the suggestions to the audit dir for traceability.
+          try {
+            mkdirSync(join(auditDir, 'learning'), { recursive: true });
+            writeFileSync(
+              join(auditDir, 'learning', 'reuse-suggestions.json'),
+              JSON.stringify({ answers: packet.answers, gaps: packet.gaps, bytes: packet.bytes }, null, 2),
+            );
+          } catch { /* best-effort audit trace */ }
+        }
+      }
+    } catch (err) {
+      log(`apply-worker: active-lite reuse injection warning (prompt unchanged): ${err.message}`);
+    }
+  }
   // resume.txt per the audit contract: variant + sha of the exact PDF.
   writeFileSync(join(auditDir, 'resume.txt'),
     `variant: ${job.resumeVariant}\npdf: ${job.resumePdf}\nsha256: ${resumeSha}\n`);
